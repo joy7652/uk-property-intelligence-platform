@@ -1,0 +1,56 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter / Databricks
+.ipynb_checkpoints/
+
+# Secrets and credentials — critical
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+credentials.json
+config/secrets/
+
+# Azure / Terraform (if you add IaC later)
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Local test data
+data/
+*.csv
+*.xlsx
+*.xls
+*.zip
+*.parquet
+adur_test.zip
+postcodes.zip
+baserate.xls
+priceindexofprivaterents*.xlsx
+
+# Local scripts from this session
+epc_test.py
+epc_scrape_las.py
+test.py
