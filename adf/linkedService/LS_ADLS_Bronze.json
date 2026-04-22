@@ -1,0 +1,16 @@
+{
+	"name": "LS_ADLS_Bronze",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"description": "Linked service to copy the data from HTTP source to the ADLS Gen 2 sink (Bronze).",
+		"annotations": [],
+		"type": "AzureBlobFS",
+		"typeProperties": {
+			"url": "https://ukpropertyintelligencedl.dfs.core.windows.net/",
+			"credential": {
+				"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+				"type": "CredentialReference"
+			}
+		}
+	}
+}

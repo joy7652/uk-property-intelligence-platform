@@ -1,0 +1,26 @@
+{
+	"name": "LS_HTTP_User_Agent_Header",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"description": "Linked Service for fetching data from sources with user agent header only.",
+		"parameters": {
+			"baseURL": {
+				"type": "string",
+				"defaultValue": "https://www.doogal.co.uk"
+			}
+		},
+		"annotations": [],
+		"type": "HttpServer",
+		"typeProperties": {
+			"url": "@{linkedService().baseURL}",
+			"enableServerCertificateValidation": true,
+			"authenticationType": "Anonymous",
+			"authHeaders": {
+				"User-Agent": {
+					"type": "SecureString",
+					"value": "**********"
+				}
+			}
+		}
+	}
+}

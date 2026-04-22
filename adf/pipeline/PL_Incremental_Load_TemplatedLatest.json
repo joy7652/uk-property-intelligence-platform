@@ -1,0 +1,161 @@
+{
+	"name": "PL_Incremental_Load_TemplatedLatest",
+	"properties": {
+		"description": "Pipeline for Monthly Incremental Load of Each Data Sources with Templated Dynamic URL pattern.",
+		"activities": [
+			{
+				"name": "Check if already ingested this month",
+				"type": "IfCondition",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@not(equals(\n  formatDateTime(pipeline().parameters.p_last_refreshed,'yyyy-MM'),\n  formatDateTime(utcNow(), 'yyyy-MM')\n))",
+						"type": "Expression"
+					},
+					"ifFalseActivities": [
+						{
+							"name": "False Message",
+							"type": "SetVariable",
+							"dependsOn": [],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "v_skip_message",
+								"value": {
+									"value": "@concat(pipeline().parameters.p_source_name, 'Already ingested this month — skipping')",
+									"type": "Expression"
+								}
+							}
+						}
+					],
+					"ifTrueActivities": [
+						{
+							"name": "Copy incremental Snapshot File",
+							"type": "Copy",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "DelimitedTextSource",
+									"storeSettings": {
+										"type": "HttpReadSettings",
+										"requestMethod": "GET"
+									},
+									"formatSettings": {
+										"type": "DelimitedTextReadSettings"
+									}
+								},
+								"sink": {
+									"type": "DelimitedTextSink",
+									"storeSettings": {
+										"type": "AzureBlobFSWriteSettings",
+										"copyBehavior": "PreserveHierarchy"
+									},
+									"formatSettings": {
+										"type": "DelimitedTextWriteSettings",
+										"quoteAllText": true,
+										"fileExtension": ".txt"
+									}
+								},
+								"enableStaging": false,
+								"translator": {
+									"type": "TabularTranslator",
+									"typeConversion": true,
+									"typeConversionSettings": {
+										"allowDataTruncation": true,
+										"treatBooleanAsNumber": false
+									}
+								}
+							},
+							"inputs": [
+								{
+									"referenceName": "DS_HTTP_Anonymous_Source",
+									"type": "DatasetReference",
+									"parameters": {
+										"p_relative_url": {
+											"value": "@concat(pipeline().parameters.p_incremental_relative_url_prefix, pipeline().parameters.p_incremental_latest_snapshot, pipeline().parameters.p_file_extension)",
+											"type": "Expression"
+										},
+										"p_base_url": {
+											"value": "@pipeline().parameters.p_base_url",
+											"type": "Expression"
+										}
+									}
+								}
+							],
+							"outputs": [
+								{
+									"referenceName": "DS_ADLS_Bronze_CSV",
+									"type": "DatasetReference",
+									"parameters": {
+										"p_folder_path": {
+											"value": "@concat('bronze/', pipeline().parameters.p_incremental_folder_name, pipeline().parameters.p_incremental_latest_snapshot)",
+											"type": "Expression"
+										},
+										"p_file_name": {
+											"value": "@concat(pipeline().parameters.p_incremental_file_name_prefix, pipeline().parameters.p_incremental_latest_snapshot, pipeline().parameters.p_file_extension)",
+											"type": "Expression"
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"p_source_name": {
+				"type": "string",
+				"defaultValue": "police_uk_street_crime"
+			},
+			"p_base_url": {
+				"type": "string",
+				"defaultValue": "https://data.police.uk"
+			},
+			"p_incremental_relative_url_prefix": {
+				"type": "string",
+				"defaultValue": "/data/archive/"
+			},
+			"p_incremental_folder_name": {
+				"type": "string",
+				"defaultValue": "police/crime/monthly/"
+			},
+			"p_incremental_file_name_prefix": {
+				"type": "string",
+				"defaultValue": "police-crime-latest-"
+			},
+			"p_last_refreshed": {
+				"type": "string",
+				"defaultValue": "1900-01-01"
+			},
+			"p_incremental_latest_snapshot": {
+				"type": "string",
+				"defaultValue": "2026-02"
+			},
+			"p_file_extension": {
+				"type": "string",
+				"defaultValue": ".zip"
+			}
+		},
+		"variables": {
+			"v_skip_message": {
+				"type": "String"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-04-22T01:32:09Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

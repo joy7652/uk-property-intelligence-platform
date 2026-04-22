@@ -1,0 +1,15 @@
+{
+	"name": "uk-property-market-intelligence-platform-adf",
+	"location": "uksouth",
+	"identity": {
+		"type": "SystemAssigned,UserAssigned",
+		"principalId": "a1293471-9c71-48fc-bae5-7c8cfc054f42",
+		"tenantId": "2446adc5-0dff-475b-b931-ae75d46a5ffb",
+		"userAssignedIdentities": {
+			"/subscriptions/fee256c9-8eb0-45d0-bfd6-b3fff9c1f02f/resourcegroups/uk-property-market-intelligence-platform-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/UK-Property-Market-Intelligence-Platform-MI": {
+				"clientId": "7fb707ce-1e9e-4ad0-b452-922d76395756",
+				"principalId": "b9167147-afb0-4070-8002-839cd362a9a1"
+			}
+		}
+	}
+}

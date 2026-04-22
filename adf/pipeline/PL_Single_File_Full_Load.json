@@ -1,0 +1,288 @@
+{
+	"name": "PL_Single_File_Full_Load",
+	"properties": {
+		"description": "Pipeline for Single File Full Load of Each Data Sources.",
+		"activities": [
+			{
+				"name": "Switch Linked Service Type",
+				"type": "Switch",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"on": {
+						"value": "@pipeline().parameters.p_linked_service_type",
+						"type": "Expression"
+					},
+					"cases": [
+						{
+							"value": "landregistry_hpi",
+							"activities": [
+								{
+									"name": "Fetch File LandRegistry HPI",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "DelimitedTextSource",
+											"storeSettings": {
+												"type": "HttpReadSettings",
+												"requestMethod": "GET"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextReadSettings"
+											}
+										},
+										"sink": {
+											"type": "DelimitedTextSink",
+											"storeSettings": {
+												"type": "AzureBlobFSWriteSettings"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextWriteSettings",
+												"quoteAllText": true,
+												"fileExtension": ".txt"
+											}
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"typeConversion": true,
+											"typeConversionSettings": {
+												"allowDataTruncation": true,
+												"treatBooleanAsNumber": false
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_HTTP_LandRegistry_HPI_Source",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_relative_url": {
+													"value": "@pipeline().parameters.p_relative_url",
+													"type": "Expression"
+												},
+												"p_base_url": {
+													"value": "@pipeline().parameters.p_base_url",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_ADLS_Bronze_CSV",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_folder_path": {
+													"value": "@concat('bronze/', pipeline().parameters.p_folder_name)",
+													"type": "Expression"
+												},
+												"p_file_name": "@pipeline().parameters.p_file_name"
+											}
+										}
+									]
+								}
+							]
+						},
+						{
+							"value": "user_agent",
+							"activities": [
+								{
+									"name": "Fetch File User Agent",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "DelimitedTextSource",
+											"storeSettings": {
+												"type": "HttpReadSettings",
+												"requestMethod": "GET"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextReadSettings"
+											}
+										},
+										"sink": {
+											"type": "DelimitedTextSink",
+											"storeSettings": {
+												"type": "AzureBlobFSWriteSettings"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextWriteSettings",
+												"quoteAllText": true,
+												"fileExtension": ".txt"
+											}
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"typeConversion": true,
+											"typeConversionSettings": {
+												"allowDataTruncation": true,
+												"treatBooleanAsNumber": false
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_HTTP_User_Agent_Source",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_relative_url": {
+													"value": "@pipeline().parameters.p_relative_url",
+													"type": "Expression"
+												},
+												"p_base_url": {
+													"value": "@pipeline().parameters.p_base_url",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_ADLS_Bronze_CSV",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_folder_path": {
+													"value": "@concat('bronze/', pipeline().parameters.p_folder_name)",
+													"type": "Expression"
+												},
+												"p_file_name": "@pipeline().parameters.p_file_name"
+											}
+										}
+									]
+								}
+							]
+						},
+						{
+							"value": "accept_header",
+							"activities": [
+								{
+									"name": "Fetch File Accept Header",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "DelimitedTextSource",
+											"storeSettings": {
+												"type": "HttpReadSettings",
+												"requestMethod": "GET"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextReadSettings"
+											}
+										},
+										"sink": {
+											"type": "DelimitedTextSink",
+											"storeSettings": {
+												"type": "AzureBlobFSWriteSettings"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextWriteSettings",
+												"quoteAllText": true,
+												"fileExtension": ".txt"
+											}
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"typeConversion": true,
+											"typeConversionSettings": {
+												"allowDataTruncation": true,
+												"treatBooleanAsNumber": false
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_HTTP_Accept_Header_Source",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_relative_url": {
+													"value": "@pipeline().parameters.p_relative_url",
+													"type": "Expression"
+												},
+												"p_base_url": {
+													"value": "@pipeline().parameters.p_base_url",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_ADLS_Bronze_CSV",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_folder_path": {
+													"value": "@concat('bronze/', pipeline().parameters.p_folder_name)",
+													"type": "Expression"
+												},
+												"p_file_name": "@pipeline().parameters.p_file_name"
+											}
+										}
+									]
+								}
+							]
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"p_source_name": {
+				"type": "string",
+				"defaultValue": "HM Land Registry — UK House Price Index (HPI)"
+			},
+			"p_base_url": {
+				"type": "string",
+				"defaultValue": "https://publicdata.landregistry.gov.uk\""
+			},
+			"p_relative_url": {
+				"type": "string",
+				"defaultValue": "/market-trend-data/house-price-index-data/UK-HPI-full-file-2025-10.csv"
+			},
+			"p_folder_name": {
+				"type": "string",
+				"defaultValue": "uk_hpi/"
+			},
+			"p_file_name": {
+				"type": "string",
+				"defaultValue": "uk-hpi-full-file-2025-10.csv"
+			},
+			"p_linked_service_type": {
+				"type": "string",
+				"defaultValue": "landregistry_hpi"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-04-22T01:11:22Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

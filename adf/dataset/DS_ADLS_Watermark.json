@@ -1,0 +1,63 @@
+{
+	"name": "DS_ADLS_Watermark",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "LS_ADLS_Bronze",
+			"type": "LinkedServiceReference"
+		},
+		"annotations": [],
+		"type": "Json",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobFSLocation",
+				"fileName": "Watermark.json",
+				"fileSystem": "configs"
+			}
+		},
+		"schema": {
+			"type": "object",
+			"properties": {
+				"source_name": {
+					"type": "string"
+				},
+				"base_url": {
+					"type": "string"
+				},
+				"relative_url_prefix": {
+					"type": "string"
+				},
+				"folder_name": {
+					"type": "string"
+				},
+				"file_name_prefix": {
+					"type": "string"
+				},
+				"file_extension": {
+					"type": "string"
+				},
+				"start_year": {
+					"type": "integer"
+				},
+				"last_year_ingested": {
+					"type": "integer"
+				},
+				"full_load_complete": {
+					"type": "boolean"
+				},
+				"incremental_relative_url": {
+					"type": "string"
+				},
+				"incremental_folder_name": {
+					"type": "string"
+				},
+				"incremental_file_name_prefix": {
+					"type": "string"
+				},
+				"last_monthly_update": {
+					"type": "string"
+				}
+			}
+		}
+	},
+	"type": "Microsoft.DataFactory/factories/datasets"
+}

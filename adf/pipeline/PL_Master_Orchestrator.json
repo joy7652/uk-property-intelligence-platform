@@ -1,0 +1,259 @@
+{
+	"name": "PL_Master_Orchestrator",
+	"properties": {
+		"activities": [
+			{
+				"name": "Read watermark",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "JsonSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": true,
+							"enablePartitionDiscovery": false
+						},
+						"formatSettings": {
+							"type": "JsonReadSettings"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_ADLS_Watermark",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Loop over sources",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Filter Active Sources",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Filter Active Sources').output.value",
+						"type": "Expression"
+					},
+					"batchCount": 1,
+					"activities": [
+						{
+							"name": "Switch on Load Pattern",
+							"type": "Switch",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"on": {
+									"value": "@item().load_pattern",
+									"type": "Expression"
+								},
+								"cases": [
+									{
+										"value": "yearly_stepped",
+										"activities": [
+											{
+												"name": "Execute PL_Route_Yearly_Stepped",
+												"type": "ExecutePipeline",
+												"dependsOn": [],
+												"policy": {
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"pipeline": {
+														"referenceName": "PL_Route_Yearly_Stepped",
+														"type": "PipelineReference"
+													},
+													"waitOnCompletion": true,
+													"parameters": {
+														"p_source_name": {
+															"value": "@item().source_name",
+															"type": "Expression"
+														},
+														"p_base_url": {
+															"value": "@item().base_url",
+															"type": "Expression"
+														},
+														"p_relative_url_prefix": {
+															"value": "@item().relative_url_prefix",
+															"type": "Expression"
+														},
+														"p_file_extension": {
+															"value": "@item().file_extension",
+															"type": "Expression"
+														},
+														"p_folder_name": {
+															"value": "@item().folder_name",
+															"type": "Expression"
+														},
+														"p_file_name_prefix": {
+															"value": "@item().file_name_prefix",
+															"type": "Expression"
+														},
+														"p_start_year": {
+															"value": "@item().start_year",
+															"type": "Expression"
+														},
+														"p_last_year_ingested": {
+															"value": "@item().last_year_ingested",
+															"type": "Expression"
+														},
+														"p_full_load_complete": {
+															"value": "@item().full_load_complete",
+															"type": "Expression"
+														},
+														"p_incremental_relative_url_prefix": {
+															"value": "@item().incremental_relative_url_prefix",
+															"type": "Expression"
+														},
+														"p_incremental_latest_snapshot": {
+															"value": "@item().incremental_latest_snapshot",
+															"type": "Expression"
+														},
+														"p_incremental_folder_name": {
+															"value": "@item().incremental_folder_name",
+															"type": "Expression"
+														},
+														"p_incremental_file_name_prefix": {
+															"value": "@item().incremental_file_name_prefix",
+															"type": "Expression"
+														},
+														"p_last_refreshed": {
+															"value": "@item().last_refreshed",
+															"type": "Expression"
+														},
+														"p_incremental_type": {
+															"value": "@item().incremental_type",
+															"type": "Expression"
+														},
+														"p_step_years": {
+															"value": "@item().step_years",
+															"type": "Expression"
+														},
+														"p_snapshot_month": {
+															"value": "@item().snapshot_month",
+															"type": "Expression"
+														}
+													}
+												}
+											}
+										]
+									},
+									{
+										"value": "single_file",
+										"activities": [
+											{
+												"name": "Execute Pipeline FullLoad_SingleFile",
+												"type": "ExecutePipeline",
+												"dependsOn": [],
+												"policy": {
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"pipeline": {
+														"referenceName": "PL_Single_File_Full_Load",
+														"type": "PipelineReference"
+													},
+													"waitOnCompletion": true,
+													"parameters": {
+														"p_source_name": {
+															"value": "@item().source_name",
+															"type": "Expression"
+														},
+														"p_base_url": {
+															"value": "@item().base_url",
+															"type": "Expression"
+														},
+														"p_relative_url": {
+															"value": "@item().relative_url",
+															"type": "Expression"
+														},
+														"p_folder_name": {
+															"value": "@item().folder_name",
+															"type": "Expression"
+														},
+														"p_file_name": {
+															"value": "@item().file_name",
+															"type": "Expression"
+														},
+														"p_linked_service_type": {
+															"value": "@item().linked_service_type",
+															"type": "Expression"
+														}
+													}
+												}
+											}
+										]
+									}
+								],
+								"defaultActivities": [
+									{
+										"name": "Set Message",
+										"type": "SetVariable",
+										"dependsOn": [],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "v_message",
+											"value": "Invalid Load Pattern."
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			},
+			{
+				"name": "Filter Active Sources",
+				"type": "Filter",
+				"dependsOn": [
+					{
+						"activity": "Read watermark",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Read watermark').output.value",
+						"type": "Expression"
+					},
+					"condition": {
+						"value": "@or(equals(item().active, null), equals(item().active, true))",
+						"type": "Expression"
+					}
+				}
+			}
+		],
+		"variables": {
+			"v_message": {
+				"type": "String"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-04-22T01:30:54Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

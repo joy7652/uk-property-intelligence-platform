@@ -1,0 +1,187 @@
+{
+	"name": "PL_Route_Yearly_Stepped",
+	"properties": {
+		"activities": [
+			{
+				"name": "Full load or incremental",
+				"type": "IfCondition",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@equals(pipeline().parameters.p_full_load_complete, false)",
+						"type": "Expression"
+					},
+					"ifFalseActivities": [
+						{
+							"name": "Execute PL_Route_Incremental_Load",
+							"type": "ExecutePipeline",
+							"dependsOn": [],
+							"policy": {
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"pipeline": {
+									"referenceName": "PL_Route_Incremental_Load",
+									"type": "PipelineReference"
+								},
+								"waitOnCompletion": true,
+								"parameters": {
+									"p_source_name": {
+										"value": "@pipeline().parameters.p_source_name",
+										"type": "Expression"
+									},
+									"p_incremental_type": {
+										"value": "@pipeline().parameters.p_incremental_type",
+										"type": "Expression"
+									},
+									"p_base_url": {
+										"value": "@pipeline().parameters.p_base_url",
+										"type": "Expression"
+									},
+									"p_incremental_relative_url_prefix": {
+										"value": "@pipeline().parameters.p_incremental_relative_url_prefix",
+										"type": "Expression"
+									},
+									"p_incremental_latest_snapshot": {
+										"value": "@pipeline().parameters.p_incremental_latest_snapshot",
+										"type": "Expression"
+									},
+									"p_incremental_folder_name": {
+										"value": "@pipeline().parameters.p_incremental_folder_name",
+										"type": "Expression"
+									},
+									"p_incremental_file_name_prefix": {
+										"value": "@pipeline().parameters.p_incremental_file_name_prefix",
+										"type": "Expression"
+									},
+									"p_file_extension": {
+										"value": "@pipeline().parameters.p_file_extension",
+										"type": "Expression"
+									},
+									"p_last_refreshed": {
+										"value": "@pipeline().parameters.p_last_refreshed",
+										"type": "Expression"
+									}
+								}
+							}
+						}
+					],
+					"ifTrueActivities": [
+						{
+							"name": "Execute PL_Full_Load_Yearly_Stepped",
+							"type": "ExecutePipeline",
+							"dependsOn": [],
+							"policy": {
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"pipeline": {
+									"referenceName": "PL_Full_Load_Yearly_Stepped",
+									"type": "PipelineReference"
+								},
+								"waitOnCompletion": true,
+								"parameters": {
+									"p_start_year": {
+										"value": "@if(greater(int(pipeline().parameters.p_last_year_ingested), int(pipeline().parameters.p_start_year)), add(int(pipeline().parameters.p_last_year_ingested), 1), int(pipeline().parameters.p_start_year))",
+										"type": "Expression"
+									},
+									"p_end_year": {
+										"value": "@int(formatDateTime(utcNow(), 'yyyy'))",
+										"type": "Expression"
+									},
+									"p_base_url": {
+										"value": "@pipeline().parameters.p_base_url",
+										"type": "Expression"
+									},
+									"p_relative_url_prefix": {
+										"value": "@pipeline().parameters.p_relative_url_prefix",
+										"type": "Expression"
+									},
+									"p_sink_folder_path": {
+										"value": "@pipeline().parameters.p_folder_name",
+										"type": "Expression"
+									},
+									"p_file_name_prefix": {
+										"value": "@pipeline().parameters.p_file_name_prefix",
+										"type": "Expression"
+									},
+									"p_file_name_extension": {
+										"value": "@pipeline().parameters.p_file_extension",
+										"type": "Expression"
+									},
+									"p_step_years": {
+										"value": "@pipeline().parameters.p_step_years",
+										"type": "Expression"
+									},
+									"p_snapshot_month": {
+										"value": "@pipeline().parameters.p_snapshot_month",
+										"type": "Expression"
+									}
+								}
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"p_source_name": {
+				"type": "string"
+			},
+			"p_base_url": {
+				"type": "string"
+			},
+			"p_relative_url_prefix": {
+				"type": "string"
+			},
+			"p_file_extension": {
+				"type": "string"
+			},
+			"p_folder_name": {
+				"type": "string"
+			},
+			"p_file_name_prefix": {
+				"type": "string"
+			},
+			"p_start_year": {
+				"type": "string"
+			},
+			"p_last_year_ingested": {
+				"type": "string"
+			},
+			"p_full_load_complete": {
+				"type": "string"
+			},
+			"p_incremental_relative_url_prefix": {
+				"type": "string"
+			},
+			"p_incremental_latest_snapshot": {
+				"type": "string"
+			},
+			"p_incremental_folder_name": {
+				"type": "string"
+			},
+			"p_incremental_file_name_prefix": {
+				"type": "string"
+			},
+			"p_last_refreshed": {
+				"type": "string"
+			},
+			"p_incremental_type": {
+				"type": "string"
+			},
+			"p_step_years": {
+				"type": "string"
+			},
+			"p_snapshot_month": {
+				"type": "string"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-04-22T01:30:53Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

@@ -1,0 +1,42 @@
+{
+	"name": "DS_HTTP_LandRegistry_HPI_Source",
+	"properties": {
+		"description": "For Linked Service with User Agent and Accept Header and Accept-Language. Works for HM Land Registry — UK House Price Index (HPI) data set only.",
+		"linkedServiceName": {
+			"referenceName": "LS_HTTP_LandRegistry_HPI",
+			"type": "LinkedServiceReference",
+			"parameters": {
+				"baseURL": {
+					"value": "@dataset().p_base_url",
+					"type": "Expression"
+				}
+			}
+		},
+		"parameters": {
+			"p_relative_url": {
+				"type": "string"
+			},
+			"p_base_url": {
+				"type": "string",
+				"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+			}
+		},
+		"annotations": [],
+		"type": "DelimitedText",
+		"typeProperties": {
+			"location": {
+				"type": "HttpServerLocation",
+				"relativeUrl": {
+					"value": "@dataset().p_relative_url",
+					"type": "Expression"
+				}
+			},
+			"columnDelimiter": ",",
+			"escapeChar": "\\",
+			"firstRowAsHeader": false,
+			"quoteChar": "\""
+		},
+		"schema": []
+	},
+	"type": "Microsoft.DataFactory/factories/datasets"
+}

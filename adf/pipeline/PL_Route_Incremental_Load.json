@@ -1,0 +1,181 @@
+{
+	"name": "PL_Route_Incremental_Load",
+	"properties": {
+		"description": "Route pipeline for Incremental Load leaf pipelines.",
+		"activities": [
+			{
+				"name": "Switch on Incremental Type",
+				"type": "Switch",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"on": {
+						"value": "@pipeline().parameters.p_incremental_type",
+						"type": "Expression"
+					},
+					"cases": [
+						{
+							"value": "static_url",
+							"activities": [
+								{
+									"name": "Execute PL_Incremental_Load_StaticURL",
+									"type": "ExecutePipeline",
+									"dependsOn": [],
+									"policy": {
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"pipeline": {
+											"referenceName": "PL_Incremental_Load_StaticURL",
+											"type": "PipelineReference"
+										},
+										"waitOnCompletion": true,
+										"parameters": {
+											"p_source_name": {
+												"value": "@pipeline().parameters.p_source_name",
+												"type": "Expression"
+											},
+											"p_base_url": {
+												"value": "@pipeline().parameters.p_base_url",
+												"type": "Expression"
+											},
+											"p_incremental_relative_url": {
+												"value": "@pipeline().parameters.p_incremental_relative_url_prefix",
+												"type": "Expression"
+											},
+											"p_incremental_folder_name": {
+												"value": "@pipeline().parameters.p_incremental_folder_name",
+												"type": "Expression"
+											},
+											"p_incremental_file_name_prefix": {
+												"value": "@pipeline().parameters.p_incremental_file_name_prefix",
+												"type": "Expression"
+											},
+											"p_last_refreshed": {
+												"value": "@pipeline().parameters.p_last_refreshed",
+												"type": "Expression"
+											},
+											"p_file_extension": {
+												"value": "@pipeline().parameters.p_file_extension",
+												"type": "Expression"
+											}
+										}
+									}
+								}
+							]
+						},
+						{
+							"value": "templated_latest",
+							"activities": [
+								{
+									"name": "Execute PL_Incremental_Load_TemplatedLatest",
+									"type": "ExecutePipeline",
+									"dependsOn": [],
+									"policy": {
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"pipeline": {
+											"referenceName": "PL_Incremental_Load_TemplatedLatest",
+											"type": "PipelineReference"
+										},
+										"waitOnCompletion": true,
+										"parameters": {
+											"p_source_name": {
+												"value": "@pipeline().parameters.p_source_name",
+												"type": "Expression"
+											},
+											"p_base_url": {
+												"value": "@pipeline().parameters.p_base_url",
+												"type": "Expression"
+											},
+											"p_incremental_relative_url_prefix": {
+												"value": "@pipeline().parameters.p_incremental_relative_url_prefix",
+												"type": "Expression"
+											},
+											"p_incremental_folder_name": {
+												"value": "@pipeline().parameters.p_incremental_folder_name",
+												"type": "Expression"
+											},
+											"p_incremental_file_name_prefix": {
+												"value": "@pipeline().parameters.p_incremental_file_name_prefix",
+												"type": "Expression"
+											},
+											"p_last_refreshed": {
+												"value": "@pipeline().parameters.p_last_refreshed",
+												"type": "Expression"
+											},
+											"p_incremental_latest_snapshot": {
+												"value": "@pipeline().parameters.p_incremental_latest_snapshot",
+												"type": "Expression"
+											},
+											"p_file_extension": {
+												"value": "@pipeline().parameters.p_file_extension",
+												"type": "Expression"
+											}
+										}
+									}
+								}
+							]
+						}
+					],
+					"defaultActivities": [
+						{
+							"name": "Set Message",
+							"type": "SetVariable",
+							"dependsOn": [],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "v_message",
+								"value": "invalid Incremental Load Route."
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"p_source_name": {
+				"type": "string"
+			},
+			"p_incremental_type": {
+				"type": "string"
+			},
+			"p_base_url": {
+				"type": "string"
+			},
+			"p_incremental_relative_url_prefix": {
+				"type": "string"
+			},
+			"p_incremental_latest_snapshot": {
+				"type": "string"
+			},
+			"p_incremental_folder_name": {
+				"type": "string"
+			},
+			"p_incremental_file_name_prefix": {
+				"type": "string"
+			},
+			"p_file_extension": {
+				"type": "string"
+			},
+			"p_last_refreshed": {
+				"type": "string"
+			}
+		},
+		"variables": {
+			"v_message": {
+				"type": "String"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-04-22T01:14:10Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

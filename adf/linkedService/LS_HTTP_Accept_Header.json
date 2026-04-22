@@ -1,0 +1,30 @@
+{
+	"name": "LS_HTTP_Accept_Header",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"description": "Linked service for data set requiring accept headers.",
+		"parameters": {
+			"baseURL": {
+				"type": "string",
+				"defaultValue": "https://www.bankofengland.co.uk"
+			}
+		},
+		"annotations": [],
+		"type": "HttpServer",
+		"typeProperties": {
+			"url": "@{linkedService().baseURL}",
+			"enableServerCertificateValidation": true,
+			"authenticationType": "Anonymous",
+			"authHeaders": {
+				"User-Agent": {
+					"type": "SecureString",
+					"value": "**********"
+				},
+				"Accept": {
+					"type": "SecureString",
+					"value": "**********"
+				}
+			}
+		}
+	}
+}

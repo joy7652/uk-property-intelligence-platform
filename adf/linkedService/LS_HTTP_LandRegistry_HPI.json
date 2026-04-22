@@ -1,0 +1,33 @@
+{
+	"name": "LS_HTTP_LandRegistry_HPI",
+	"type": "Microsoft.DataFactory/factories/linkedservices",
+	"properties": {
+		"parameters": {
+			"baseURL": {
+				"type": "string",
+				"defaultValue": "https://publicdata.landregistry.gov.uk"
+			}
+		},
+		"annotations": [],
+		"type": "HttpServer",
+		"typeProperties": {
+			"url": "@{linkedService().baseURL}",
+			"enableServerCertificateValidation": true,
+			"authenticationType": "Anonymous",
+			"authHeaders": {
+				"User-Agent": {
+					"type": "SecureString",
+					"value": "**********"
+				},
+				"Accept": {
+					"type": "SecureString",
+					"value": "**********"
+				},
+				"Accept-Language": {
+					"type": "SecureString",
+					"value": "**********"
+				}
+			}
+		}
+	}
+}

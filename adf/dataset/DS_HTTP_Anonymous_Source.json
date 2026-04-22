@@ -1,0 +1,42 @@
+{
+	"name": "DS_HTTP_Anonymous_Source",
+	"properties": {
+		"description": "For linked service without any headers. Works for HM Land Registry — Price Paid Data data set only.",
+		"linkedServiceName": {
+			"referenceName": "LS_HTTP_Anonymous",
+			"type": "LinkedServiceReference",
+			"parameters": {
+				"baseURL": {
+					"value": "@dataset().p_base_url",
+					"type": "Expression"
+				}
+			}
+		},
+		"parameters": {
+			"p_relative_url": {
+				"type": "string"
+			},
+			"p_base_url": {
+				"type": "string",
+				"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+			}
+		},
+		"annotations": [],
+		"type": "DelimitedText",
+		"typeProperties": {
+			"location": {
+				"type": "HttpServerLocation",
+				"relativeUrl": {
+					"value": "@dataset().p_relative_url",
+					"type": "Expression"
+				}
+			},
+			"columnDelimiter": ",",
+			"escapeChar": "\\",
+			"firstRowAsHeader": false,
+			"quoteChar": "\""
+		},
+		"schema": []
+	},
+	"type": "Microsoft.DataFactory/factories/datasets"
+}

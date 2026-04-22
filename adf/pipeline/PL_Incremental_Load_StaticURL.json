@@ -1,0 +1,157 @@
+{
+	"name": "PL_Incremental_Load_StaticURL",
+	"properties": {
+		"description": "Pipeline for Monthly Incremental Load of Each Data Sources with Static URL pattern.",
+		"activities": [
+			{
+				"name": "Check if already ingested this month",
+				"type": "IfCondition",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@not(equals(\n  formatDateTime(pipeline().parameters.p_last_refreshed, 'yyyy-MM'),\n  formatDateTime(utcNow(), 'yyyy-MM')\n))",
+						"type": "Expression"
+					},
+					"ifFalseActivities": [
+						{
+							"name": "False Message",
+							"type": "SetVariable",
+							"dependsOn": [],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "v_skip_message",
+								"value": {
+									"value": "@concat(pipeline().parameters.p_source_name, 'Already ingested this month — skipping')",
+									"type": "Expression"
+								}
+							}
+						}
+					],
+					"ifTrueActivities": [
+						{
+							"name": "Copy incremental file",
+							"type": "Copy",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "DelimitedTextSource",
+									"storeSettings": {
+										"type": "HttpReadSettings",
+										"requestMethod": "GET"
+									},
+									"formatSettings": {
+										"type": "DelimitedTextReadSettings"
+									}
+								},
+								"sink": {
+									"type": "DelimitedTextSink",
+									"storeSettings": {
+										"type": "AzureBlobFSWriteSettings",
+										"copyBehavior": "PreserveHierarchy"
+									},
+									"formatSettings": {
+										"type": "DelimitedTextWriteSettings",
+										"quoteAllText": true,
+										"fileExtension": ".txt"
+									}
+								},
+								"enableStaging": false,
+								"translator": {
+									"type": "TabularTranslator",
+									"typeConversion": true,
+									"typeConversionSettings": {
+										"allowDataTruncation": true,
+										"treatBooleanAsNumber": false
+									}
+								}
+							},
+							"inputs": [
+								{
+									"referenceName": "DS_HTTP_Anonymous_Source",
+									"type": "DatasetReference",
+									"parameters": {
+										"p_relative_url": {
+											"value": "@pipeline().parameters.p_incremental_relative_url",
+											"type": "Expression"
+										},
+										"p_base_url": {
+											"value": "@pipeline().parameters.p_base_url",
+											"type": "Expression"
+										}
+									}
+								}
+							],
+							"outputs": [
+								{
+									"referenceName": "DS_ADLS_Bronze_CSV",
+									"type": "DatasetReference",
+									"parameters": {
+										"p_folder_path": {
+											"value": "@concat('bronze/', pipeline().parameters.p_incremental_folder_name, formatDateTime(utcNow(), 'yyyy'), '-', formatDateTime(utcNow(), 'MM'))",
+											"type": "Expression"
+										},
+										"p_file_name": {
+											"value": "@concat(pipeline().parameters.p_incremental_file_name_prefix, formatDateTime(utcNow(), 'yyyy-MM'), pipeline().parameters.p_file_extension)",
+											"type": "Expression"
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"p_source_name": {
+				"type": "string",
+				"defaultValue": "land_registry_ppd"
+			},
+			"p_base_url": {
+				"type": "string",
+				"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+			},
+			"p_incremental_relative_url": {
+				"type": "string",
+				"defaultValue": "/pp-monthly-update.txt"
+			},
+			"p_incremental_folder_name": {
+				"type": "string",
+				"defaultValue": "land_registry/ppd/monthly/"
+			},
+			"p_incremental_file_name_prefix": {
+				"type": "string",
+				"defaultValue": "pp-monthly-update-"
+			},
+			"p_last_refreshed": {
+				"type": "string",
+				"defaultValue": "1900-01-01"
+			},
+			"p_file_extension": {
+				"type": "string",
+				"defaultValue": ".csv"
+			}
+		},
+		"variables": {
+			"v_skip_message": {
+				"type": "String"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-04-22T00:37:01Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
