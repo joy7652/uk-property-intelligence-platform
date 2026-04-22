@@ -30,7 +30,7 @@ A configurable, multi-source data engineering platform that ingests, validates, 
 ---
 
 ## Architecture
-
+![Master pipeline orchestration](docs/screenshots/master_orchestrator.png)
 ```
 sources_config.json / watermark.json  (Git-integrated)
               ↓
@@ -194,7 +194,14 @@ Bronze is complete. Silver and Gold are the next phase.
 | CI/CD (planned) | GitHub Actions (JSON validation, pipeline linting) |
 
 ---
+## Repository workflow
 
+This repository uses dual-source commits:
+
+- **Local commits** cover README, configuration templates, documentation, and (eventually) Databricks notebooks. Standard GitHub flow via feature branches.
+- **ADF Studio commits** cover pipeline, dataset, linked service, and trigger JSON. Configured via ADF's GitHub integration; every Save in ADF commits to the `adf-dev` branch. Publish promotes changes to `adf_publish` and the live factory simultaneously.
+
+The `main` branch is periodically synced from `adf-dev` so viewers see current pipeline definitions alongside documentation.
 ## Repository structure
 
 ```
@@ -256,7 +263,7 @@ Databricks notebook to automate these URL updates via pattern matching is planne
 
 ### Phase 1 — Bronze ingestion ✅
 
-- [x] ADF instance with Git integration (planned — repo setup pending)
+- [x] ADF instance with Git integration (repo: uk-property-intelligence-platform)
 - [x] 4 linked services organised by authentication pattern
 - [x] Parameterised HTTP + ADLS datasets (base URL parameter chain)
 - [x] `PL_FullLoad_YearStepped` — generalised full-load for stepped yearly patterns
