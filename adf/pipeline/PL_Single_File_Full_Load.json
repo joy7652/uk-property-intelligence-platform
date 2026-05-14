@@ -83,7 +83,7 @@
 											"type": "DatasetReference",
 											"parameters": {
 												"p_folder_path": {
-													"value": "@concat('bronze/', pipeline().parameters.p_folder_name)",
+													"value": "@pipeline().parameters.p_folder_name",
 													"type": "Expression"
 												},
 												"p_file_name": "@pipeline().parameters.p_file_name"
@@ -162,7 +162,7 @@
 											"type": "DatasetReference",
 											"parameters": {
 												"p_folder_path": {
-													"value": "@concat('bronze/', pipeline().parameters.p_folder_name)",
+													"value": "@pipeline().parameters.p_folder_name",
 													"type": "Expression"
 												},
 												"p_file_name": "@pipeline().parameters.p_file_name"
@@ -241,7 +241,7 @@
 											"type": "DatasetReference",
 											"parameters": {
 												"p_folder_path": {
-													"value": "@concat('bronze/', pipeline().parameters.p_folder_name)",
+													"value": "@pipeline().parameters.p_folder_name",
 													"type": "Expression"
 												},
 												"p_file_name": "@pipeline().parameters.p_file_name"

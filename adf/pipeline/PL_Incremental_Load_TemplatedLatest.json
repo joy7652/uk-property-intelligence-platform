@@ -100,7 +100,7 @@
 									"type": "DatasetReference",
 									"parameters": {
 										"p_folder_path": {
-											"value": "@concat('bronze/', pipeline().parameters.p_incremental_folder_name, pipeline().parameters.p_incremental_latest_snapshot)",
+											"value": "@concat(pipeline().parameters.p_incremental_folder_name, pipeline().parameters.p_incremental_latest_snapshot)",
 											"type": "Expression"
 										},
 										"p_file_name": {
