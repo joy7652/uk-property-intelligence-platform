@@ -120,7 +120,7 @@
 									"type": "DatasetReference",
 									"parameters": {
 										"p_folder_path": {
-											"value": "@concat('bronze/', pipeline().parameters.p_sink_folder_path, string(add(pipeline().parameters.p_start_year, mul(item(), pipeline().parameters.p_step_years))))",
+											"value": "@concat(pipeline().parameters.p_sink_folder_path, string(add(pipeline().parameters.p_start_year, mul(item(), pipeline().parameters.p_step_years))))",
 											"type": "Expression"
 										},
 										"p_file_name": {

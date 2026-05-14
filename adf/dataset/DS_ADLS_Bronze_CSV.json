@@ -27,7 +27,7 @@
 					"value": "@dataset().p_folder_path",
 					"type": "Expression"
 				},
-				"fileSystem": "raw"
+				"fileSystem": "bronze"
 			},
 			"columnDelimiter": ",",
 			"escapeChar": "\\",
