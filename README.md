@@ -3,7 +3,7 @@ Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
 A config-driven, multi-source Azure data platform ingesting UK residential property market data across six official open datasets. Demonstrates production-grade data engineering practices including incremental ingestion, schema evolution handling, automated data quality validation, and statistical anomaly detection.
 
-> **Status:** Phase 1 complete — Bronze ingestion layer live for all six sources with full-load, stepped backfill, and incremental mechanisms. Phase 2 (Databricks Silver layer) in development.
+> **Status:** Phase 1 complete — Bronze ingestion for all six sources. Phase 2 in progress — Databricks workspace, Unity Catalog, and medallion storage layer provisioned. Silver-layer transformation notebooks in development.
 
 ---
 
@@ -16,8 +16,10 @@ A config-driven, multi-source Azure data platform ingesting UK residential prope
 - [Bugs found and fixed](#bugs-found-and-fixed)
 - [Tech stack](#tech-stack)
 - [Repository structure](#repository-structure)
+- [Repository workflow](#repository-workflow)
 - [Running the pipelines](#running-the-pipelines)
 - [Roadmap](#roadmap)
+- [Architectural talking points](#architectural-talking-points)
 
 ---
 
@@ -32,25 +34,26 @@ A configurable, multi-source data engineering platform that ingests, validates, 
 ## Architecture
 ![Master pipeline orchestration](docs/screenshots/master_orchestrator.png)
 ```
-sources_config.json / watermark.json  (Git-integrated)
+watermark.json  (Git-integrated)
               ↓
 Azure Data Factory  (config-driven orchestration)
               ↓
-ADLS Gen2 Bronze  (raw files, 6 sources)
+ADLS Gen2 bronze/  (raw files, 6 sources, external location)
               ↓
-Azure Databricks  (quality checks + transform + anomaly detection)
+Azure Databricks + Unity Catalog  (transformation, quality, governance)
               ↓
-ADLS Gen2 Silver → Gold  (Delta Lake, medallion architecture)
+ADLS Gen2 silver/ → gold/  (Delta Lake, managed tables, schema-level locations)
+   plus ADLS Gen2 quality/  (quarantine + DQ outputs)
               ↓
-Azure Synapse Serverless SQL
+Azure Synapse Serverless SQL  (planned)
               ↓
-Fabric / Power BI  (Property Dashboard + Pipeline Health Dashboard)
+Fabric / Power BI  (planned)
 ```
 
 ### Design principles
 
 - **Config over code.** Adding a source means adding a JSON block to the watermark, not writing a new pipeline.
-- **Patterns over sources.** Three ingestion patterns (`yearly_range`, `single_file`, `iterate_list`) cover every source; each source declares which pattern it uses.
+- **Patterns over sources.** Two ingestion patterns (`yearly_stepped`, `single_file`) cover every source; each source declares which pattern it uses.
 - **Trust nothing silently.** Pipeline success status confirms bytes moved, not that the right bytes moved. Binary-format files are validated against expected magic bytes before Silver-layer processing.
 - **Parameterised linked services.** HTTP linked services are host-agnostic and configured per-request via `@{linkedService().p_base_url}`, rather than one linked service per host.
 
@@ -117,7 +120,7 @@ Each linked service's base URL is parameterised via `@{linkedService().p_base_ur
 
 ### 3. Watermark stored as JSON array in ADLS
 
-The watermark (per-source state: last ingestion date, URL parameters, load pattern) lives at `config/watermark/watermark.json` in ADLS. Design decisions:
+The watermark (per-source state: last ingestion date, URL parameters, load pattern) lives at `config/watermark.json` in ADLS. Design decisions:
 
 - **Array, not object** — ADF's Lookup + ForEach only iterates arrays cleanly.
 - **ADLS, not Azure SQL** — eliminates an entire database dependency. When Databricks joins the stack, the watermark migrates to a Delta table.
@@ -131,20 +134,62 @@ PL_Master_Orchestrator
 ├─ Filter: keep only active sources (handles soft-disable via active: false)
 └─ ForEach (sequential):
     └─ Switch on load_pattern:
-        ├─ yearly_range  → Execute PL_Route_YearlyRange
-        ├─ single_file   → Execute PL_FullLoad_SingleFile
+        ├─ yearly_stepped  → Execute PL_Route_Yearly_Stepped
+        ├─ single_file   → Execute PL_Single_File_Full_Load
         └─ Default       → log and skip
 ```
 
-`PL_Route_YearlyRange` exists because ADF prohibits nested control-flow activities (e.g. `If` inside `Switch`). Extracting the inner logic into a child "route" pipeline preserves the full-vs-incremental branch for yearly sources. This constraint drove cleaner separation of concerns: orchestration → routing → execution.
+`PL_Route_Yearly_Stepped` exists because ADF prohibits nested control-flow activities (e.g. `If` inside `Switch`). Extracting the inner logic into a child "route" pipeline preserves the full-vs-incremental branch for yearly sources. This constraint drove cleaner separation of concerns: orchestration → routing → execution.
 
-### 5. Three-layer data lake (medallion)
+### 5. Medallion data lake architecture
 
-- **Bronze** — raw files as received, no transformation, one folder per source.
-- **Silver** — validated, typed, quality-checked, schema-enforced. Delta format.
-- **Gold** — joined, enriched, denormalised for analytical consumption.
+- **Bronze** — raw files as received, no transformation, in the dedicated `bronze` container. Registered as a Unity Catalog external location; read-only from Silver pipelines.
+- **Silver** — validated, typed, deduplicated, schema-enforced. Delta managed tables under `uk_property_intel.silver`, physically stored in the `silver` container.
+- **Gold** — joined, enriched, denormalised for analytical consumption. Star-schema fact and dimension tables under `uk_property_intel.gold`, in the `gold` container.
+- **Quality** — quarantine records, rule-run history, and DQ metrics under `uk_property_intel.quality`, in the `quality` container.
 
-Bronze is complete. Silver and Gold are the next phase.
+Each medallion layer maps 1:1 to an Azure Blob container, a Unity Catalog schema, and a schema-level managed location. This deliberate physical-to-logical correspondence keeps cost attribution, lifecycle policy, and RBAC scoping per layer obvious from the storage account view alone.
+
+Bronze is complete. Silver is in active development; Gold and Quality follow.
+
+### 6. Unity Catalog over hive_metastore
+
+Adopted Unity Catalog from day 1 of Phase 2, rather than the legacy hive_metastore that older Databricks projects (including most tutorials) use. Reasoning:
+
+- Databricks confirmed in 2026 that new Azure workspaces created from 30 September 2026 onwards will be UC-only — hive_metastore is being phased out across the product.
+- UC provides centralised access control, lineage, and discovery — concerns that would otherwise have to be implemented or skipped.
+- All data access flows through the UAMI on the Databricks Access Connector; no secrets, mounts, or SAS tokens.
+- The DP-700 exam covers UC; building on it doubles as exam preparation.
+
+The complexity tradeoff (metastore-level setup, access connector configuration, storage credentials, external locations) is paid once at the start of Phase 2.
+
+### 7. Per-layer physical containers over single-container subfolders
+
+Each medallion layer (bronze, silver, gold, quality) is a dedicated Azure Blob container, not a subfolder within a shared container. Reasoning:
+
+- **Lifecycle policies** can differ per layer (e.g. Bronze long-retain raw, Silver shorter retention on intermediate artifacts).
+- **RBAC and cost attribution** scope cleanly to the container boundary.
+- **Physical and logical alignment** — each container maps 1:1 to a Unity Catalog schema, making the medallion architecture visible in the storage account itself.
+
+A fifth container, `catalog-root`, exists purely as the Unity Catalog managed location for the catalog itself. It remains empty in practice because every schema declares its own managed location, but provides the storage anchor that UC requires at the catalog level.
+
+### 8. Dedicated cluster access mode
+
+Despite Standard (shared) access mode being the newer Databricks default for general data engineering, the cluster uses Dedicated access mode (formerly "single user"). Reasoning:
+
+- Solo-developer project: Standard's multi-user isolation provides benefits I don't need while imposing restrictions (no RDD APIs, restricted Kafka options, no ML runtime) I might encounter in Phase 3+.
+- Forward-compatibility with the planned anomaly-detection work in Phase 3, which may use library code outside the Standard sandbox.
+- Same DBU cost as Standard — Dedicated isn't a price premium.
+
+A Standard-mode cluster would also work for Phase 2; the choice is a deliberate cost-free hedge against future requirements rather than a hard necessity.
+
+### 9. File events disabled on external locations
+
+Unity Catalog external locations support Azure Event Grid-based file change notifications for ingestion performance. All external locations in this project explicitly disable this feature. Reasoning:
+
+- Batch ingestion at the project's data scale (sub-GB per source) does not benefit from event-driven discovery.
+- Enabling file events would require granting the UAMI `Storage Account Contributor` (control plane), `EventGrid EventSubscription Contributor`, and `Storage Queue Data Contributor` — significantly broader scope than the `Storage Blob Data Contributor` (data plane only) required for the actual data path.
+- Least-privilege identity model is preferred for portfolio cleanliness and would be the right call in any regulated environment.
 
 ---
 
@@ -169,9 +214,9 @@ Bronze is complete. Silver and Gold are the next phase.
 
 ### ADF nested control-flow restriction
 
-**Discovered:** When trying to nest `If Condition` inside `Switch` inside `ForEach` for the yearly-range full-vs-incremental logic.
+**Discovered:** When trying to nest `If Condition` inside `Switch` inside `ForEach` for the yearly-stepped full-vs-incremental logic.
 
-**Fix:** Extract inner logic into child pipelines (`PL_Route_YearlyRange`). Master Switch calls the route pipeline, route pipeline contains the If Condition. Resulted in cleaner architecture with better separation of concerns.
+**Fix:** Extract inner logic into child pipelines (`PL_Route_Yearly_Stepped`). Master Switch calls the route pipeline, route pipeline contains the If Condition. Resulted in cleaner architecture with better separation of concerns.
 
 ### URL query-string double-encoding (ONS)
 
@@ -186,43 +231,71 @@ Bronze is complete. Silver and Gold are the next phase.
 | Layer | Technology |
 |---|---|
 | Orchestration | Azure Data Factory (Git-integrated) |
-| Storage | Azure Data Lake Storage Gen2 |
-| Compute (planned) | Azure Databricks (PySpark, Delta Lake) |
+| Storage | Azure Data Lake Storage Gen2 (per-layer containers) |
+| Compute | Azure Databricks (PySpark, Delta Lake, Photon-eligible) |
+| Governance | Unity Catalog (managed tables, schema-level managed locations) |
+| Identity | User-assigned managed identity via Databricks Access Connector |
 | Query (planned) | Azure Synapse Serverless SQL |
 | Visualisation (planned) | Microsoft Fabric / Power BI |
-| Source control | GitHub |
-| CI/CD (planned) | GitHub Actions (JSON validation, pipeline linting) |
+| Source control | GitHub (trunk-based, branch-protected main) |
+| Testing (planned) | pytest + chispa for PySpark transforms |
+| CI/CD (planned) | GitHub Actions |
 
 ---
+
 ## Repository workflow
 
-This repository uses dual-source commits:
+This repository follows a **trunk-based workflow** with short-lived feature branches:
 
-- **Local commits** cover README, configuration templates, documentation, and (eventually) Databricks notebooks. Standard GitHub flow via feature branches.
-- **ADF Studio commits** cover pipeline, dataset, linked service, and trigger JSON. Configured via ADF's GitHub integration; every Save in ADF commits to the `adf-dev` branch. Publish promotes changes to `adf_publish` and the live factory simultaneously.
+- One branch per logical unit of work (e.g. `phase2/setup-catalog-schemas`, `phase2/boe-silver`).
+- All changes merged to `main` via pull request, with `main` protected against direct pushes.
+- ADF Studio is Git-integrated; pipeline JSON commits go to feature branches, then merge to `main` via PR. Publishing from ADF promotes the live factory.
+- Databricks notebooks are managed via Databricks Git folders linked to this repo, committed from the workspace UI on the same feature branches.
 
-The `main` branch is periodically synced from `adf-dev` so viewers see current pipeline definitions alongside documentation.
+Both ADF and Databricks operate on the same Git branches as local development, so the repo on `main` always reflects the live state of every component.
+
 ## Repository structure
 
 ```
 uk-property-intelligence-platform/
 ├── README.md
-├── architecture_diagram.png
-├── config/
-│   ├── watermark.json              # per-source state, URL parameters, load patterns
-│   └── quality_rules.json          # (planned) per-source validation rules for Silver
 ├── adf/
-│   └── pipelines/                  # JSON definitions, synced via ADF Git integration
+│   └── pipelines/                       # JSON definitions, synced via ADF Git integration
 │       ├── PL_Master_Orchestrator.json
-│       ├── PL_FullLoad_Generic.json
-│       ├── PL_FullLoad_SingleFile.json
-│       ├── PL_Incremental_Generic.json
-│       └── PL_Route_YearlyRange.json
-├── databricks/                     # (planned) Silver/Gold notebooks, quality framework
-├── synapse/                        # (planned) external table definitions
-├── .github/workflows/              # (planned) CI/CD
+│       ├── PL_Single_File_Full_Load.json
+│       ├── PL_Yearly_Stepped_Full_Load.json
+│       ├── PL_Route_Yearly_Stepped.json
+│       ├── PL_Route_Incremental_Load.json
+│       ├── PL_Incremental_Load_StaticURL.json
+│       └── PL_Incremental_Load_TemplatedLatest.json
+├── config/
+│   ├── watermark.json                   # per-source state, URL parameters, load patterns
+│   └── quality_rules.json               # (planned) per-source validation rules for Silver
+├── databricks/
+│   ├── setup/
+│   │   └── 01_create_schemas.py         # Unity Catalog schema definitions (SQL via %sql cells)
+│   ├── silver/
+│   │   ├── notebooks/                   # one notebook per source
+│   │   └── transforms/                  # importable transformation functions (unit-testable)
+│   ├── gold/
+│   │   ├── notebooks/
+│   │   └── transforms/
+│   ├── quality/
+│   │   ├── rules/                       # JSON rule definitions per source
+│   │   └── framework/                   # rule-application engine
+│   └── utils/                           # shared constants (paths), Spark helpers, logging
+├── tests/
+│   ├── conftest.py                      # pytest SparkSession fixture
+│   ├── test_silver_transforms/
+│   └── test_quality_framework/
+├── synapse/                             # (planned) external table definitions
+├── .github/
+│   └── workflows/                       # (planned) CI/CD
 └── docs/
-    └── source_discovery_notes.md   # notes on each source's quirks, auth patterns
+    ├── source_discovery_notes.md        # notes on each source's quirks, auth patterns
+    ├── DESIGN.md                        # design document of the entire project
+    └── screenshots/
+        └── master_orchestrator.png
 ```
 
 ---
@@ -231,17 +304,26 @@ uk-property-intelligence-platform/
 
 ### Prerequisites
 
+**Phase 1 (Bronze ingestion):**
 - Azure subscription with:
   - Azure Data Factory instance (Git-integrated with this repo)
-  - ADLS Gen2 storage account with a `raw` container
+  - ADLS Gen2 storage account with a `bronze` container
   - ADF managed identity granted `Storage Blob Data Contributor` on the storage account
-- Watermark file uploaded to `'config/watermark/watermark.json` in ADLS
+- Watermark file at `config/watermark.json` in the storage account
+
+**Phase 2 (Silver/Gold transformation):**
+- Azure Databricks workspace (Premium tier, Unity Catalog enabled)
+- Azure Databricks Access Connector with a user-assigned managed identity
+- ADLS Gen2 containers: `bronze`, `silver`, `gold`, `quality`, `catalog-root`
+- UAMI granted `Storage Blob Data Contributor` on the storage account
+- Unity Catalog: catalog `uk_property_intel` with schemas `silver`, `gold`, `quality`
+- Dedicated-access cluster (single-user) on latest DBR LTS
 
 ### Initial load
 
 1. Ensure all `active` flags in the watermark are set as desired (set unneeded sources to `active: false` to skip).
 2. Trigger `PL_Master_Orchestrator` from ADF Studio or via trigger.
-3. On first run, `yearly_range` sources (PPD) iterate from `start_year` to current year.
+3. On first run, `yearly_stepped` sources (PPD) iterate from `start_year` to current year.
 
 ### Incremental loads
 
@@ -266,22 +348,29 @@ Databricks notebook to automate these URL updates via pattern matching is planne
 - [x] ADF instance with Git integration (repo: uk-property-intelligence-platform)
 - [x] 4 linked services organised by authentication pattern
 - [x] Parameterised HTTP + ADLS datasets (base URL parameter chain)
-- [x] `PL_FullLoad_YearStepped` — generalised full-load for stepped yearly patterns
-- [x] `PL_FullLoad_SingleFile` — switch-routed single-file full-load
-- [x] `PL_Incremental_Route` — month-rate-limited incremental router
-- [x] `PL_Incremental_StaticURL` — static-URL incremental (PPD)
-- [x] `PL_Incremental_TemplatedLatest` — templated-URL incremental (Police.uk)
-- [x] `PL_Route_YearStepped` — full-vs-incremental router for year-stepped sources
+- [x] `PL_Yearly_Stepped_Full_Load` — generalised full-load for stepped yearly patterns
+- [x] `PL_Single_File_Full_Load` — switch-routed single-file full-load
+- [x] `PL_Route_Incremental_Load` — month-rate-limited incremental router
+- [x] `PL_Incremental_Load_StaticURL` — static-URL incremental (PPD)
+- [x] `PL_Incremental_Load_TemplatedLatest` — templated-URL incremental (Police.uk)
+- [x] `PL_Route_Yearly_Stepped` — full-vs-incremental router for year-stepped sources
 - [x] `PL_Master_Orchestrator` — watermark-driven orchestration with active-source filtering
 - [x] All 6 sources landing in Bronze with verified file integrity
-### Phase 2 — Silver layer (next)
 
-- [ ] Databricks workspace + cluster
+### Phase 2 — Silver layer (in progress)
+
+- [x] Databricks workspace (Premium) + Dedicated-access cluster
+- [x] Unity Catalog: dedicated `uk_property_intel` catalog
+- [x] Per-layer container storage layout with schema-level managed locations
+- [x] Access via UAMI + Databricks Access Connector (no mounts, no secrets)
+- [x] Bronze restructure: container rename `raw` → `bronze`, removed redundant subfolder
+- [ ] Silver notebooks for all 6 sources
 - [ ] Parameterised quality-rules framework (`quality_rules.json`)
-- [ ] Schema enforcement with Delta Lake
 - [ ] Magic-byte validation for binary inputs
 - [ ] Quarantine table for rejected records
 - [ ] `pipeline_audit` table for per-run quality scores
+- [ ] Watermark automation from Databricks (Delta MERGE into watermark table)
+- [ ] pytest + chispa test suite for transformation functions
 
 ### Phase 3 — Gold layer
 
@@ -293,7 +382,6 @@ Databricks notebook to automate these URL updates via pattern matching is planne
 
 - [ ] Statistical anomaly detection (3-sigma rolling window on price changes)
 - [ ] Delta Lake schema evolution demonstration
-- [ ] Watermark automation via Databricks (replace manual JSON editing)
 - [ ] GitHub Actions CI/CD (JSON schema validation for ADF pipelines and config)
 
 ### Phase 5 — Consumption
@@ -312,8 +400,12 @@ This project deliberately demonstrates engineering judgement, not just tool flue
 - **Recognising latent defects** — the ONS bug was caught through local validation, not by trusting pipeline status.
 - **Discovery before build** — the police.uk smoke test saved building the wrong pattern.
 - **Risk assessment before commitment** — the EPC pivot was a deliberate decision when the source environment changed mid-project.
-- **Deferred abstractions** — three load patterns remain separate until consolidation has a clear payoff.
+- **Deferred abstractions** — consolidated `yearly_range` into `yearly_stepped` only when Police.uk's 2-year cadence provided a concrete second use case for the step parameter; refused to abstract speculatively before that.
 - **Silent-failure prevention** — magic-byte validation is a design response to the ADF "success" story being insufficient.
+- **Unity Catalog adoption from day 1** — chose the current governance model rather than the legacy hive_metastore that older tutorials default to.
+- **Identity over secrets** — UAMI + Access Connector means zero rotated credentials in the data path.
+- **Physical-logical correspondence** — one container = one schema = one medallion layer is a deliberate clarity choice, not the default.
+- **Cost-free hedges** — Dedicated cluster mode and disabled file events both cost nothing and trade marginal aesthetic compromises for capability and least-privilege identity scope respectively.
 
 ---
 
@@ -325,4 +417,4 @@ This repository is published for portfolio and demonstration purposes. The sourc
 
 ---
 
-*Project status: Phase 1 complete as of April 2026.*
+*Project status: Phase 2 in progress.*
