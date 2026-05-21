@@ -38,7 +38,7 @@ watermark.json  (Git-integrated)
               ↓
 Azure Data Factory  (config-driven orchestration)
               ↓
-ADLS Gen2 bronze/  (raw files, 6 sources, external location)
+ADLS Gen2 bronze/  (raw files, 6 sources, exposed as UC External Volumes)
               ↓
 Azure Databricks + Unity Catalog  (transformation, quality, governance)
               ↓
@@ -143,12 +143,12 @@ PL_Master_Orchestrator
 
 ### 5. Medallion data lake architecture
 
-- **Bronze** — raw files as received, no transformation, in the dedicated `bronze` container. Registered as a Unity Catalog external location; read-only from Silver pipelines.
+- **Bronze** — raw files as received, no transformation, in the dedicated `bronze` container. Exposed via Unity Catalog External Volumes under `uk_property_intel.bronze.*` so Silver access flows through UC governance and lineage.
 - **Silver** — validated, typed, deduplicated, schema-enforced. Delta managed tables under `uk_property_intel.silver`, physically stored in the `silver` container.
 - **Gold** — joined, enriched, denormalised for analytical consumption. Star-schema fact and dimension tables under `uk_property_intel.gold`, in the `gold` container.
 - **Quality** — quarantine records, rule-run history, and DQ metrics under `uk_property_intel.quality`, in the `quality` container.
 
-Each medallion layer maps 1:1 to an Azure Blob container, a Unity Catalog schema, and a schema-level managed location. This deliberate physical-to-logical correspondence keeps cost attribution, lifecycle policy, and RBAC scoping per layer obvious from the storage account view alone.
+Each medallion layer maps 1:1 to an Azure Blob container and a Unity Catalog schema. Silver, Gold, and Quality use schema-level managed locations; Bronze uses External Volumes pointing at the bronze container (see Decision 10). This deliberate physical-to-logical correspondence keeps cost attribution, lifecycle policy, and RBAC scoping per layer obvious from the storage account view alone.
 
 Bronze is complete. Silver is in active development; Gold and Quality follow.
 
@@ -190,6 +190,14 @@ Unity Catalog external locations support Azure Event Grid-based file change noti
 - Batch ingestion at the project's data scale (sub-GB per source) does not benefit from event-driven discovery.
 - Enabling file events would require granting the UAMI `Storage Account Contributor` (control plane), `EventGrid EventSubscription Contributor`, and `Storage Queue Data Contributor` — significantly broader scope than the `Storage Blob Data Contributor` (data plane only) required for the actual data path.
 - Least-privilege identity model is preferred for portfolio cleanliness and would be the right call in any regulated environment.
+
+### 10. Bronze exposed as UC Volumes, not Delta tables
+
+Most Databricks tutorials treat Bronze as a Delta-table layer: raw files are copied into Delta with added metadata columns, then Silver reads from those Delta tables. This project takes a different approach: Bronze is exposed via Unity Catalog **External Volumes** pointing at the raw files in the `bronze` container, and Silver notebooks read directly from those Volume paths.
+
+At this project's scale (sub-GB per source, durable raw files, no ad-hoc SQL on raw data), a Bronze-as-Delta-tables layer would only let the project claim a Bronze layer — it would do nothing the raw files don't already provide. Bronze-as-Volumes earns its existence by adding UC governance, lineage, discoverability, and path stability without the re-materialisation tax.
+
+See DESIGN.md Decision 11 for the conditions that would invalidate this call.
 
 ---
 
@@ -233,7 +241,7 @@ Unity Catalog external locations support Azure Event Grid-based file change noti
 | Orchestration | Azure Data Factory (Git-integrated) |
 | Storage | Azure Data Lake Storage Gen2 (per-layer containers) |
 | Compute | Azure Databricks (PySpark, Delta Lake, Photon-eligible) |
-| Governance | Unity Catalog (managed tables, schema-level managed locations) |
+| Governance | Unity Catalog (managed tables, schema-level managed locations, External Volumes for Bronze) |
 | Identity | User-assigned managed identity via Databricks Access Connector |
 | Query (planned) | Azure Synapse Serverless SQL |
 | Visualisation (planned) | Microsoft Fabric / Power BI |
@@ -273,7 +281,8 @@ uk-property-intelligence-platform/
 │   └── quality_rules.json               # (planned) per-source validation rules for Silver
 ├── databricks/
 │   ├── setup/
-│   │   └── 01_create_schemas.py         # Unity Catalog schema definitions (SQL via %sql cells)
+│   │   ├── 01_create_schemas.py         # Unity Catalog schema definitions (SQL via %sql cells)
+│   │   └── 02_create_bronze_volumes.py  # External Volumes per Bronze source
 │   ├── silver/
 │   │   ├── notebooks/                   # one notebook per source
 │   │   └── transforms/                  # importable transformation functions (unit-testable)
@@ -316,7 +325,7 @@ uk-property-intelligence-platform/
 - Azure Databricks Access Connector with a user-assigned managed identity
 - ADLS Gen2 containers: `bronze`, `silver`, `gold`, `quality`, `catalog-root`
 - UAMI granted `Storage Blob Data Contributor` on the storage account
-- Unity Catalog: catalog `uk_property_intel` with schemas `silver`, `gold`, `quality`
+- Unity Catalog: catalog `uk_property_intel` with schemas `bronze`, `silver`, `gold`, `quality`; per-source External Volumes under `bronze`
 - Dedicated-access cluster (single-user) on latest DBR LTS
 
 ### Initial load
@@ -364,6 +373,8 @@ Databricks notebook to automate these URL updates via pattern matching is planne
 - [x] Per-layer container storage layout with schema-level managed locations
 - [x] Access via UAMI + Databricks Access Connector (no mounts, no secrets)
 - [x] Bronze restructure: container rename `raw` → `bronze`, removed redundant subfolder
+- [x] Unity Catalog `bronze` schema with per-source External Volumes (UC-governed access from Silver, no abfss paths in notebooks)
+- [x] Doogal Bronze folder renamed `postcodes` → `doogal` to align with source-name taxonomy
 - [ ] Silver notebooks for all 6 sources
 - [ ] Parameterised quality-rules framework (`quality_rules.json`)
 - [ ] Magic-byte validation for binary inputs
@@ -406,6 +417,7 @@ This project deliberately demonstrates engineering judgement, not just tool flue
 - **Identity over secrets** — UAMI + Access Connector means zero rotated credentials in the data path.
 - **Physical-logical correspondence** — one container = one schema = one medallion layer is a deliberate clarity choice, not the default.
 - **Cost-free hedges** — Dedicated cluster mode and disabled file events both cost nothing and trade marginal aesthetic compromises for capability and least-privilege identity scope respectively.
+- **Bronze as UC Volumes, not Delta tables** — challenged the canonical four-layer medallion pattern by collapsing landing+bronze where the re-materialisation step wasn't earning its cost at this scale; documented the conditions that would change the call.
 
 ---
 
