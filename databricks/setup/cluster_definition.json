@@ -1,0 +1,30 @@
+{
+  "_description": "Source-of-truth definition for the Phase 2 Databricks all-purpose cluster. Hand-maintained; applied via the commands in databricks/setup/README.md. The Databricks REST API manages cluster configuration and libraries through separate endpoints, so this file is consumed in two parts (see the jq commands). The 'cluster' block below is illustrative of the expected shape -- reconcile it against the live cluster via 'databricks clusters get <id>'.",
+  "cluster": {
+    "cluster_id": "0508-000648-30dkg64g",
+    "cluster_name": "ukpropertyintel-phase2",
+    "spark_version": "17.3.x-scala2.13",
+    "node_type_id": "Standard_D4pds_v6",
+    "data_security_mode": "SINGLE_USER",
+    "single_user_name": "kiitkkat@gmail.com",
+    "runtime_engine": "STANDARD",
+    "num_workers": 0,
+    "autotermination_minutes": 10,
+    "spark_conf": {
+      "spark.databricks.cluster.profile": "singleNode",
+      "spark.master": "local[*]"
+    },
+    "custom_tags": {
+      "ResourceClass": "SingleNode",
+      "project": "uk-property-market-intelligence-platform",
+      "phase": "2"
+    }
+  },
+  "libraries": [
+    {
+      "maven": {
+        "coordinates": "dev.mauch:spark-excel_2.13:4.0.0_0.31.2"
+      }
+    }
+  ]
+}
