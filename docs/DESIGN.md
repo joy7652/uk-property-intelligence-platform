@@ -292,6 +292,7 @@ A single JSON array in ADLS containing one object per source. Each object declar
 - **Workspace:** Premium tier in the same region and resource group as ADLS Gen2 storage account. Premium is required for Unity Catalog, RBAC, audit logs, and secret scopes.
 - **Compute:** All-purpose cluster, single-node, Dedicated access mode (formerly "single user"), latest DBR LTS, auto-terminate at 15 minutes.
 - **Photon engine:** off initially; enabling will be evaluated empirically against a representative Silver transformation (likely Police.uk dedup) rather than enabled speculatively.
+- **Serverless SQL warehouse:** used for ad-hoc DDL, catalog administration, and verification queries between notebook runs. Cluster usage is reserved for PySpark notebook work; serverless handles SQL-only operations at lower cost and faster cold-start.
 
 ### Identity and access
 
