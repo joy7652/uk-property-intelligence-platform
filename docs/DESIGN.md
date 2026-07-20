@@ -2,7 +2,7 @@
 
 This document captures the architectural decisions, engineering trade-offs, and delivery plan behind the platform. It complements the project README with deeper rationale and serves as the working design reference across phases.
 
-> **Status:** Phase 1 (Bronze ingestion) complete. Phase 2 (Databricks Silver layer) foundation in place — workspace, Unity Catalog, per-layer storage, identity model, and Bronze Volumes provisioned. Silver-layer transformation notebooks in development.
+> **Status:** Phase 1 (Bronze ingestion) complete. Phase 2 (Databricks Silver layer) foundation in place: workspace, Unity Catalog, per-layer storage, identity model, and Bronze Volumes provisioned. Silver-layer transformation notebooks in development.
 
 ---
 
@@ -18,7 +18,6 @@ This document captures the architectural decisions, engineering trade-offs, and 
 - [Bugs found and fixed](#bugs-found-and-fixed)
 - [Repository and Git workflow](#repository-and-git-workflow)
 - [Phase 2 scope — Databricks Silver layer](#phase-2-scope--databricks-silver-layer)
-- [Design narratives](#design-narratives)
 
 ---
 
@@ -26,15 +25,11 @@ This document captures the architectural decisions, engineering trade-offs, and 
 
 ### Elevator pitch
 
-A configurable, multi-source data engineering platform that ingests, validates, transforms, and analyses UK residential property market data across six official UK open datasets. Demonstrates a production-grade Azure data pipeline with data quality, observability, incremental loading, CI/CD, and statistical anomaly detection.
+A configurable, multi-source data engineering platform that ingests, validates, transforms, and analyses UK residential property market data across six official UK open datasets. It demonstrates a production-grade Azure data pipeline with data quality, observability, incremental loading, CI/CD, and statistical anomaly detection.
 
 ### Why these data sources
 
-Property data is used across finance, consulting, and public sector. Monthly-updated sources frame this as a production pipeline rather than a one-off analysis. The deliberately messy real-world data surfaces non-trivial transformations, and the config-driven architecture means the same framework could ingest any multi-source analytical dataset.
-
-### Tagline
-
-> A config-driven, multi-source Azure data platform for UK property market intelligence, featuring incremental ingestion, schema evolution handling, automated data quality validation, and statistical anomaly detection.
+Property data turns up across finance, consulting, and the public sector, and it's a domain most people already understand. The sources update monthly, which makes this a running pipeline rather than a one-off analysis. The data is genuinely messy, so the transformations are non-trivial, and the config-driven design means the same framework could ingest any other multi-source analytical dataset without code changes.
 
 ---
 
@@ -51,7 +46,7 @@ Property data is used across finance, consulting, and public sector. Monthly-upd
 
 ### Source selection rationale
 
-**Price Paid Data** is the authoritative record of UK residential transactions since 1995 — 24M+ records, the backbone of any property analysis. **HPI** provides official price indices validated by the same department, useful as a cross-source oracle for sanity-checking derived metrics. **Postcode lookups** enable geocoding and regional aggregation. **Bank of England rates** and **ONS rents** provide the macro context — affordability analysis needs both the price and the cost of money. **Police crime data** adds a classic property-investment overlay (safety × price growth) that joins cleanly on postcode.
+**Price Paid Data** is the authoritative record of UK residential transactions since 1995, 24M+ records, and the backbone of any property analysis. **HPI** gives official price indices validated by the same department, which makes it a useful cross-check for any metric I derive myself. **Postcode lookups** handle geocoding and regional aggregation. **Bank of England rates** and **ONS rents** supply the macro context; affordability analysis needs both the price and the cost of money. **Police crime data** adds the classic property-investment overlay of safety against price growth, and it joins cleanly on postcode.
 
 ### Source details
 
@@ -65,13 +60,13 @@ Property data is used across finance, consulting, and public sector. Monthly-upd
 **2. UK House Price Index (HPI)**
 - Single cumulative CSV per monthly release
 - URL: `https://publicdata.landregistry.gov.uk/market-trend-data/house-price-index-data/UK-HPI-full-file-{YYYY}-{MM}.csv`
-- Requires full browser-mimicking headers (User-Agent + Accept + Accept-Language) — Akamai CDN filters aggressively
+- Requires full browser-mimicking headers (User-Agent + Accept + Accept-Language); the Akamai CDN filters aggressively
 - URL changes monthly but follows a predictable pattern
 
 **3. Doogal UK Postcode Lookup**
 - ZIP file, static URL: `https://www.doogal.co.uk/files/postcodes.zip`
 - ~90 MB zipped, ~950 MB unzipped
-- Mirrors ONS postcode data under Open Government Licence — chosen as a practical alternative when ArcGIS Hub access proved unworkable
+- Mirrors ONS postcode data under the Open Government Licence. I chose it as a practical alternative when ArcGIS Hub access proved unworkable
 - Updated quarterly
 
 **4. Bank of England Base Rate**
@@ -84,29 +79,29 @@ Property data is used across finance, consulting, and public sector. Monthly-upd
 - Monthly XLSX, URL changes with every release
 - Base URL: `https://www.ons.gov.uk/file`
 - Relative URL pattern uses `?uri=...` query string
-- **Platform quirk:** relative URL must begin with `?` to prevent URL-encoding the query delimiter
+- **Platform quirk:** the relative URL must begin with `?` to stop the query delimiter being URL-encoded
 
 **6. UK Police Street-level Crime**
 - Rolling 3-year snapshot ZIPs, ~1.7 GB each, ~4500 CSVs inside (36 months × ~125 files per force/category)
 - Historical snapshot URL pattern: `https://data.police.uk/data/archive/{YYYY}-12.zip`
 - Latest monthly snapshot URL pattern: `https://data.police.uk/data/archive/{YYYY-MM}.zip`
 - No auth
-- Full-load iterates 2-yearly (2013-12, 2015-12, …, 2025-12); incremental fetches latest published monthly snapshot
-- Silver-layer strategy: deduplicate overlapping months, retaining the most recent snapshot's version of each `(month, force, category)` tuple. Disagreements between overlapping snapshots become a quality signal.
+- Full-load iterates 2-yearly (2013-12, 2015-12, …, 2025-12); incremental fetches the latest published monthly snapshot
+- Silver-layer strategy: deduplicate overlapping months, keeping the most recent snapshot's version of each `(month, force, category)` tuple. Where overlapping snapshots disagree, that becomes a quality signal.
 
 ### Source swap: EPC → Police.uk
 
-The original sixth source was planned as MHCLG's Energy Performance Certificates (EPC). During implementation the existing `epc.opendatacommunities.org` service was identified as retiring on 30 May 2026, with its replacement (`Get energy performance of buildings data`) requiring GOV.UK One Login — an OAuth2 flow incompatible with ADF's native HTTP Basic authentication. The production launch date of the replacement service was not confirmed at the time of discovery.
+The sixth source was originally MHCLG's Energy Performance Certificates (EPC). Partway through the build I found that the existing `epc.opendatacommunities.org` service was retiring on 30 May 2026, and its replacement (`Get energy performance of buildings data`) required GOV.UK One Login, an OAuth2 flow that ADF's native HTTP Basic authentication can't handle. The replacement service had no confirmed production launch date at the time.
 
-Three options were evaluated:
+I evaluated three options:
 
-1. Build against the legacy service, accepting that the pipeline would break within weeks
-2. Wait for the replacement service's production launch
-3. Swap to a comparable stable source
+1. Build against the legacy service, accepting that the pipeline would break within weeks.
+2. Wait for the replacement service to reach production.
+3. Swap to a comparable stable source.
 
-Option 3 was chosen. Police.uk crime data satisfies the structural requirements of the project (stepped yearly pattern, meaningful analytical value) while strengthening the analytical narrative — crime × price overlays are a well-established dimension in property investment analysis.
+I chose option 3. Police.uk crime data meets the structural requirements (stepped yearly pattern, real analytical value) and arguably strengthens the analysis, since crime-against-price overlays are a well-established dimension in property investment.
 
-A smoke test conducted before implementation revealed that each police.uk monthly archive is a rolling 3-year snapshot rather than a monthly delta. This observation changed the ingestion pattern from the originally-planned monthly-backfill to `yearly_stepped` with a 2-year step, avoiding duplicate data while preserving full historical coverage.
+A smoke test before implementation showed that each police.uk monthly archive is a rolling 3-year snapshot, not a monthly delta. That changed the ingestion pattern from the originally-planned monthly-backfill to `yearly_stepped` with a 2-year step, which avoids duplicate data while keeping full historical coverage.
 
 ---
 
@@ -135,13 +130,14 @@ Microsoft Fabric / Power BI (Phase 5 — Property Dashboard, Pipeline Health Das
 
 ### Design principles
 
-- **Config over code.** Adding a source means appending a JSON block to the watermark, not writing a new pipeline.
-- **Patterns over sources.** A small closed set of ingestion patterns (`yearly_stepped`, `single_file`) covers every source; each source declares which pattern it uses.
-- **Trust nothing silently.** Pipeline success status confirms bytes moved, not that the right bytes moved. Binary files are validated against expected magic bytes before downstream processing.
-- **Parameterised linked services.** HTTP linked services are host-agnostic; base URL is passed at runtime via `@{linkedService().p_base_url}` so a single linked service can serve multiple hosts with the same authentication shape.
-- **Identity over secrets.** Data-plane access from Databricks flows through a user-assigned managed identity on the Databricks Access Connector — no SAS tokens, no mounted credentials, no key rotation in the data path.
-- **Physical-logical correspondence.** Each medallion layer maps 1:1 to an Azure Blob container, a Unity Catalog schema, and a schema-level managed location (or for Bronze, a set of External Volumes). The architecture is visible in the storage account.
-- **Layers earn their existence.** Each medallion layer must do meaningful work the previous layer didn't. Bronze is exposed via Volumes rather than re-materialised as Delta tables because, at this project's scale, the re-materialisation step adds no value the raw files don't already provide.
+- Adding a source means appending a JSON block to the watermark, not writing a new pipeline.
+- A small closed set of ingestion patterns (`yearly_stepped`, `single_file`) covers every source; each source declares which one it uses.
+- After the first full load, each source tracks its own state in the watermark, so later runs fetch only what's new. What counts as "new" is source-specific, so incremental loading routes by type rather than assuming one mechanism.
+- A pipeline reporting success only tells me bytes moved, not that the right bytes moved. Binary files are validated against their expected magic bytes before any downstream processing.
+- HTTP linked services are host-agnostic; the base URL is passed at runtime via `@{linkedService().p_base_url}`, so one linked service can serve several hosts that share an authentication shape.
+- Data-plane access from Databricks runs through a user-assigned managed identity on the Databricks Access Connector. No SAS tokens, no mounted credentials, no key rotation in the data path.
+- Each medallion layer maps one-to-one to a Blob container, a Unity Catalog schema, and a schema-level managed location (or, for Bronze, a set of External Volumes), so the architecture is visible in the storage account.
+- Each layer should do work the previous one didn't. Bronze stays as raw files exposed through Volumes rather than copied into Delta, because at this scale that copy step adds nothing the raw files don't already give.
 
 ---
 
@@ -153,14 +149,14 @@ The data lake uses six containers, each with a single responsibility:
 
 | Container | Purpose | UC mapping |
 |---|---|---|
-| `config` | Watermark file and (planned) quality-rule definitions | — (read by ADF directly) |
+| `config` | Watermark file and (planned) quality-rule definitions | read by ADF directly |
 | `bronze` | Raw files as landed by ADF, per-source folder structure | UC external location; exposed as External Volumes under `uk_property_intel.bronze.*` |
 | `silver` | Cleaned, typed, deduplicated Delta managed tables | Managed location for `uk_property_intel.silver` |
 | `gold` | Joined, enriched, denormalised Delta managed tables | Managed location for `uk_property_intel.gold` |
 | `quality` | Quarantine records, rule-run history, DQ metrics | Managed location for `uk_property_intel.quality` |
 | `catalog-root` | Anchor for the Unity Catalog's catalog-level managed location | Catalog managed location for `uk_property_intel` |
 
-The watermark lives at `config/watermark.json` directly (no subfolder), in its own container so its lifecycle and access policy are independent of the data containers.
+The watermark lives at `config/watermark.json` directly (no subfolder), in its own container so its lifecycle and access policy stay independent of the data containers.
 
 ### Unity Catalog hierarchy
 
@@ -172,7 +168,7 @@ uk_property_intel/ (catalog, managed location → catalog-root container)
 └── quality/ (schema, managed location → quality container)
 ```
 
-The catalog has no production tables of its own; every object is created under one of the four schemas. The `bronze` schema holds External Volumes that point at the `bronze` container, providing UC governance and lineage over raw files without converting them to Delta — see Decision 11. Silver, Gold, and Quality hold managed Delta tables in their respective containers. The catalog-level managed location exists only because Unity Catalog requires a catalog to have *some* backing storage even when all its schemas either declare their own or hold only External Volumes — `catalog-root` is the deliberate placeholder that satisfies this without polluting the data containers.
+The catalog holds no production tables of its own; every object is created under one of the four schemas. The `bronze` schema holds External Volumes pointing at the `bronze` container, which gives UC governance and lineage over raw files without converting them to Delta (see Decision 11). Silver, Gold, and Quality hold managed Delta tables in their respective containers. The catalog-level managed location exists only because Unity Catalog requires a catalog to have some backing storage even when all its schemas either declare their own or hold only External Volumes. `catalog-root` is the placeholder that satisfies that without using one of the data containers.
 
 ### Bronze Volume layout
 
@@ -191,13 +187,13 @@ Silver notebooks reference `/Volumes/uk_property_intel/bronze/<source>/...` rath
 
 ### Why per-layer containers rather than subfolders
 
-Alternative was a single `medallion` container with subfolders. Per-layer containers were chosen because:
+The alternative was a single `medallion` container with subfolders. I chose per-layer containers for three reasons:
 
-- **Lifecycle policies** can differ per layer (Bronze long-retain raw, Silver shorter retention on intermediate artifacts).
-- **RBAC and cost attribution** scope cleanly to the container boundary.
-- **Physical and logical alignment** — the medallion architecture is visible at the storage account view without inspecting folder contents.
+- Lifecycle policies can differ per layer (Bronze long-retains raw data; Silver can keep intermediate artifacts for less time).
+- RBAC and cost attribution scope cleanly to the container boundary.
+- The medallion structure is visible at the storage-account view without inspecting folder contents.
 
-Cost is identical to the single-container approach; the trade-off is purely organisational.
+Cost is identical to the single-container layout, so the trade-off is purely organisational.
 
 ---
 
@@ -206,7 +202,7 @@ Cost is identical to the single-container approach; the trade-off is purely orga
 ### Storage
 
 - Azure Data Lake Storage Gen2, container `bronze` (renamed from `raw` during Phase 2 setup)
-- Files land at `bronze/<source>/<...>/<file>` — no redundant `bronze/` subfolder inside the container
+- Files land at `bronze/<source>/<...>/<file>`, with no redundant `bronze/` subfolder inside the container
 - RBAC: ADF managed identity granted `Storage Blob Data Contributor`
 - Watermark at `config/watermark.json` (separate container, no subfolder)
 
@@ -229,8 +225,8 @@ Each HTTP linked service exposes `p_base_url` and has its Base URL field set to 
 - All parameterised with `p_base_url`, `p_relative_url`
 
 **Sink datasets:**
-- `DS_ADLS_Bronze_CSV` — parameterised with `p_folder_path`, `p_file_name`. Operates in binary passthrough mode for all file types (CSV, XLSX, XLS, ZIP)
-- `DS_ADLS_Watermark_JSON` — for reading the watermark file
+- `DS_ADLS_Bronze_CSV`: parameterised with `p_folder_path`, `p_file_name`; operates in binary passthrough mode for all file types (CSV, XLSX, XLS, ZIP)
+- `DS_ADLS_Watermark_JSON`: reads the watermark file
 
 ### Pipelines
 
@@ -249,7 +245,7 @@ Each HTTP linked service exposes `p_base_url` and has its Base URL field set to 
 - Generic yearly-stepped full-load pipeline
 - Iterates an index range `[0, N)` where `N = (end_year - start_year) / step_years + 1`
 - Each iteration computes its year as `start_year + (index * step_years)`
-- Handles optional `snapshot_month` suffix in URL and filename via `if(empty(...))` expressions
+- Handles an optional `snapshot_month` suffix in URL and filename via `if(empty(...))` expressions
 - Works for both PPD (step=1, no month suffix) and Police.uk (step=2, month suffix `-12`)
 
 **`PL_Single_File_Full_Load`**
@@ -272,11 +268,11 @@ Each HTTP linked service exposes `p_base_url` and has its Base URL field set to 
 
 ### Control-flow cascade rationale
 
-ADF forbids nested control-flow activities (If inside Switch inside ForEach). The three-level pipeline cascade (Master → Route → Incremental Route → Leaf) exists specifically to unwrap one control-flow activity per layer. This constraint drove a clearer separation of concerns: orchestration → routing → execution.
+ADF forbids nested control-flow activities (an If inside a Switch inside a ForEach). The three-level pipeline cascade (Master → Route → Incremental Route → Leaf) exists specifically to unwrap one control-flow activity per layer. That constraint drove a clearer separation of concerns: orchestration, then routing, then execution.
 
 ### Watermark schema
 
-A single JSON array in ADLS containing one object per source. Each object declares which load pattern applies, its linked-service type, its URL fragments, and state tracking fields. Example fields:
+A single JSON array in ADLS containing one object per source. Each object declares which load pattern applies, its linked-service type, its URL fragments, and state-tracking fields. Example fields:
 
 - Common: `source_name`, `display_name`, `load_pattern`, `linked_service_type`, `base_url`, `active`
 - `yearly_stepped` specific: `relative_url_prefix`, `file_extension`, `start_year`, `step_years`, `snapshot_month`, `last_year_ingested`, `full_load_complete`, `parallelism`
@@ -289,27 +285,27 @@ A single JSON array in ADLS containing one object per source. Each object declar
 
 ### Workspace and compute
 
-- **Workspace:** Premium tier in the same region and resource group as ADLS Gen2 storage account. Premium is required for Unity Catalog, RBAC, audit logs, and secret scopes.
-- **Compute:** All-purpose cluster, single-node, Dedicated access mode (formerly "single user"), latest DBR LTS, auto-terminate at 15 minutes.
-- **Photon engine:** off initially; enabling will be evaluated empirically against a representative Silver transformation (likely Police.uk dedup) rather than enabled speculatively.
+- **Workspace:** Premium tier, in the same region and resource group as the ADLS Gen2 storage account. Premium is required for Unity Catalog, RBAC, audit logs, and secret scopes.
+- **Compute:** all-purpose cluster, single-node, Dedicated access mode (formerly "single user"), latest DBR LTS, auto-terminate at 15 minutes.
+- **Photon engine:** off initially. I'll decide whether to enable it by testing against a representative Silver transformation (likely the Police.uk dedup) rather than turning it on by default.
 - **Serverless SQL warehouse:** used for ad-hoc DDL, catalog administration, and verification queries between notebook runs. Cluster usage is reserved for PySpark notebook work; serverless handles SQL-only operations at lower cost and faster cold-start.
 
 ### Identity and access
 
 - **Databricks Access Connector** with a user-assigned managed identity (UAMI) provides the identity Databricks uses to access ADLS.
-- UAMI granted `Storage Blob Data Contributor` on the storage account — data-plane only, no control-plane permissions.
-- No DBFS mounts, no SAS tokens, no service principal secrets — all ADLS access flows through the UAMI via Unity Catalog External Locations and Volumes.
-- **File events disabled** on all external locations. Enabling them would require granting the UAMI `Storage Account Contributor` (control plane), `EventGrid EventSubscription Contributor`, and `Storage Queue Data Contributor` — significantly broader scope than the data-plane permission required for the actual data path. Batch ingestion at the project's scale does not benefit from event-driven discovery.
+- UAMI granted `Storage Blob Data Contributor` on the storage account, data-plane only, with no control-plane permissions.
+- No DBFS mounts, no SAS tokens, no service-principal secrets; all ADLS access flows through the UAMI via Unity Catalog External Locations and Volumes.
+- **File events disabled** on all external locations. Enabling them would require granting the UAMI `Storage Account Contributor` (control plane), `EventGrid EventSubscription Contributor`, and `Storage Queue Data Contributor`, a much broader scope than the data-plane permission the actual data path needs. Batch ingestion at this scale does not benefit from event-driven discovery.
 
 ### Unity Catalog setup
 
 - **Metastore:** UK South region (auto-provisioned on workspace creation).
 - **Storage credential:** points to the Access Connector's UAMI.
-- **External locations:** one per non-config container — `bronze`, `silver`, `gold`, `quality`, `catalog-root`. All connection-tested and confirmed working with file events explicitly off.
+- **External locations:** one per non-config container: `bronze`, `silver`, `gold`, `quality`, `catalog-root`. All connection-tested and confirmed working with file events explicitly off.
 - **Catalog:** `uk_property_intel`, managed location at `catalog-root`.
 - **Schemas:** `bronze`, `silver`, `gold`, `quality`. Silver, Gold, and Quality have schema-level managed locations at their matching container; Bronze has no managed location since it holds only External Volumes. Created via SQL in `databricks/setup/01_create_schemas.py`.
 - **External Volumes:** one per Bronze source, defined in `databricks/setup/02_create_bronze_volumes.py`. Exposes raw files under `uk_property_intel.bronze.<source>` for UC governance and lineage. Silver notebooks read from `/Volumes/uk_property_intel/bronze/<source>/` rather than direct `abfss://` paths.
-- **Default workspace catalog:** dropped after verification that the dedicated catalog was operational — keeps Catalog Explorer free of placeholder entries.
+- **Default workspace catalog:** dropped after I verified the dedicated catalog was operational, which keeps Catalog Explorer free of placeholder entries.
 
 ### Bronze layer state
 
@@ -321,28 +317,28 @@ Phase 1's ADF pipelines write into the `bronze` container directly (no `bronze/`
 
 ### 1. Load patterns are a closed set
 
-Two patterns cover every ingestion shape encountered:
+Two patterns cover every ingestion shape I encountered:
 
-- **`yearly_stepped`** — iterate across years with a configurable step, one file per step. Incremental dispatches to one of two children via `incremental_type`: `static_url` or `templated_latest`.
+- **`yearly_stepped`** — iterate across years with a configurable step, one file per step. Incremental work dispatches to one of two children via `incremental_type`: `static_url` or `templated_latest`.
 - **`single_file`** — one URL fetches one file per refresh.
 
-The `yearly_stepped` pattern was consolidated from an earlier `yearly_range` once Police.uk's 2-year snapshot cadence proved the step parameter's value. The consolidation was deliberately deferred until a concrete second use case demonstrated the abstraction would pay off — discipline against speculative generalisation upfront.
+`yearly_stepped` grew out of an earlier `yearly_range` pattern. I added the step parameter only once Police.uk's 2-year snapshot cadence gave me a concrete second use for it, rather than generalising before I had a reason to.
 
 ### 2. Linked services organised by authentication pattern
 
-HTTP linked services are named and organised by their authentication shape, not by the data source they first served. This taxonomy is the correct one — auth is a cross-cutting concern that multiple unrelated sources can share, while the data source itself is incidental to the connection. An earlier iteration named one linked service after its first data source (`LS_HTTP_LandRegistry`), which obscured the fact that Police.uk could reuse it. Renaming to `LS_HTTP_Anonymous` clarified the taxonomy and eliminated the need for a duplicate linked service.
+I name and organise HTTP linked services by their authentication shape, not by the data source they first served. Authentication is a cross-cutting concern that several unrelated sources can share, whereas the data source itself is incidental to the connection. An earlier version named one linked service after its first source (`LS_HTTP_LandRegistry`), which hid the fact that Police.uk could reuse it. Renaming it to `LS_HTTP_Anonymous` made the grouping obvious and removed the need for a duplicate.
 
 ### 3. Watermark as a JSON array in ADLS
 
-The watermark is stored as a JSON array (not object) because ADF's Lookup + ForEach iterates arrays cleanly. It lives in ADLS rather than Azure SQL — eliminating an entire database dependency. When Databricks joins the stack in Phase 2, the watermark migrates to a Delta table.
+The watermark is stored as a JSON array (not an object) because ADF's Lookup plus ForEach iterates arrays cleanly. It lives in ADLS rather than Azure SQL, which removes an entire database dependency. When Databricks joins the stack in Phase 2, the watermark moves to a Delta table.
 
 ### 4. Three-level route cascade
 
-Master → Route → Incremental Route → Leaf. Each layer unwraps exactly one control-flow activity. Necessary due to ADF's nesting restriction; resulted in cleaner separation of concerns than a single monolithic pipeline would have provided.
+Master → Route → Incremental Route → Leaf, with each layer unwrapping exactly one control-flow activity. ADF's nesting restriction makes the cascade necessary, and it ends up with cleaner separation of concerns than a single monolithic pipeline would have.
 
 ### 5. Per-source parallelism as configuration
 
-Parallelism is recorded in the watermark per source (PPD=4, Police.uk=2). Larger files get lower parallelism to avoid saturating integration runtime bandwidth. Note: ADF's ForEach batch count cannot be parameterised at runtime (platform constraint), so the watermark field serves as documentation; the actual batch count is set on the ForEach activity directly.
+Parallelism is recorded in the watermark per source (PPD=4, Police.uk=2). Larger files get lower parallelism to avoid saturating integration-runtime bandwidth. ADF's ForEach batch count can't be parameterised at runtime (a platform constraint), so the watermark field serves as documentation; the actual batch count is set on the ForEach activity directly.
 
 ### 6. Medallion architecture with a quality layer
 
@@ -353,100 +349,102 @@ Four logical layers backed by per-container physical storage:
 - **Gold** — joined, enriched, denormalised Delta managed tables under `uk_property_intel.gold`.
 - **Quality** — quarantine records, rule-run history, and DQ metrics under `uk_property_intel.quality`.
 
-Each layer maps 1:1 to a container, schema, and managed location (Bronze excepted — see Decision 11).
+Each layer maps 1:1 to a container, schema, and managed location (Bronze excepted; see Decision 11).
 
 ### 7. Unity Catalog over hive_metastore
 
-Adopted Unity Catalog from day 1 of Phase 2 rather than the legacy hive_metastore that older Databricks projects (and most tutorials) use. Reasoning:
+I adopted Unity Catalog from day one of Phase 2 rather than the legacy hive_metastore that older Databricks projects (and most tutorials) still use. Reasoning:
 
-- Databricks confirmed in 2026 that new Azure workspaces created from 30 September 2026 onwards will be UC-only — hive_metastore is being phased out.
-- UC provides centralised access control, lineage, and discovery — concerns that would otherwise have to be reimplemented or skipped.
+- Databricks has confirmed that from 30 September 2026, all new workspaces (Azure included) are provisioned Unity Catalog-only, with no Hive metastore, so building on UC now is the forward-compatible path.
+- UC provides centralised access control, lineage, and discovery, which I'd otherwise have to build myself or skip.
 - All data access flows through the UAMI on the Databricks Access Connector; no secrets, mounts, or SAS tokens.
-- The DP-700 certification covers UC heavily; building on it doubles as exam preparation.
+- The DP-700 certification covers UC heavily, so building on it doubles as exam preparation.
 
-The complexity tradeoff (metastore-level setup, access connector configuration, storage credentials, external locations, volumes) is paid once at the start of Phase 2.
+The same logic applied to using the Access Connector's managed identity rather than a service principal with secrets: the older pattern still works, but the managed-identity path is the documented direction and avoids a future migration.
+
+The complexity trade-off (metastore-level setup, access connector configuration, storage credentials, external locations, volumes) is paid once at the start of Phase 2.
 
 ### 8. Per-layer physical containers over single-container subfolders
 
-Each medallion layer is a dedicated Azure Blob container, not a subfolder within a shared container. See [Storage architecture](#storage-architecture) for the full rationale. The sixth container, `catalog-root`, exists purely as the Unity Catalog managed location for the catalog itself and remains empty in practice because every schema either declares its own managed location or holds only External Volumes.
+Each medallion layer is a dedicated Azure Blob container, not a subfolder within a shared container. See [Storage architecture](#storage-architecture) for the full rationale. The sixth container, `catalog-root`, exists purely as the Unity Catalog managed location for the catalog itself and stays empty in practice, because every schema either declares its own managed location or holds only External Volumes.
 
 ### 9. Dedicated cluster access mode
 
-Despite Standard (shared) access mode being the newer Databricks default for general data engineering, the cluster uses Dedicated access mode (formerly "single user"). Reasoning:
+Standard (shared) access mode is the newer Databricks default for general data engineering, but the cluster uses Dedicated access mode (formerly "single user"). Reasoning:
 
-- Solo-developer project: Standard's multi-user isolation provides benefits I don't need while imposing restrictions (no RDD APIs, restricted Kafka options, no ML runtime) I might encounter in Phase 3+.
-- Forward-compatibility with planned anomaly-detection work in Phase 3, which may use library code outside the Standard sandbox.
-- Same DBU cost as Standard — Dedicated isn't a price premium.
+- This is a solo project. Standard's multi-user isolation gives me benefits I don't need while imposing restrictions (no RDD APIs, restricted Kafka options, no ML runtime) I might run into in Phase 3 and beyond.
+- The anomaly-detection work planned for Phase 3 may use library code outside the Standard sandbox.
+- Same DBU cost as Standard, so Dedicated isn't a price premium.
 
-A Standard-mode cluster would also work for Phase 2; the choice is a deliberate cost-free hedge against future requirements rather than a hard necessity.
+A Standard-mode cluster would also work for Phase 2. Dedicated isn't strictly necessary; it costs nothing and keeps my options open for later phases.
 
 ### 10. File events disabled on external locations
 
-Unity Catalog external locations support Azure Event Grid-based file change notifications for ingestion performance. All external locations in this project explicitly disable this feature. Reasoning:
+Unity Catalog external locations support Azure Event Grid file-change notifications for ingestion performance. Every external location here has the feature turned off. Reasoning:
 
-- Batch ingestion at the project's data scale (sub-GB per source) does not benefit from event-driven discovery.
-- Enabling file events would require granting the UAMI three additional roles, including `Storage Account Contributor` (a control-plane role) — significantly broader scope than the data-plane-only `Storage Blob Data Contributor` required for the actual data path.
-- Least-privilege identity model is preferred for portfolio cleanliness and would be the right call in any regulated environment.
+- Batch ingestion at this scale (sub-GB per source) gains nothing from event-driven discovery.
+- Turning file events on would require granting the UAMI three additional roles, including `Storage Account Contributor` (a control-plane role), a much broader scope than the data-plane-only `Storage Blob Data Contributor` the actual data path needs.
+- Least privilege is the right call here, and the one I'd make in any regulated environment anyway.
 
 ### 11. Bronze exposed as UC Volumes, not Delta tables
 
-Many Databricks tutorials treat Bronze as a Delta-table layer: raw files are read once, written to Delta with added metadata columns, then Silver reads from those Delta tables. This project takes a different approach: Bronze is exposed via Unity Catalog **External Volumes** pointing at raw files in the `bronze` container, and Silver notebooks read directly from those Volume paths.
+Many Databricks tutorials treat Bronze as a Delta-table layer: raw files are read once, written to Delta with added metadata columns, then Silver reads from those Delta tables. This project does it differently. Bronze is exposed via Unity Catalog **External Volumes** pointing at the raw files in the `bronze` container, and Silver notebooks read straight from those Volume paths.
 
 Reasoning:
 
-- File scale is small (sub-GB per source per ingestion); re-reading raw files during each Silver run is essentially free, so there's no performance case for caching as Delta.
-- ADF writes durable copies into the `bronze` container; files are not ephemeral, so there's no preservation case for converting them to Delta.
-- The project does not query raw data ad-hoc in SQL; Silver is the first SQL-queryable layer, so there's no usability case for Delta at the Bronze level.
-- Schema evolution is enforced at Silver, where schemas are actually defined; tracking it at the raw-file layer would be premature.
+- File scale is small (sub-GB per source per ingestion), so re-reading raw files during each Silver run is effectively free. There's no performance case for caching as Delta.
+- ADF writes durable copies into the `bronze` container, so files aren't ephemeral. There's no preservation case for converting them to Delta.
+- The project doesn't query raw data ad-hoc in SQL; Silver is the first SQL-queryable layer. There's no usability case for Delta at the Bronze level.
+- Schema evolution is enforced at Silver, where schemas are actually defined. Tracking it at the raw-file layer would be premature.
 
-A Bronze-as-Delta-tables layer in this context would be bronze-for-bronze's-sake — a layer that does nothing meaningful except let the project claim a Bronze layer. Each medallion layer should earn its existence; Bronze-as-Delta does not at this scale.
+A Bronze-as-Delta layer here would do nothing the raw files don't already do; it would exist only so the project could point at a Bronze layer. At this scale that isn't worth a layer.
 
-Bronze-as-Volumes does earn its existence:
+Bronze-as-Volumes does pull its weight, for four reasons:
 
 - **Governance.** Bronze access is subject to Unity Catalog ACLs, not just the external location's identity grants.
 - **Lineage.** UC automatically traces which Silver tables read from which Bronze paths.
-- **Discoverability.** Bronze appears in Catalog Explorer as a first-class object alongside Silver and Gold, rather than being an `abfss://` URI known only to the developer.
-- **Path stability.** Silver notebooks reference `/Volumes/uk_property_intel/bronze/<source>/` rather than container-qualified paths; if storage layout ever changes, only the Volume definition updates.
+- **Discoverability.** Bronze appears in Catalog Explorer as a first-class object alongside Silver and Gold, rather than an `abfss://` URI known only to me.
+- **Path stability.** Silver notebooks reference `/Volumes/uk_property_intel/bronze/<source>/` rather than container-qualified paths; if the storage layout ever changes, only the Volume definition updates.
 
-Conditions that would invalidate this decision: ingesting very large source files at high frequency, ephemeral source data that needs durable Delta preservation, or extensive ad-hoc SQL exploration of raw data prior to Silver transformation. None apply at the project's current scale.
+This decision would change if I were ingesting very large source files at high frequency, if the source data were ephemeral and needed durable Delta preservation, or if I needed extensive ad-hoc SQL on the raw data before Silver. None of those apply at the moment.
 
 ---
 
 ## Bugs found and fixed
 
-### Base URL hardcoded despite parameter being defined
+### Base URL hardcoded despite the parameter being defined
 
-**Discovered:** During ONS source onboarding, after modifying the ONS URL in the watermark for a new monthly release.
+**Discovered:** during ONS source onboarding, after I modified the ONS URL in the watermark for a new monthly release.
 
 **Symptoms:**
 - Pipeline reported "Succeeded" on every run
 - Downstream `openpyxl.load_workbook()` failed with `BadZipFile: File is not a zip file`
-- Hex dump showed the "XLSX" file was HTML beginning `<!DOCTYPE html>`
-- The HTML content originated from `bankofengland.co.uk`, not `ons.gov.uk` — the pipeline was fetching from the wrong host entirely
+- A hex dump showed the "XLSX" file was HTML beginning `<!DOCTYPE html>`
+- The HTML came from `bankofengland.co.uk`, not `ons.gov.uk`, so the pipeline was fetching from the wrong host entirely
 
-**Root cause:** HTTP datasets had parameters defined (`p_base_url`, `p_relative_url`) but their Base URL fields were hardcoded rather than using `@dataset().p_base_url`. For five sources this was undetectable because the hardcoded value happened to match the watermark value. When ONS's URL was updated in the watermark for the March release, the dataset continued using its stale hardcoded URL. That URL coincidentally pointed to BoE's host, which returned 200 OK with a homepage for the bad request path — so bytes transferred and ADF reported success.
+**Root cause:** the HTTP datasets had parameters defined (`p_base_url`, `p_relative_url`) but their Base URL fields were hardcoded rather than using `@dataset().p_base_url`. For five sources this was undetectable because the hardcoded value happened to match the watermark value. When ONS's URL was updated in the watermark for the March release, the dataset carried on using its stale hardcoded URL. That URL coincidentally pointed at BoE's host, which returned 200 OK with a homepage for the bad request path, so bytes transferred and ADF reported success.
 
-**Fix:** Replaced every hardcoded URL in dataset Base URL fields with the appropriate `@dataset()` expression. Re-ran master pipeline for affected sources. Validated output files locally by parsing them in their native format.
+**Fix:** replaced every hardcoded URL in the dataset Base URL fields with the appropriate `@dataset()` expression. Re-ran the master pipeline for affected sources. Validated the output files locally by parsing them in their native format.
 
-**Lesson:** Pipeline success status confirms bytes moved, not that the right bytes moved. Two follow-ups resulted:
-1. Magic-byte validation planned for the Silver-layer ingestion contract — every file checked against expected format header before parsing
-2. Audit completed of every parameterised dataset field to confirm parameters are actually wired, not just defined
+**Lesson:** pipeline success status confirms bytes moved, not that the right bytes moved. Two follow-ups resulted:
+1. Magic-byte validation planned for the Silver-layer ingestion contract: every file checked against its expected format header before parsing.
+2. An audit of every parameterised dataset field, to confirm the parameters are actually wired in, not just defined.
 
-### Query string double-encoding
+### Query-string double-encoding
 
-**Discovered:** ONS URL returned 400 errors when `?uri=...` appeared mid-string.
+**Discovered:** the ONS URL returned 400 errors when `?uri=...` appeared mid-string.
 
 **Root cause:** ADF URL-encoded the `?` character when it wasn't at position 0 of the relative URL.
 
-**Fix:** Always prefix the relative URL with `?` as its first character. ADF preserves the query-string delimiter when it appears at position 0.
+**Fix:** always prefix the relative URL with `?` as its first character. ADF preserves the query-string delimiter when it appears at position 0.
 
 ### ADF nested control-flow restriction
 
-**Discovered:** When designing the full-vs-incremental branching logic, and later when adding the incremental-type dispatch.
+**Discovered:** when designing the full-vs-incremental branching logic, and again when adding the incremental-type dispatch.
 
-**Constraint:** ADF forbids nested control-flow activities — If, Switch, ForEach, and Until cannot contain each other.
+**Constraint:** ADF forbids nested control-flow activities: If, Switch, ForEach, and Until cannot contain each other.
 
-**Resolution:** Extract inner logic into child pipelines. `PL_Route_Yearly_Stepped` and `PL_Route_Incremental_Load` exist specifically to unwrap one control-flow activity per layer. Resulted in cleaner separation of concerns with each pipeline doing one job.
+**Resolution:** extract the inner logic into child pipelines. `PL_Route_Yearly_Stepped` and `PL_Route_Incremental_Load` exist specifically to unwrap one control-flow activity per layer. The result is cleaner separation of concerns, with each pipeline doing one job.
 
 ---
 
@@ -455,7 +453,7 @@ Conditions that would invalidate this decision: ingesting very large source file
 The repository follows a **trunk-based workflow** with short-lived feature branches:
 
 - One branch per logical unit of work (e.g. `phase2/setup-catalog-schemas`, `phase2/boe-silver`).
-- All changes merged to `main` via pull request; `main` is branch-protected against direct pushes.
+- All changes merge to `main` via pull request; `main` is branch-protected against direct pushes.
 - ADF Studio is Git-integrated; pipeline JSON commits go to feature branches via the ADF UI, then merge to `main` via PR. Publishing from ADF promotes the live factory.
 - Databricks notebooks are managed via Databricks Git folders linked to this repo, committed from the workspace UI on the same feature branches.
 
@@ -463,7 +461,7 @@ Both ADF and Databricks operate on the same Git branches as local development. T
 
 ### Branch lifecycle
 
-Feature branches are named `phase<N>/<task>` (e.g. `phase2/boe-silver`), reflecting the project's phase structure. Branches are short-lived — typically merged and deleted within days of creation. The git log therefore reads as a project timeline rather than a long-running development trunk.
+Feature branches are named `phase<N>/<task>` (e.g. `phase2/boe-silver`), reflecting the project's phase structure. Branches are short-lived, typically merged and deleted within days of creation. The git log therefore reads as a project timeline rather than a long-running development trunk.
 
 ### Historical note
 
@@ -487,11 +485,11 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 ### In progress
 
-- Silver-layer ingestion notebooks — one per source, starting with BoE (simplest)
+- Silver-layer ingestion notebooks, one per source, starting with BoE (simplest)
 
 ### Planned (Silver scope)
 
-1. **Silver-layer ingestion notebooks — one per source**
+1. **Silver-layer ingestion notebooks, one per source**
    - Bronze → Silver transformations (clean, type, dedupe, Delta-format)
    - Data quality checks applied at ingestion time
    - Magic-byte validation as a direct follow-through from the Phase 1 bug
@@ -501,18 +499,18 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 2. **Parameterised quality-rules framework**
    - `quality_rules.json` under `config/` defining per-source validation rules
-   - Generic validation notebook reads rules and applies them dynamically (PySpark, not SQL — required for programmatic rule application)
+   - Generic validation notebook reads rules and applies them dynamically (PySpark, not SQL, since rule application needs to be programmatic)
    - Rejected records routed to a quarantine Delta table in the `quality` schema
    - Quality scores logged to a `pipeline_audit` Delta table on every run
 
 3. **Police.uk overlapping-snapshot deduplication**
    - Primary: `row_number() over (partition by month, force, category order by snapshot_date desc) = 1`
-   - Cross-snapshot consistency check as a bonus quality signal — data that disagrees between overlapping snapshots for the same month is flagged for investigation
+   - Cross-snapshot consistency check as a bonus quality signal: data that disagrees between overlapping snapshots for the same month is flagged for investigation
 
 4. **Automated watermark updates from Databricks**
    - Replace manual JSON editing
-   - Notebook programmatically updates watermark on successful runs
-   - Migration of watermark from JSON-in-ADLS to a Delta table
+   - Notebook programmatically updates the watermark on successful runs
+   - Migration of the watermark from JSON-in-ADLS to a Delta table
 
 5. **pytest + chispa test suite**
    - SparkSession fixture in `tests/conftest.py`
@@ -528,62 +526,16 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 ### Planned order of delivery
 
 1. ✅ Databricks workspace + cluster + Unity Catalog + storage layer + Bronze Volumes
-2. First Silver notebook against the simplest source (BoE) — minimal schema complexity
+2. First Silver notebook against the simplest source (BoE): minimal schema complexity
 3. HPI (single CSV, well-structured)
 4. PPD (large, multi-year, schema-evolution considerations)
 5. Doogal (ZIP unzip, large postcode table)
 6. ONS (XLSX with headers and footers to skip)
-7. Police.uk (most complex — ZIP containing ~4500 nested CSVs, multi-snapshot deduplication)
-8. Quality-rules framework extracted from patterns observed during (2)–(7)
+7. Police.uk (most complex: ZIP containing ~4500 nested CSVs, multi-snapshot deduplication)
+8. Quality-rules framework, extracted from patterns observed during (2)–(7)
 9. Watermark automation
 10. Gold-layer joins
 
 ---
 
-## Design narratives
-
-These sections articulate the rationale behind specific architectural choices.
-
-### On reacting to upstream instability
-
-The planned sixth source (EPC) was deprecated during implementation. Rather than fight the migration or wait for an unknown production launch, the source was swapped for one that preserved architectural goals while improving analytical value. The decision was made by evaluating three paths explicitly (push through, wait, swap) on stability and narrative value. A smoke test conducted before implementation then revealed that the expected data shape of the replacement source was wrong — what looked like a monthly delta was actually a rolling 3-year snapshot. That observation alone saved an entire misaligned pattern from being built. The sequence illustrates a broader principle: discovery before construction, and risk assessment before commitment.
-
-### On recognising latent defects
-
-The base-URL hardcoding bug was invisible for five sources because the hardcoded values happened to match the watermark. It surfaced only when the ONS URL was updated for a new monthly release. The symptom — HTML content where XLSX was expected — was detected through local validation, not trusted from pipeline status. This reinforced a broader operating principle: success status from an orchestrator confirms that bytes moved, not that the right bytes moved. Magic-byte validation in the Silver-layer ingestion contract is the designed response to this class of silent failure.
-
-### On abstraction timing
-
-Two distinct load patterns existed before Police.uk was added: the existing `yearly_range` for PPD and a planned `monthly_backfill` for future use. The temptation to consolidate them upfront was real but deliberately resisted. Only once Police.uk arrived with a concrete 2-year-step requirement did the abstraction earn its cost — at which point `yearly_stepped` absorbed both cases cleanly. This is the discipline of building one thing, building a second, and consolidating when commonality is evidenced rather than imagined.
-
-### On authentication as a taxonomy
-
-Linked services were initially named after the first data source each served. This coupled source identity to connection identity and obscured reuse opportunities. The rename to `LS_HTTP_Anonymous` (and the recognition that the same pattern applied across other linked services) reframed linked services as expressions of authentication shape — a cross-cutting concern that multiple sources can share. The taxonomy change made Police.uk adoption require zero new connection infrastructure.
-
-### On adopting future-current tooling
-
-Most Databricks tutorials and courses — including the most widely-followed video courses on the platform — still teach DBFS mounts and hive_metastore as the default access pattern. These have been deprecated for over a year and Databricks has confirmed that all new Azure workspaces will be Unity Catalog-only from 30 September 2026. Building on UC from day 1 of Phase 2 trades a one-time complexity cost (metastore configuration, access connector, storage credentials, external locations, volumes) for an architecture that will remain current rather than be superseded shortly after delivery. The same logic applied to the choice of Access Connector over service principals: the older pattern still works but the newer one is the documented direction of travel and avoids a future migration.
-
-### On least-privilege identity
-
-The data path uses exactly one Azure RBAC role assignment — `Storage Blob Data Contributor` on the storage account, granted to the UAMI on the Databricks Access Connector. No SAS tokens, no service principal secrets, no rotated credentials anywhere in the pipeline.
-
-The decision to disable file events on Unity Catalog external locations followed the same principle: enabling them would have required granting `Storage Account Contributor` (a control-plane role with broad scope), `EventGrid EventSubscription Contributor`, and `Storage Queue Data Contributor` — substantially expanding the identity's blast radius for a feature whose marginal performance benefit at the project's data scale was negligible. The default Databricks "force create" path papers over the missing permissions silently; explicitly disabling the feature aligns the recorded configuration with the actual access scope and produces a cleaner least-privilege story.
-
-### On physical-logical correspondence
-
-The medallion architecture is implemented as six containers, four schemas, and a deliberate mapping between them: one container = one schema = one medallion layer (for Silver, Gold, Quality), with Bronze using External Volumes to map source folders onto Volume names while preserving the same per-source 1:1 logical correspondence. This is more clicks than a single-container layout with subfolders, but it makes the architecture self-evident from the Azure portal alone — anyone inspecting the storage account sees the medallion structure without needing to read documentation. RBAC and lifecycle policies can be applied per layer. Cost attribution per layer is direct.
-
-The sixth container, `catalog-root`, satisfies Unity Catalog's requirement that a catalog have a managed storage anchor even when all its schemas declare their own (or hold only External Volumes). Naming it for what it is (rather than reusing one of the data containers as a placeholder) keeps the layout legible to a reader. The container remains empty in normal operation and exists purely as a structural anchor — a deliberate non-feature.
-
-### On layers earning their existence
-
-The medallion pattern is frequently taught as a four-layer hierarchy (landing → bronze → silver → gold) in which each layer is a separate Delta-table set. This project deliberately collapses landing and bronze into a single layer of UC External Volumes pointing at raw files: governance and discoverability without the Delta-table tax.
-
-The discipline behind this is that each layer should earn its existence by doing meaningful work the previous layer didn't. At this project's scale — sub-GB per source, durable raw files in ADLS, no ad-hoc raw-data exploration — a Bronze-as-Delta layer would only let the project claim a Bronze layer. The narrower question of "what does this layer do that no other layer does?" is more honest than "what's the canonical medallion shape?"
-
-This is the same principle that drove the consolidation of `yearly_range` into `yearly_stepped`: structural elements appear when concrete needs justify them, not when canonical patterns suggest them.
-
----
-
-*Design document status: reflects state at end of Phase 2 setup — workspace, Unity Catalog, storage layer, and Bronze Volumes provisioned; Silver-layer transformations in active development.*
+*Design document status: reflects state at end of Phase 2 setup: workspace, Unity Catalog, storage layer, and Bronze Volumes provisioned; Silver-layer transformations in active development.*
