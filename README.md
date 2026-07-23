@@ -3,7 +3,7 @@ Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
 A multi-source Azure data platform that ingests, validates, and transforms UK residential property data from six official open datasets, built around HM Land Registry's 24M+ residential transactions since 1995. The pipelines run off a single JSON config file, so adding a source means editing config rather than writing code. It loads incrementally from a per-source watermark, validates every file against its expected format before parsing instead of trusting the orchestrator's success flag, and governs all access through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
 
-> **Status:** Phase 1 complete — Bronze ingestion for all six sources. Phase 2 in progress — Databricks workspace, Unity Catalog, and the medallion storage layer are provisioned. Silver-layer transformation notebooks are in development.
+> **Status:** Phase 1 complete — Bronze ingestion for all six sources. Phase 2 in progress — the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and the first Silver table (BoE base rate) is live, unit-tested, and committed. The remaining five sources follow the same pattern.
 
 **Highlights**
 
@@ -212,6 +212,14 @@ The first Silver table models the Bank of England policy rate as a Type 2 slowly
 
 See the BoE base-rate decision in DESIGN.md for the full rationale.
 
+### 12. Library dependency scoping
+
+Pipeline runtime dependencies go on the cluster spec, version-pinned and committed in `cluster_definition.json`. The spark-excel plugin is the only one so far, and JVM libraries leave no choice: they cannot be installed notebook-scoped, and serverless compute cannot load them at all, which is why Excel reads run on the Dedicated cluster. Test and development dependencies stay off the cluster entirely. chispa is installed notebook-scoped in the test runner at a pinned version, and the same pin sits in `requirements-dev.txt` next to the PySpark and pytest versions the runtime already ships, so a local run matches the cluster.
+
+The split is about blast radius: a cluster library installs for every workload attached to that cluster and cannot be uninstalled from inside a notebook, so an unnecessary one is a version conflict that costs a restart to resolve.
+
+See DESIGN.md Decision 13 for the conditions that would change this.
+
 ---
 
 ## Bugs found and fixed
@@ -279,7 +287,7 @@ See the BoE base-rate decision in DESIGN.md for the full rationale.
 | Query (planned) | Azure Synapse Serverless SQL |
 | Visualisation (planned) | Microsoft Fabric / Power BI |
 | Source control | GitHub (trunk-based, branch-protected main) |
-| Testing (planned) | pytest + chispa for PySpark transforms |
+| Testing | pytest + chispa for PySpark transforms |
 | CI/CD (planned) | GitHub Actions |
 
 ---
@@ -330,9 +338,12 @@ uk-property-intelligence-platform/
 │   │   ├── rules/                       # JSON rule definitions per source
 │   │   └── framework/                   # rule-application engine
 │   └── utils/                           # shared constants (paths), Spark helpers, logging
+├── requirements-dev.txt                 # local + CI test stack (pyspark, pytest, chispa)
 ├── tests/
-│   ├── conftest.py                      # pytest SparkSession fixture
+│   ├── conftest.py                      # SparkSession fixture; reuses the cluster session
+│   ├── run_tests.py                     # runs the suite on the cluster
 │   ├── test_silver_transforms/
+│   │   └── test_boe_base_rate.py        # BoE transform + DQ guard, 16 tests
 │   └── test_quality_framework/
 ├── synapse/                             # (planned) external table definitions
 ├── .github/
@@ -412,7 +423,7 @@ A Databricks notebook to automate these URL updates via pattern matching is plan
 - [x] Bronze restructure: container rename `raw` → `bronze`, removed redundant subfolder
 - [x] Unity Catalog `bronze` schema with per-source External Volumes (UC-governed access from Silver, no abfss paths in notebooks)
 - [x] Doogal Bronze folder renamed `postcodes` → `doogal` to align with source-name taxonomy
-- [ ] Silver: BoE base rate (event-grain SCD2, spark-excel read, fail-loud DQ guard)
+- [x] Silver: BoE base rate (event-grain SCD2, spark-excel read, fail-loud DQ guard)
 - [ ] Silver: HPI
 - [ ] Silver: PPD
 - [ ] Silver: Doogal postcodes
@@ -423,7 +434,7 @@ A Databricks notebook to automate these URL updates via pattern matching is plan
 - [ ] Quarantine table for rejected records
 - [ ] `pipeline_audit` table for per-run quality scores
 - [ ] Watermark automation from Databricks (Delta MERGE into watermark table)
-- [ ] pytest + chispa test suite for transformation functions
+- [x] pytest + chispa harness (SparkSession fixture, cluster runner) and the BoE transform suite
 
 ### Phase 3 — Gold layer
 

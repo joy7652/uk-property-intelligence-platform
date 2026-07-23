@@ -2,7 +2,7 @@
 
 This document captures the architectural decisions, engineering trade-offs, and delivery plan behind the platform. It complements the project README with deeper rationale and serves as the working design reference across phases.
 
-> **Status:** Phase 1 (Bronze ingestion) complete. Phase 2 (Databricks Silver layer) foundation in place: workspace, Unity Catalog, per-layer storage, identity model, and Bronze Volumes provisioned. Silver-layer transformation notebooks in development.
+> **Status:** Phase 1 (Bronze ingestion) complete. Phase 2 (Databricks Silver layer) in progress: foundation provisioned (workspace, Unity Catalog, per-layer storage, identity model, Bronze Volumes), and the first Silver table (BoE base rate) live, unit-tested, and committed. Five sources remain.
 
 ---
 
@@ -421,6 +421,18 @@ The Bank of England base rate is the first Silver table, modelled as a Type 2 sl
 - **`DecimalType(6, 4)`.** Repo-era rates were quoted in sixteenths (for example 5.9375), so a scale-2 decimal would silently round them. Decimal rather than double also gives exact equality, which the change-detection step depends on.
 - **Fail-loud data-quality guard.** `assert_rate_columns_consistent` aborts the run if any row carries conflicting non-null values across the rate columns, rather than letting the coalesce silently pick one.
 
+### 13. Library dependency scoping
+
+A dependency lands in one of three places: the cluster spec, a notebook-scoped `%pip` install, or `requirements-dev.txt` for local runs and CI.
+
+Pipeline runtime dependencies go on the cluster spec, version-pinned and committed in `databricks_src/setup/cluster_definition.json`. The spark-excel plugin is the only one so far, and it has no alternative: JVM libraries cannot be installed notebook-scoped, and serverless compute cannot load them at all, which is also why the Excel reads run on the Dedicated cluster rather than serverless.
+
+Test and development dependencies stay off the cluster entirely. chispa is installed notebook-scoped in `tests/run_tests.py` at a pinned version, and the same pin sits in `requirements-dev.txt` next to the PySpark and pytest versions the runtime already ships, so a local run matches the cluster. Databricks recommends pinning `%pip` installs rather than letting them float, since unpinned installs do not fit serverless environments.
+
+The split is about blast radius. A cluster library installs for every workload attached to the cluster and cannot be uninstalled from inside a notebook, so a version conflict is resolved at the cluster level and costs a restart. A notebook-scoped install reaches one notebook and disappears with the session, which is the right lifetime for something only the test runner needs. Keeping the cluster spec to what the pipeline needs at runtime also keeps it an accurate description of the pipeline.
+
+This would change if the test suite moved to a scheduled job or to serverless compute, where the pinned environment belongs in the job or bundle environment specification rather than either place above.
+
 ---
 
 ## Bugs found and fixed
@@ -545,7 +557,7 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 ### In progress
 
-- Silver-layer ingestion notebooks, one per source, starting with BoE (simplest)
+- Silver-layer ingestion notebooks, one per source. BoE is complete: transform module, notebook, and unit tests are committed and the table is live. HPI is next.
 
 ### Planned (Silver scope)
 
@@ -573,10 +585,11 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
    - Migration of the watermark from JSON-in-ADLS to a Delta table
 
 5. **pytest + chispa test suite**
-   - SparkSession fixture in `tests/conftest.py`
-   - Per-source transform tests in `tests/test_silver_transforms/`
+   - SparkSession fixture in `tests/conftest.py`. It reuses the cluster's session when one already exists, because builder options are ignored at that point and stopping the session would detach the notebook.
+   - Per-source transform tests in `tests/test_silver_transforms/`. BoE is covered by 16 tests: the data-quality guard, an exact end-to-end SCD2 scenario, the multi-row invariants Delta CHECK constraints cannot express (exactly one current row, contiguous non-overlapping intervals), and edge cases including sixteenth-precision decimals and null-rate gaps.
    - Quality framework tests in `tests/test_quality_framework/`
-   - Runs locally with `pytest`; CI integration deferred to Phase 4
+   - Runs locally with `pytest` against the versions pinned in `requirements-dev.txt`, and on the cluster through `tests/run_tests.py`. CI integration deferred to Phase 4.
+   - Test-only dependencies stay notebook-scoped or local rather than on the cluster spec (see Decision 13)
 
 6. **Initial Silver → Gold design**
    - Multi-source joins on postcode
@@ -586,7 +599,7 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 ### Planned order of delivery
 
 1. ✅ Databricks workspace + cluster + Unity Catalog + storage layer + Bronze Volumes
-2. First Silver notebook against the simplest source (BoE): minimal schema complexity
+2. ✅ First Silver notebook against the simplest source (BoE): minimal schema complexity
 3. HPI (single CSV, well-structured)
 4. PPD (large, multi-year, schema-evolution considerations)
 5. Doogal (ZIP unzip, large postcode table)
@@ -598,4 +611,4 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 ---
 
-*Design document status: reflects state at end of Phase 2 setup: workspace, Unity Catalog, storage layer, and Bronze Volumes provisioned; Silver-layer transformations in active development.*
+*Design document status: Phase 2 in progress. Foundation provisioned, BoE Silver complete and unit-tested, five sources remaining.*
