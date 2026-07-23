@@ -4,15 +4,7 @@
 # MAGIC One schema per medallion layer: bronze, silver, gold, quality.
 # MAGIC Run this before `02_create_bronze_volumes`.
 # MAGIC
-# MAGIC Bronze takes no managed location. It holds External Volumes over the raw
-# MAGIC files ADF lands, so a managed location would point any managed table or
-# MAGIC volume created here at the bronze container, putting Delta data in among
-# MAGIC the raw files.
-# MAGIC
-# MAGIC `IF NOT EXISTS` keeps this re-runnable but cannot repair a definition
-# MAGIC that has drifted: the statement is skipped whole when the schema already
-# MAGIC exists, clauses included. Changing a schema definition means dropping and
-# MAGIC recreating it.
+# MAGIC Bronze takes no managed location: it holds External Volumes only, so there are no managed objects to place.
 
 # COMMAND ----------
 
@@ -45,8 +37,7 @@
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC -- Root Location must not be the bronze container. With no MANAGED LOCATION
-# MAGIC -- the schema inherits the catalog's, so expect a path under catalog-root.
+# MAGIC -- Root Location must not be the bronze container.
 # MAGIC DESCRIBE SCHEMA EXTENDED uk_property_intel.bronze;
 
 # COMMAND ----------
