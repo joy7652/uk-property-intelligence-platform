@@ -1,5 +1,5 @@
 {
-  "_description": "Source-of-truth definition for the Phase 2 Databricks all-purpose cluster. Hand-maintained; applied via the commands in databricks/setup/README.md. The Databricks REST API manages cluster configuration and libraries through separate endpoints, so this file is consumed in two parts (see the jq commands). The 'cluster' block below is illustrative of the expected shape -- reconcile it against the live cluster via 'databricks clusters get <id>'.",
+  "_description": "Source-of-truth definition for the Phase 2 Databricks all-purpose cluster. Hand-maintained; applied via the commands in databricks_src/setup/README.md. The Databricks REST API manages cluster configuration and libraries through separate endpoints, so this file is consumed in two parts (see the jq commands). The 'cluster' block below is illustrative of the expected shape -- reconcile it against the live cluster via 'databricks clusters get <id>'.",
   "cluster": {
     "cluster_id": "0508-000648-30dkg64g",
     "cluster_name": "ukpropertyintel-phase2",

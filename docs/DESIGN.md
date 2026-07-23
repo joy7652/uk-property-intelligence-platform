@@ -74,6 +74,7 @@ Property data turns up across finance, consulting, and the public sector, and it
 - URL: `https://www.bankofengland.co.uk/-/media/boe/files/monetary-policy/baserate.xls`
 - Requires User-Agent header (anti-bot filtering)
 - Full rate history since 1694
+- The published `baserate.xls` is revised periodically, and the daily `Raw Data` series is pre-filled to roughly a month past the save date (a revision saved 2026-03-31 carried daily rows through 2026-04-30). Between revisions, ADF refreshes land byte-identical copies, so an unchanged row count after re-ingestion is expected rather than a failed fetch; confirm freshness from the blob's `modificationTime`, not a content change.
 
 **5. ONS Price Index of Private Rents**
 - Monthly XLSX, URL changes with every release
@@ -303,8 +304,8 @@ A single JSON array in ADLS containing one object per source. Each object declar
 - **Storage credential:** points to the Access Connector's UAMI.
 - **External locations:** one per non-config container: `bronze`, `silver`, `gold`, `quality`, `catalog-root`. All connection-tested and confirmed working with file events explicitly off.
 - **Catalog:** `uk_property_intel`, managed location at `catalog-root`.
-- **Schemas:** `bronze`, `silver`, `gold`, `quality`. Silver, Gold, and Quality have schema-level managed locations at their matching container; Bronze has no managed location since it holds only External Volumes. Created via SQL in `databricks/setup/01_create_schemas.py`.
-- **External Volumes:** one per Bronze source, defined in `databricks/setup/02_create_bronze_volumes.py`. Exposes raw files under `uk_property_intel.bronze.<source>` for UC governance and lineage. Silver notebooks read from `/Volumes/uk_property_intel/bronze/<source>/` rather than direct `abfss://` paths.
+- **Schemas:** `bronze`, `silver`, `gold`, `quality`. Silver, Gold, and Quality have schema-level managed locations at their matching container; Bronze has no managed location since it holds only External Volumes. Created via SQL in `databricks_src/setup/01_create_schemas.py`.
+- **External Volumes:** one per Bronze source, defined in `databricks_src/setup/02_create_bronze_volumes.py`. Exposes raw files under `uk_property_intel.bronze.<source>` for UC governance and lineage. Silver notebooks read from `/Volumes/uk_property_intel/bronze/<source>/` rather than direct `abfss://` paths.
 - **Default workspace catalog:** dropped after I verified the dedicated catalog was operational, which keeps Catalog Explorer free of placeholder entries.
 
 ### Bronze layer state
@@ -408,6 +409,18 @@ Bronze-as-Volumes does pull its weight, for four reasons:
 
 This decision would change if I were ingesting very large source files at high frequency, if the source data were ephemeral and needed durable Delta preservation, or if I needed extensive ad-hoc SQL on the raw data before Silver. None of those apply at the moment.
 
+### 12. BoE base rate as an event-grain SCD2
+
+The Bank of England base rate is the first Silver table, modelled as a Type 2 slowly-changing dimension at event grain rather than a daily-grain series.
+
+- **Grain.** One row per rate level, with a validity interval (`effective_date`, `expiry_date`, `is_current`), the rate and its regime label (`rate_pct`, `rate_type`), and lineage columns (`_source_file`, `_ingestion_ts`). `expiry_date` is a deterministic derivation (the day before the next change; null marks the open interval), so it adds information rather than reshaping the data for a particular consumer, which keeps it Silver-appropriate. Daily-grain join surfaces, if a consumer needs them, are Gold's call.
+- **Source reality.** `baserate.xls` is a multi-sheet FAME database export. The machine-readable sheet is `Raw Data`, a daily series from 1973-01-01 to present with real datetime cells and the header on row 2. The report sheets (`BOEBASERATE`, `HISTORICAL SINCE 1694`) are human-formatted and skipped.
+- **Regime coalescing.** The BoE has renamed the policy rate across five era-specific columns (Bank Rate, Minimum Lending Rate, Minimum Band 1 Dealing Rate, Repo Rate, Official Bank Rate). These coalesce into a single `rate_pct` and a `rate_type`, newest regime first. Both columns are populated only on the two regime-changeover days (1981-08-24 and 1997-05-05), where the two values agree.
+- **Collapse on rate value only.** The daily series collapses to change events; a regime relabel that does not move the rate is not an SCD2 event, and `rate_type` records the regime in effect at `effective_date`.
+- **1973 cutoff.** Pre-1973 history lives only in the fragile report sheet, and PPD and HPI both start in 1995, so older rates would join to nothing. The first row's `effective_date` is the series start rather than a true change date (left-censored), which is noted in the code docstring.
+- **`DecimalType(6, 4)`.** Repo-era rates were quoted in sixteenths (for example 5.9375), so a scale-2 decimal would silently round them. Decimal rather than double also gives exact equality, which the change-detection step depends on.
+- **Fail-loud data-quality guard.** `assert_rate_columns_consistent` aborts the run if any row carries conflicting non-null values across the rate columns, rather than letting the coalesce silently pick one.
+
 ---
 
 ## Bugs found and fixed
@@ -446,6 +459,53 @@ This decision would change if I were ingesting very large source files at high f
 
 **Resolution:** extract the inner logic into child pipelines. `PL_Route_Yearly_Stepped` and `PL_Route_Incremental_Load` exist specifically to unwrap one control-flow activity per layer. The result is cleaner separation of concerns, with each pipeline doing one job.
 
+### Repo folder named `databricks` shadowed by the installed SDK
+
+**Discovered:** while building the first importable Silver transform module. Imports from a top-level repo folder named `databricks` never resolved, whatever the path manipulation.
+
+**Root cause:** the installed Databricks SDK owns the `databricks` package name on a cold interpreter start, so a top-level folder of the same name is shadowed and never reaches the import path. A second constraint sat underneath it: Databricks Runtime 16.0 and above cannot import a notebook as a Python module at all, so importable library code has to be a plain workspace file (`.py` with no `# Databricks notebook source` header), created via Add → File rather than Add → Notebook. Committed through Git, a `.py` without the header lands as a File; with the header it becomes a notebook.
+
+**Fix:** renamed the folder to `databricks_src`, and kept importable library code as `.py` workspace Files while runnable notebooks stay in source format. One representation serves both: a source-format notebook renders as a notebook in the workspace but commits as a clean `.py` diff. Reverting the rename once appeared to work, but only because stale `sys.modules` state from earlier path edits in the same session masked the failure, so the real check is a fresh interpreter.
+
+**Lesson:** verify any import fix on restarted compute before trusting it. The `__init__.py` files I first suspected were a red herring: implicit namespace packages resolve fine on Databricks Runtime, and the `wsfs ... Cannot find child __init__.pyc` messages are the FUSE layer logging the import system's file probes, not the failure itself.
+
+### External Volumes rooted at the wrong depth
+
+**Discovered:** the first end-to-end run of the BoE Silver notebook failed with a 404 whose URL contained a doubled segment, `boe/base_rate/base_rate/`. A Volume path resolves as the Volume's storage location plus the relative path the notebook appends, so the doubling identified the fault from the error alone: the Volume was rooted at the dataset folder (`/boe/base_rate/`) instead of the source root (`/boe/`).
+
+**Audit:** I checked all six Volumes against both the Bronze layout table in this document and a direct storage listing (`dbutils.fs.ls` through the external location, since a Volume under audit cannot be trusted to list itself). `ppd` and `doogal` were correct; `ons` and `police` were rooted at their dataset folders, the same class of fault as `boe`; `hpi` pointed at `uk_hpi/`, which matched the deployed storage but exposed that the data itself had landed outside the taxonomy back in Phase 1 (a flat `uk_hpi/` while the sibling source `ppd` nests under `land_registry/`).
+
+**Fix (metadata class: boe, ons, police):** the Volumes were dropped and recreated at their source roots. An external Volume's location cannot be altered in place, so drop-and-recreate is the mechanism, and it touches metadata only.
+
+**Fix (data class: hpi):** corrected at the data layer instead, the same way `doogal` had been handled. The watermark sink folder moved to `land_registry/hpi`, the rotating URL was refreshed to the current release, the master pipeline re-ran to land the file at the new path, and the stale `uk_hpi/` was deleted only after verifying the new file (the Phase 1 lesson: Succeeded is not the same as the right bytes). The Volume was then recreated at `land_registry/hpi/`.
+
+**Script hygiene:** `02_create_bronze_volumes.py` was corrected in three places, and a stray one-time `DROP VOLUME ... doogal` repair line was removed. A lone `DROP` in a committed bootstrap script silently destroys and recreates one of six Volumes on every run, and one-off repairs belong in the runbook or a serverless session. The same reasoning removed the one-time `SHOW SCHEMAS` and `DROP CATALOG ..._ws CASCADE` cells from `01_create_schemas.py`, where a bare `DROP` would abort a fresh rebuild and a new workspace's default catalog carries a different name anyway. Two verification changes also came out of the audit: it moved to an `information_schema.volumes` query selecting `storage_location`, because `SHOW VOLUMES` lists names only and a wrong-rooted Volume is invisible in a name listing; and `02_create_bronze_volumes.py` now closes with a `dbutils.fs.ls` on the BoE Volume path, the same path the Silver notebook reads, so a mis-rooted Volume fails in the bootstrap script rather than downstream.
+
+**Lessons:**
+
+- `CREATE ... IF NOT EXISTS` is safe to re-run but can never repair drift, since create-if-absent says nothing about desired state. Relocating a Volume requires an explicit `DROP`; the corrected script on its own is inert against a live wrong Volume. This is part of the motivation for the Phase 4 Terraform work, which reconciles state rather than asserting absence.
+- Verify Volumes against storage listings, not their own definitions. Script, documentation, and deployment can each be wrong independently: here the documentation was right and the deployment wrong for boe, ons, and police, while the deployment was right and the data wrong for hpi.
+- Read failing URLs literally. The doubled path segment named the fault before any diagnostic ran.
+- A wrong-rooted Volume keeps working until a path convention exposes it, so fix it while nothing downstream holds lineage against it.
+
+### Bronze schema created with a managed location it should never have had
+
+**Discovered:** while converting the setup notebooks from `.ipynb` to `.py` source format. `01_create_schemas` had given `uk_property_intel.bronze` a `MANAGED LOCATION` at the bronze container root, which contradicts the design recorded elsewhere in this document: bronze holds External Volumes only. `DESCRIBE SCHEMA EXTENDED uk_property_intel.bronze` confirmed it live, reporting the Root Location as the bronze container.
+
+**Why it mattered:** a managed location is the default storage path for managed Delta tables and managed volumes. Nothing managed had been created in `bronze`, so nothing had gone wrong yet, but any managed object created there would have written Delta files into the container that holds raw ADF output.
+
+**Why it went unnoticed:** `CREATE SCHEMA IF NOT EXISTS` skips the whole statement, clauses included, when the schema already exists. The `MANAGED LOCATION` clause applied once at creation and was invisible on every re-run afterwards. This is the same masking mechanism as the wrong-rooted Volumes, one level up the hierarchy.
+
+**Documented behaviour against observed:** Databricks documents managed storage locations as unable to overlap external tables or external volumes. All six Bronze External Volumes were nevertheless created beneath the managed bronze root without error. I tested this directly rather than arguing it: a throwaway schema with a managed location at an unused path accepted an external volume created inside that path. The documented rule did not block an external volume created under an existing managed location. I record this as an observation with the probe described, not as a claim about Unity Catalog internals; the fix does not rest on it, since the raw-container argument stands on its own.
+
+**Fix:** the six Volumes were dropped individually, then `DROP SCHEMA uk_property_intel.bronze` without `CASCADE`. A plain drop refuses while the schema still holds objects, which is the guard worth having when the schema's managed root is the container holding every raw file. Both setup scripts were re-run, and the container listing was diffed before and after to confirm no data moved.
+
+**Lessons:**
+
+- A managed location is only meaningful where managed objects exist. Bronze holds External Volumes that carry their own explicit `LOCATION`, so the clause was inert. Inert is not the same as harmless: it set the blast radius of a mistake nobody had made yet.
+- `IF NOT EXISTS` concealed a schema-level definition error for two months, the same way it concealed the wrong-rooted Volumes. Create-if-absent DDL can state absence, never desired state.
+- Vendor documentation is where verification starts, not where it ends. The overlap rule was quoted, contradicted by the live deployment, then settled by a four-statement probe.
+
 ---
 
 ## Repository and Git workflow
@@ -479,7 +539,7 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 - Five external locations (`bronze`, `silver`, `gold`, `quality`, `catalog-root`), file events disabled on all
 - Dedicated catalog `uk_property_intel` with four schemas (`bronze`, `silver`, `gold`, `quality`)
 - Per-source External Volumes under `bronze`, exposing raw files for governed Silver access
-- Default workspace catalog dropped; repo skeleton committed including `databricks/`, `tests/`, and the schema and volume setup notebooks
+- Default workspace catalog dropped; repo skeleton committed including `databricks_src/`, `tests/`, and the schema and volume setup notebooks
 - Bronze container restructured: `raw` → `bronze`, redundant subfolder removed, ADF pipelines updated, end-to-end re-run validated
 - GitHub integration in Databricks via Git folder, PAT-authenticated, trunk-based workflow operational
 
@@ -494,8 +554,8 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
    - Data quality checks applied at ingestion time
    - Magic-byte validation as a direct follow-through from the Phase 1 bug
    - Schema enforcement with Delta Lake's `mergeSchema`
-   - Excel sources read via `com.crealytics:spark-excel` for Spark-native ingestion consistency
-   - Pure transformation functions live in `databricks/silver/transforms/` for unit-testability; notebooks import them
+   - Excel sources read via the `dev.mauch:spark-excel_2.13:4.0.0_0.31.2` Spark plugin for Spark-native ingestion consistency
+   - Pure transformation functions live in `databricks_src/silver/transforms/` for unit-testability; notebooks import them
 
 2. **Parameterised quality-rules framework**
    - `quality_rules.json` under `config/` defining per-source validation rules

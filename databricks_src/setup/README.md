@@ -28,7 +28,7 @@ The cluster must exist before the schema notebook can run on it.
 `cluster_definition.json` is a project artifact, not a literal API payload: the Databricks REST API manages cluster configuration and libraries through separate endpoints. Apply both parts:
 
 ```bash
-# run from databricks/setup/
+# run from databricks_src/setup/
 
 # cluster configuration
 jq '.cluster' cluster_definition.json > /tmp/cluster.json

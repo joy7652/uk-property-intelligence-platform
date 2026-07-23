@@ -206,6 +206,12 @@ At this scale (sub-GB per source, durable raw files, no ad-hoc SQL on the raw da
 
 See DESIGN.md Decision 11 for the conditions that would change this call.
 
+### 11. BoE base rate as an event-grain SCD2
+
+The first Silver table models the Bank of England policy rate as a Type 2 slowly-changing dimension at event grain: one row per rate level with a validity interval (`effective_date`, `expiry_date`, `is_current`), a rate and its regime label, and lineage columns. The daily source series collapses to change events only, so a day whose rate matches the day before is not a row. The BoE has renamed the policy rate five times since 1973, so the five era-specific rate columns coalesce into one `rate_pct` and a `rate_type`, and a rename that leaves the rate unchanged is not treated as a change. A fail-loud data-quality guard aborts the run if any day carries conflicting rate values across those columns rather than silently coalescing one of them. Daily-grain join surfaces, if a consumer needs them, are Gold's job.
+
+See the BoE base-rate decision in DESIGN.md for the full rationale.
+
 ---
 
 ## Bugs found and fixed
@@ -238,6 +244,26 @@ See DESIGN.md Decision 11 for the conditions that would change this call.
 **Discovered:** ONS uses relative URLs of the form `?uri=/path/to/file.xlsx`. ADF URL-encoded the `?` whenever the relative URL started with anything else, which corrupted the request.
 
 **Fix:** Always put `?` as the first character of the relative URL. ADF preserves the query-string delimiter when it sits at position 0.
+
+### Import shadowing from a top-level `databricks` folder
+
+**Discovered:** while building importable transform modules for the Silver layer. Imports from a top-level repo folder named `databricks` never resolved.
+
+**Root cause:** the installed Databricks SDK owns the `databricks` package name on a cold interpreter start, so a repo folder of the same name is shadowed and never reaches the import path. A second constraint compounded it: on Databricks Runtime 16.0 and above a notebook cannot be imported as a Python module at all, so importable code has to be a plain workspace file (`.py` with no `# Databricks notebook source` header) rather than a notebook.
+
+**Fix:** renamed the folder to `databricks_src`, and kept importable library code as `.py` workspace Files while runnable notebooks stay in source format. Reverting the rename appeared to work once, but only because stale `sys.modules` state from earlier path edits masked the failure, so the real check is a fresh interpreter.
+
+**Lesson:** verify any import fix on restarted compute before trusting it. The `__init__.py` files I first suspected were a red herring. Implicit namespace packages resolve fine, and the `wsfs ... Cannot find child __init__.pyc` log lines are the import system probing for files, not the cause.
+
+### External Volumes rooted at the wrong depth
+
+**Discovered:** the first end-to-end BoE Silver run failed with a 404 whose path contained a doubled segment, `boe/base_rate/base_rate/`. A Volume path resolves as the Volume's storage location plus the relative path the notebook appends, so the doubling pinpointed the cause: the Volume was rooted at the dataset folder (`/boe/base_rate/`) instead of the source root (`/boe/`).
+
+**Audit:** I checked all six Volumes against both the intended Bronze layout and a direct storage listing, since a Volume can't be trusted to list its own contents when its own root is in question. `ppd` and `doogal` were correct; `ons` and `police` had the same misrooting as `boe`; `hpi` pointed at a `uk_hpi/` folder that matched storage but revealed the data itself had landed outside the source taxonomy back in Phase 1.
+
+**Fix:** for the misrooted Volumes I dropped and recreated them at the source root, since an external Volume's location can't be altered in place and the recreate touches only metadata. For `hpi` the fix was at the data layer instead: repoint the watermark sink to `land_registry/hpi`, re-run the pipeline, and delete the stale folder only after verifying the new file landed. I also corrected the volume-creation script and removed a one-off `DROP VOLUME` line left in a script meant to run on every rebuild.
+
+**Lesson:** `CREATE ... IF NOT EXISTS` is safe to re-run but can't repair drift, since create-if-absent says nothing about desired state, and relocating a Volume needs an explicit drop. A wrong-rooted Volume also keeps working until a path convention exposes it, so verify against storage listings rather than the object's own definition.
 
 ---
 
@@ -286,13 +312,17 @@ uk-property-intelligence-platform/
 ├── config/
 │   ├── watermark.json                   # per-source state, URL parameters, load patterns
 │   └── quality_rules.json               # (planned) per-source validation rules for Silver
-├── databricks/
+├── databricks_src/
 │   ├── setup/
+│   │   ├── README.md                    # bootstrap runbook
+│   │   ├── cluster_definition.json      # cluster + library spec
 │   │   ├── 01_create_schemas.py         # Unity Catalog schema definitions (SQL via %sql cells)
 │   │   └── 02_create_bronze_volumes.py  # External Volumes per Bronze source
 │   ├── silver/
 │   │   ├── notebooks/                   # one notebook per source
-│   │   └── transforms/                  # importable transformation functions (unit-testable)
+│   │   │   └── 01_boe_base_rate.py      # BoE base rate → Silver (event-grain SCD2)
+│   │   └── transforms/                  # importable transform functions (unit-testable)
+│   │       └── boe_base_rate.py         # pure BoE transform + DQ guard
 │   ├── gold/
 │   │   ├── notebooks/
 │   │   └── transforms/
@@ -382,7 +412,12 @@ A Databricks notebook to automate these URL updates via pattern matching is plan
 - [x] Bronze restructure: container rename `raw` → `bronze`, removed redundant subfolder
 - [x] Unity Catalog `bronze` schema with per-source External Volumes (UC-governed access from Silver, no abfss paths in notebooks)
 - [x] Doogal Bronze folder renamed `postcodes` → `doogal` to align with source-name taxonomy
-- [ ] Silver notebooks for all 6 sources
+- [ ] Silver: BoE base rate (event-grain SCD2, spark-excel read, fail-loud DQ guard)
+- [ ] Silver: HPI
+- [ ] Silver: PPD
+- [ ] Silver: Doogal postcodes
+- [ ] Silver: ONS private rents
+- [ ] Silver: Police.uk crime
 - [ ] Parameterised quality-rules framework (`quality_rules.json`)
 - [ ] Magic-byte validation for binary inputs
 - [ ] Quarantine table for rejected records
