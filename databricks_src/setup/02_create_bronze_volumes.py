@@ -1,8 +1,5 @@
 # Databricks notebook source
 # Run after 01_create_schemas.
-#
-# Pre-flight: confirm the bronze external location is reachable and list the
-# source roots the volumes below point at.
 dbutils.fs.ls("abfss://bronze@ukpropertyintelligencedl.dfs.core.windows.net/")
 
 # COMMAND ----------
@@ -13,9 +10,8 @@ dbutils.fs.ls("abfss://bronze@ukpropertyintelligencedl.dfs.core.windows.net/")
 # MAGIC -- notebook reads from /Volumes/uk_property_intel/bronze/<source>/ and
 # MAGIC -- writes to uk_property_intel.silver.<source>.
 # MAGIC --
-# MAGIC -- Every LOCATION is a source root, never a dataset subfolder. Notebooks
-# MAGIC -- append the dataset path themselves, so a volume rooted one level too
-# MAGIC -- deep resolves to a doubled path segment and 404s.
+# MAGIC -- Every LOCATION is a source root, never a dataset subfolder. Every LOCATION is a source root, 
+# MAGIC -- never a dataset subfolder; notebooks append the dataset path themselves.
 # MAGIC --
 # MAGIC -- IF NOT EXISTS will not relocate an existing volume. If a LOCATION
 # MAGIC -- changes here, DROP the live volume first (metadata only, no data moves).
@@ -52,8 +48,7 @@ dbutils.fs.ls("abfss://bronze@ukpropertyintelligencedl.dfs.core.windows.net/")
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC -- SHOW VOLUMES lists names only. storage_location is what catches a
-# MAGIC -- wrong-rooted volume, which is the failure this layout hit once already.
+# MAGIC -- SHOW VOLUMES lists names only.
 # MAGIC SELECT volume_name, volume_type, storage_location
 # MAGIC FROM uk_property_intel.information_schema.volumes
 # MAGIC WHERE volume_schema = 'bronze'
@@ -62,6 +57,4 @@ dbutils.fs.ls("abfss://bronze@ukpropertyintelligencedl.dfs.core.windows.net/")
 # COMMAND ----------
 
 # End-to-end path resolution: the Silver BoE notebook reads this exact path.
-# A volume rooted one level too deep resolves to boe/base_rate/base_rate/ and
-# fails here rather than three notebooks later.
 dbutils.fs.ls("/Volumes/uk_property_intel/bronze/boe/base_rate/")
