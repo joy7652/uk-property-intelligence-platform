@@ -4,6 +4,9 @@ The session-scoped SparkSession mirrors the cluster's relevant semantics
 (Spark 4.0, UTC session timezone) while staying cheap to start: local mode,
 one shuffle partition, UI off. Transform modules under test are pure --
 no Delta, no Unity Catalog, no ADLS -- so a bare local session is enough.
+
+On Databricks the fixture reuses the cluster's session: builder options are
+ignored once a session exists, and stopping it would detach the notebook.
 """
 
 import sys
@@ -21,12 +24,21 @@ if str(_REPO_ROOT) not in sys.path:
 
 @pytest.fixture(scope="session")
 def spark():
-    """One local SparkSession for the whole test run.
+    """One SparkSession for the whole test run.
 
-    UTC session timezone keeps date/timestamp literals deterministic
-    regardless of the machine running the suite; a single shuffle
-    partition keeps the tiny test DataFrames fast.
+    UTC session timezone keeps date and timestamp literals deterministic
+    wherever the suite runs; a single shuffle partition keeps the tiny test
+    DataFrames fast. On a cluster the timezone is set for the duration of the
+    run and restored afterwards, since the session outlives the suite.
     """
+    active = SparkSession.getActiveSession()
+    if active is not None:
+        previous_tz = active.conf.get("spark.sql.session.timeZone")
+        active.conf.set("spark.sql.session.timeZone", "UTC")
+        yield active
+        active.conf.set("spark.sql.session.timeZone", previous_tz)
+        return
+
     session = (
         SparkSession.builder
         .master("local[2]")

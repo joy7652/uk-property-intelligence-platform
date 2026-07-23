@@ -1,0 +1,7 @@
+# Local and CI test dependencies. Not installed on the cluster: DBR 17.3 LTS
+# already provides PySpark and pytest, and pip-installing them there shadows
+# the runtime. The cluster needs chispa alone (tests/run_tests.py).
+
+pyspark==4.0.0    # DBR 17.3 LTS
+pytest==8.3.5     # DBR 17.3 LTS
+chispa==0.12.0
