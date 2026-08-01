@@ -1,14 +1,14 @@
 # UK Property Market Intelligence Platform
 Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
-A multi-source Azure data platform that ingests, validates, and transforms UK residential property data from six official open datasets, built around HM Land Registry's 24M+ residential transactions since 1995. The pipelines run off a single JSON config file, so adding a source means editing config rather than writing code. It loads incrementally from a per-source watermark, validates every file against its expected format before parsing instead of trusting the orchestrator's success flag, and governs all access through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
+A multi-source Azure data platform that ingests, validates, and transforms UK residential property data from six official open datasets, built around HM Land Registry's 31.4M residential transactions since 1995. The pipelines run off a single JSON config file, so adding a source means editing config rather than writing code. It loads incrementally from a per-source watermark, validates every file against its expected format before parsing instead of trusting the orchestrator's success flag, and governs all access through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
 
-> **Status:** Phase 1 complete — Bronze ingestion for all six sources. Phase 2 in progress — the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and the first Silver table (BoE base rate) is live, unit-tested, and committed. The remaining five sources follow the same pattern.
+> **Status:** Phase 1 complete — Bronze ingestion for all six sources. Phase 2 in progress — the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and three Silver tables are live, unit-tested, and committed: the Bank of England base rate, the UK House Price Index, and Land Registry Price Paid Data. Three sources remain.
 
 **Highlights**
 
 - 6 official UK datasets: Land Registry PPD and HPI, ONS rents, BoE base rate, ONS postcodes (via Doogal), Police.uk crime
-- 24M+ property transactions since 1995
+- 31.4M property transactions since 1995 (July 2026 release)
 - Config-driven ingestion: a new source is 1 JSON block in the watermark, not a new pipeline
 - Incremental by per-source watermark, with 2 reusable load patterns covering all 6 sources
 - Magic-byte validation and a quarantine/quality layer, because a success flag only means bytes moved
@@ -60,9 +60,10 @@ Fabric / Power BI  (planned)
 
 - Adding a source means appending a JSON block to the watermark, not writing a new pipeline.
 - Two ingestion patterns (`yearly_stepped` and `single_file`) cover every source. Each source declares which one it uses.
-- After the first full load, each source tracks its own state in the watermark, so later runs fetch only what's new. What counts as "new" is source-specific (a cumulative update file for PPD, a fresh rolling snapshot for Police.uk), so incremental loading routes by type rather than assuming one mechanism.
+- After the first full load, each source tracks its own state in the watermark, so later runs fetch only what's new. What counts as "new" is source-specific (a change-only delta for PPD, a fresh rolling snapshot for Police.uk), so incremental loading routes by type rather than assuming one mechanism.
 - A pipeline reporting success only tells me bytes moved, not that the right bytes moved. Binary files are checked against their expected magic bytes before any Silver-layer parsing.
 - HTTP linked services are host-agnostic and take their base URL per request via `@{linkedService().p_base_url}`, instead of one linked service per host.
+- Silver filters on reliability; Gold filters on the question being asked. Data that is measured and clean stays in Silver even when nothing in the project joins it yet.
 
 ---
 
@@ -72,7 +73,7 @@ Six official UK government and regulated open datasets:
 
 | # | Source | Format | Pattern | Step | Update cadence |
 |---|--------|--------|---------|------|----------------|
-| 1 | HM Land Registry — Price Paid Data (PPD) | CSV, per year | `yearly_stepped` | 1 year | Monthly cumulative increment |
+| 1 | HM Land Registry — Price Paid Data (PPD) | CSV, per year | `yearly_stepped` | 1 year | Monthly change-only delta |
 | 2 | HM Land Registry — UK House Price Index (HPI) | CSV, cumulative | `single_file` | — | Monthly |
 | 3 | Doogal — UK Postcode Lookup (ONSPD mirror) | ZIP | `single_file` | — | Quarterly |
 | 4 | Bank of England — Official Bank Rate | XLS | `single_file` | — | Monthly |
@@ -81,7 +82,7 @@ Six official UK government and regulated open datasets:
 
 ### Why these sources
 
-**Price Paid Data** is the authoritative record of UK residential transactions since 1995, 24M+ records, and the backbone of any property analysis. **HPI** gives official price indices validated by the same department, which makes it a useful cross-check for any metric I derive myself. **Postcode lookups** handle geocoding and regional aggregation. **Bank of England rates** and **ONS rents** supply the macro picture; affordability needs both the price and the cost of money. **Police crime data** adds the classic property-investment overlay of safety against price growth, and it joins cleanly on postcode.
+**Price Paid Data** is the authoritative record of UK residential transactions since 1995, 31.4M records as of the July 2026 release, and the backbone of any property analysis. **HPI** gives official price indices validated by the same department, which makes it a useful cross-check for any metric I derive myself. **Postcode lookups** handle geocoding and regional aggregation. **Bank of England rates** and **ONS rents** supply the macro picture; affordability needs both the price and the cost of money. **Police crime data** adds the classic property-investment overlay of safety against price growth, and it joins cleanly on postcode.
 
 ### Source swap: EPC → Police.uk
 
@@ -103,7 +104,7 @@ I weighed three options (push through on the dying service, wait, or swap) and s
 
 Two patterns cover every ingestion shape I ran into:
 
-- **`yearly_stepped`** — iterate across years with a configurable step, one file per step. Incremental work dispatches to one of two children via `incremental_type`: `static_url` (PPD's cumulative monthly update file) or `templated_latest` (Police.uk's monthly-rotating snapshot URL).
+- **`yearly_stepped`** — iterate across years with a configurable step, one file per step. Incremental work dispatches to one of two children via `incremental_type`: `static_url` (PPD's change-only update file) or `templated_latest` (Police.uk's monthly-rotating snapshot URL).
 - **`single_file`** — one URL fetches one file per refresh. Used by HPI, Doogal, BoE, and ONS.
 
 `yearly_stepped` grew out of an earlier `yearly_range` pattern. I added the step parameter only once Police.uk's 2-year cadence gave me a real second use for it, rather than generalising before I needed to.
@@ -156,6 +157,8 @@ PL_Master_Orchestrator
 - **Quality** — quarantine records, rule-run history, and DQ metrics under `uk_property_intel.quality`, in the `quality` container.
 
 Each layer maps one-to-one to a Blob container and a Unity Catalog schema. Silver, Gold, and Quality use schema-level managed locations; Bronze uses External Volumes pointing at the bronze container (see Decision 10). Keeping the physical and logical layouts aligned means cost attribution, lifecycle policy, and RBAC all scope per layer, and you can read the medallion structure straight off the storage account.
+
+The Volume namespace is flat, one Volume per source, while the storage layout underneath is not: four Volumes root at the container root (`boe/`, `doogal/`, `ons/`, `police/`) and the two Land Registry sources root under the publisher folder (`land_registry/hpi/`, `land_registry/ppd/`). A Volume roots at its source folder and never at a dataset folder beneath it, so notebooks append any dataset segment themselves.
 
 Bronze is complete. Silver is in active development; Gold and Quality follow.
 
@@ -220,6 +223,34 @@ The split is about blast radius: a cluster library installs for every workload a
 
 See DESIGN.md Decision 13 for the conditions that would change this.
 
+### 13. HPI keeps measured data only, with a per-nation floor
+
+The published HPI file carries a derived back-series to 1968, built from the historic path of the older ONS index, which sits before each nation's native Land Registry coverage. Silver keeps the measured era only: England and Wales from 1995, Scotland from 2004, Northern Ireland from 2005. A composite geography floors at the latest native start among the nations it spans, so United Kingdom rows start in 2005 and Great Britain rows in 2004. Without that rule a UK row for 1996 would be part measured and part derived, which is harder to reason about than either.
+
+The cut is on reliability, not on joinability. PPD and Police.uk cover England and Wales only, so Scottish and Northern Irish rows join neither of them, and they stay anyway because they are measured data that other sources do join. Narrowing a table to what one question needs belongs in Gold; Silver's job is to be correct and reusable. The same reasoning keeps BoE rates from 1973 to 1995, which nothing in the project joins yet.
+
+An area code with no floor mapped aborts the run rather than defaulting to one. A geography whose measured start I haven't established cannot be filtered safely, and a null floor would silently drop every row belonging to it.
+
+See DESIGN.md Decision 14 for the composite mapping and the full reasoning.
+
+### 14. Typing under ANSI mode
+
+Databricks Runtime 17.0 turns ANSI mode on by default, which changes what a failed cast does: it raises instead of returning null. On a 148,000-row, 54-column file, a single malformed cell would abort the run with an error naming neither the column nor the row.
+
+Silver transforms cast with `try_cast`, which yields null on a malformed value whatever the ANSI setting, then compare non-null counts per column before and after typing. A value that was populated and is now null did not survive its cast, and the failure names the column. That converts an opaque runtime exception into a diagnosis, and keeps behaviour stable if the setting changes again.
+
+Key columns are excluded from that comparison. A null date is already caught by a dedicated guard that reports the offending row, which covers more ground than a count check does.
+
+### 15. PPD retention differs by file kind
+
+Land Registry publishes PPD in two forms that need different handling. The yearly files are state: `pp-2019.csv` is regenerated every month at a stable URL, so any version can be re-fetched at will. The monthly file is a change feed at a static URL that each release overwrites, so a release missed is a release lost. Retention follows that asymmetry rather than the source. Deltas are stamped and kept permanently because they cannot be recovered; yearly files overwrite in place because the current version is the correct one.
+
+Silver is rebuilt in full from the current yearly files and partitioned by transfer year. Every file holds exactly one transfer year, confirmed across all 32 files on two separate vintages, so one Bronze file maps to one Silver partition and a reconcile can overwrite a year with `replaceWhere`. TUID is unique across all 31.4M rows, so Silver asserts uniqueness rather than deduplicating. The two cost the same shuffle, but an assertion names the offending identifiers where a dedup silently discards rows.
+
+An earlier sketch had Bronze read each delta, work out which yearly files it affected, and re-fetch those. It is unnecessary, because a change row carries the complete corrected record. It is also the wrong shape: a layer deciding what an earlier layer should ingest makes the medallion cyclic, which costs reproducibility and leaves lineage describing something other than dependency. Control flow of that kind belongs in the orchestrator, and the watermark is already that mechanism.
+
+See DESIGN.md Decision 16 for the reconcile design and the conditions that would change this.
+
 ---
 
 ## Bugs found and fixed
@@ -273,6 +304,18 @@ See DESIGN.md Decision 13 for the conditions that would change this.
 
 **Lesson:** `CREATE ... IF NOT EXISTS` is safe to re-run but can't repair drift, since create-if-absent says nothing about desired state, and relocating a Volume needs an explicit drop. A wrong-rooted Volume also keeps working until a path convention exposes it, so verify against storage listings rather than the object's own definition.
 
+### HPI Silver built on a seven-month-old release
+
+**Discovered:** validating the first HPI Silver run. The notebook prints the newest month present in the data next to the filename it read, and both said October 2025. The current release was May 2026.
+
+**Root cause:** HPI's URL rotates with every monthly release, so the watermark's `relative_url` is updated by hand. It hadn't been since the October 2025 release. Every run after that re-fetched the same file and reported success, because at the transport layer a stale URL is indistinguishable from a current one.
+
+**Fix:** updated the watermark to the May 2026 release, re-ran the master pipeline, re-ran the Silver notebook. Overwrite write mode meant no cleanup, and the seven months of revisions to previously published months came with it. The rebuilt table matched the published UK average for May 2026 exactly (£271,295, index 104.0), which is the check that would have caught this months earlier had it been running.
+
+**Lesson:** the Phase 1 version of this was that a success flag confirms bytes moved, not the right bytes. This is the same failure one level up: the right bytes moved, but they were old, and nothing in the pipeline could tell the difference. Freshness has to come from the content, so the Silver notebook now reports the newest month found in the data alongside the filename it read. One is a claim the file makes about itself; the other is a claim the filename makes about the file.
+
+A smaller finding from the same run: the landed object is lower-cased (`uk-hpi-full-file-2026-05.csv`) while the source URL is mixed-case, so vintage selection matches case-insensitively.
+
 ---
 
 ## Tech stack
@@ -281,7 +324,7 @@ See DESIGN.md Decision 13 for the conditions that would change this.
 |---|---|
 | Orchestration | Azure Data Factory (Git-integrated) |
 | Storage | Azure Data Lake Storage Gen2 (per-layer containers) |
-| Compute | Azure Databricks (PySpark, Delta Lake, Photon-eligible) |
+| Compute | Azure Databricks (PySpark, Delta Lake, DBR 17.3 LTS, Photon-eligible) |
 | Governance | Unity Catalog (managed tables, schema-level managed locations, External Volumes for Bronze) |
 | Identity | User-assigned managed identity via Databricks Access Connector |
 | Query (planned) | Azure Synapse Serverless SQL |
@@ -328,9 +371,13 @@ uk-property-intelligence-platform/
 │   │   └── 02_create_bronze_volumes.py  # External Volumes per Bronze source
 │   ├── silver/
 │   │   ├── notebooks/                   # one notebook per source
-│   │   │   └── 01_boe_base_rate.py      # BoE base rate → Silver (event-grain SCD2)
+│   │   │   ├── 01_boe_base_rate.py      # BoE base rate → Silver (event-grain SCD2)
+│   │   │   ├── 02_hpi.py                # UK HPI → Silver (monthly geography panel)
+│   │   │   └── 03_ppd.py                # Price Paid Data → Silver (one partition per transfer year)
 │   │   └── transforms/                  # importable transform functions (unit-testable)
-│   │       └── boe_base_rate.py         # pure BoE transform + DQ guard
+│   │       ├── boe_base_rate.py         # pure BoE transform + DQ guard
+│   │       ├── hpi.py                   # pure HPI transform + coverage floor + guards
+│   │       └── ppd.py                   # pure PPD transform + typing, code-set, and key guards
 │   ├── gold/
 │   │   ├── notebooks/
 │   │   └── transforms/
@@ -343,7 +390,9 @@ uk-property-intelligence-platform/
 │   ├── conftest.py                      # SparkSession fixture; reuses the cluster session
 │   ├── run_tests.py                     # runs the suite on the cluster
 │   ├── test_silver_transforms/
-│   │   └── test_boe_base_rate.py        # BoE transform + DQ guard, 16 tests
+│   │   ├── test_boe_base_rate.py        # BoE transform + DQ guard, 26 tests
+│   │   ├── test_hpi.py                  # HPI transform, coverage floor, typing, 35 tests
+│   │   └── test_ppd.py                  # PPD transform, partition key, code sets, 47 tests
 │   └── test_quality_framework/
 ├── synapse/                             # (planned) external table definitions
 ├── .github/
@@ -394,7 +443,7 @@ Three sources have fully-dynamic URLs that change with each release and need a w
 - **ONS Private Rents** — update `relative_url` with the new monthly path and filename.
 - **Police.uk** — update `relative_url` with the latest monthly archive.
 
-A Databricks notebook to automate these URL updates via pattern matching is planned.
+A missed update fails silently: the pipeline re-fetches the previous release and reports success. Confirm freshness from the ingested data rather than from the run status. A Databricks notebook to automate these URL updates via pattern matching is planned.
 
 ---
 
@@ -424,8 +473,8 @@ A Databricks notebook to automate these URL updates via pattern matching is plan
 - [x] Unity Catalog `bronze` schema with per-source External Volumes (UC-governed access from Silver, no abfss paths in notebooks)
 - [x] Doogal Bronze folder renamed `postcodes` → `doogal` to align with source-name taxonomy
 - [x] Silver: BoE base rate (event-grain SCD2, spark-excel read, fail-loud DQ guard)
-- [ ] Silver: HPI
-- [ ] Silver: PPD
+- [x] Silver: HPI (monthly geography panel, per-nation coverage floor, ANSI-safe typing)
+- [x] Silver: PPD (31.4M transactions, one partition per transfer year, TUID uniqueness asserted)
 - [ ] Silver: Doogal postcodes
 - [ ] Silver: ONS private rents
 - [ ] Silver: Police.uk crime
@@ -434,7 +483,7 @@ A Databricks notebook to automate these URL updates via pattern matching is plan
 - [ ] Quarantine table for rejected records
 - [ ] `pipeline_audit` table for per-run quality scores
 - [ ] Watermark automation from Databricks (Delta MERGE into watermark table)
-- [x] pytest + chispa harness (SparkSession fixture, cluster runner) and the BoE transform suite
+- [x] pytest + chispa harness (SparkSession fixture, cluster runner), BoE, HPI, and PPD transform suites, 108 tests
 
 ### Phase 3 — Gold layer
 
@@ -457,4 +506,4 @@ A Databricks notebook to automate these URL updates via pattern matching is plan
 
 ---
 
-*Project status: Phase 2 in progress.*
+*Project status: Phase 2 in progress. Three of six Silver sources complete.*

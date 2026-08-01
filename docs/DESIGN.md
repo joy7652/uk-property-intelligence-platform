@@ -2,7 +2,7 @@
 
 This document captures the architectural decisions, engineering trade-offs, and delivery plan behind the platform. It complements the project README with deeper rationale and serves as the working design reference across phases.
 
-> **Status:** Phase 1 (Bronze ingestion) complete. Phase 2 (Databricks Silver layer) in progress: foundation provisioned (workspace, Unity Catalog, per-layer storage, identity model, Bronze Volumes), and the first Silver table (BoE base rate) live, unit-tested, and committed. Five sources remain.
+> **Status:** Phase 1 (Bronze ingestion) complete. Phase 2 (Databricks Silver layer) in progress: foundation provisioned (workspace, Unity Catalog, per-layer storage, identity model, Bronze Volumes), and three Silver tables live, unit-tested, and committed: the BoE base rate, the UK House Price Index, and Price Paid Data. Three sources remain.
 
 ---
 
@@ -46,22 +46,47 @@ Property data turns up across finance, consulting, and the public sector, and it
 
 ### Source selection rationale
 
-**Price Paid Data** is the authoritative record of UK residential transactions since 1995, 24M+ records, and the backbone of any property analysis. **HPI** gives official price indices validated by the same department, which makes it a useful cross-check for any metric I derive myself. **Postcode lookups** handle geocoding and regional aggregation. **Bank of England rates** and **ONS rents** supply the macro context; affordability analysis needs both the price and the cost of money. **Police crime data** adds the classic property-investment overlay of safety against price growth, and it joins cleanly on postcode.
+**Price Paid Data** is the authoritative record of UK residential transactions since 1995, 31.4M records as of the July 2026 release, and the backbone of any property analysis. **HPI** gives official price indices validated by the same department, which makes it a useful cross-check for any metric I derive myself. **Postcode lookups** handle geocoding and regional aggregation. **Bank of England rates** and **ONS rents** supply the macro context; affordability analysis needs both the price and the cost of money. **Police crime data** adds the classic property-investment overlay of safety against price growth, and it joins cleanly on postcode.
 
 ### Source details
 
 **1. Land Registry Price Paid Data**
-- Yearly CSV files, 1995 to present
-- URL: `http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com/pp-{YYYY}.csv`
-- Incremental URL: `/pp-monthly-update.txt` (cumulative file)
-- ~50 MB to ~230 MB per yearly file, 24M+ records total
+- Yearly CSV files, 1995 to present, one file per transfer year
+- URL: `https://price-paid-data.publicdata.landregistry.gov.uk/pp-{YYYY}.csv`
+- The download page published a different host until February 2026, an S3 website endpoint at `prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com`. Both names resolve to the same object, confirmed by identical `Last-Modified` and `Content-Length` on each, so the older host is an alias rather than a stale mirror. The watermark uses the documented host.
+- Incremental: `pp-monthly-update.txt`, a static URL under the same host. It carries additions, changes, and deletions rather than a cumulative snapshot, and each release overwrites it, so a missed release cannot be recovered from source. ADF lands it under a `.csv` name, so the Bronze extension does not match the source. Land Registry publishes a second copy at `pp-monthly-update-new-version.csv` at a slightly different size, which this pipeline does not fetch.
+- Headerless. 16 columns in the published order, the last being Record Status, which is populated only in the monthly file. Yearly files carry `A` throughout.
+- 103 MB to 228 MB per complete yearly file. 31.4M records total as of the July 2026 release. The count rises with every release as registrations complete, so it needs a release attached wherever it is quoted.
+- Every yearly file contains exactly one transfer year, confirmed across all 32 files on two separate vintages. TUID is unique across the whole dataset.
+- The four code columns carry small closed sets: property type (D, S, T, F, O), old or new build (Y, N), duration (F, L, U), and category (A, B). Every published value appears in the data, including duration U, which is genuine but rare at 532 rows across 31.4M. Silver aborts on an unrecognised code rather than passing it through.
+- Category A (standard) runs from January 1995. Category B (additional: company sales, identifiable buy-to-lets, repossessions) has been captured since 14 October 2013, but the yearly files key on transfer date rather than registration date, so a thin tail of earlier transfer dates survives from transactions registered after capture began: 1,857 rows before 2013 against 1,811,011 category B rows in total. The tail thickens toward 2013, from 11 rows in 1995 to 432 in 2012, because the shorter the gap the more likely a transfer was still unregistered when capture started. In the 2019 file the split is 843,004 category A against 169,156 category B.
+- Releases land on the 20th working day of each month and carry the previous month's registrations.
+- The two most recent years are incomplete and keep growing. Registration lags sale by roughly two weeks to two months, occasionally longer.
+- Tenure is not always what the property type implies: 136,761 transactions record a flat as freehold. The combination is legitimate and a Gold model that treats flat and leasehold as equivalent will misclassify them.
 - No auth, no headers required
 
+*Row counts by year carry visible market history, which makes them a usable sanity check on any reload.* Volumes run near 1.2M through the early 2000s, fall to roughly 650,000 across 2008 to 2012, and peak at 1,281,653 in 2021 during the stamp duty holiday. A reload that flattens those contours has lost data somewhere.
+
 **2. UK House Price Index (HPI)**
-- Single cumulative CSV per monthly release
+- Single cumulative CSV per monthly release, 54 columns, ~148k rows, ~34 MB
 - URL: `https://publicdata.landregistry.gov.uk/market-trend-data/house-price-index-data/UK-HPI-full-file-{YYYY}-{MM}.csv`
 - Requires full browser-mimicking headers (User-Agent + Accept + Accept-Language); the Akamai CDN filters aggressively
-- URL changes monthly but follows a predictable pattern
+- The `{YYYY}-{MM}` token is the **last data month in the file, not the publication month**. The May 2026 file was published on 22 July 2026. The object as landed in Bronze is lower-cased relative to the source URL.
+- Grain is one row per `(AreaCode, Date)`, monthly, across 405 geographies: local authorities, regions, nations, and three composites (United Kingdom, Great Britain, England and Wales). Columns are a headline price and index block plus nine breakdowns (property type, funding status, buyer type, build age).
+- **Numeric formatting is not stable between releases.** A 2020 vintage published `AveragePrice` to five decimal places; current vintages publish whole pounds. Types are asserted at Silver rather than inferred for exactly this reason.
+- The file carries a derived back-series to 1968, built from the historic path of the older ONS index, ahead of native coverage (England and Wales 1995, Scotland 2004, Northern Ireland 2005). See Decision 14.
+- The two most recent months are provisional. Sales volumes arrive null and fill in as registrations complete; price estimates are revised.
+- **Revision window: 13 months**, extended from 12 following a review of the revision policy. A full overwrite from the newest release is therefore the correct write mode, and an append would retain superseded values alongside corrected ones.
+
+*Publisher issues affecting specific columns:*
+
+- First-time buyer and former owner occupier prices were calculated incorrectly prior to January 2026. Land Registry advises caution comparing those breakdowns either side of the January 2026 estimates. The series therefore carries a discontinuity rather than a gap, which no null check will surface; a Gold model must not treat it as continuous.
+- New build and existing resold average prices and percentage changes are no longer published as they were, because there are not currently enough new build transactions for a reliable result. Those columns arrive null in recent months while the corresponding sales volumes stay populated.
+- Northern Ireland sales volumes are now published as a monthly estimate, the quarterly total divided by three. The previous approach fed quarterly figures into monthly UK totals and inflated them.
+
+*Documented anomaly, retained as a Phase 4 test case:*
+
+United Kingdom sales volume for March 2025 reads 134,340 against a baseline near 60,000, with April 2025 falling to 44,018. The cause is the SDLT threshold reversion on 1 April 2025: the nil-rate band returned from £250,000 to £125,000 and the first-time buyer threshold from £425,000 to £300,000, pulling completions forward into March. HMRC recorded 77,480 more residential transactions above £40,000 in March 2025 than a year earlier, and RICS had forecast the shape in advance. The spike grew between the October 2025 and May 2026 vintages as late registrations landed, which rules out a methodology artifact. A rolling anomaly detector that misses a 2x spike and an adjacent 0.7x trough with a published external cause is not working, so this is a better validation case than synthetic noise.
 
 **3. Doogal UK Postcode Lookup**
 - ZIP file, static URL: `https://www.doogal.co.uk/files/postcodes.zip`
@@ -75,6 +100,7 @@ Property data turns up across finance, consulting, and the public sector, and it
 - Requires User-Agent header (anti-bot filtering)
 - Full rate history since 1694
 - The published `baserate.xls` is revised periodically, and the daily `Raw Data` series is pre-filled to roughly a month past the save date (a revision saved 2026-03-31 carried daily rows through 2026-04-30). Between revisions, ADF refreshes land byte-identical copies, so an unchanged row count after re-ingestion is expected rather than a failed fetch; confirm freshness from the blob's `modificationTime`, not a content change.
+- An unchanged **event** count is likewise expected between rate changes. The table has held at 278 change events since the December 2025 cut to 3.75%, through unchanged decisions in March, April, and June 2026.
 
 **5. ONS Price Index of Private Rents**
 - Monthly XLSX, URL changes with every release
@@ -139,6 +165,7 @@ Microsoft Fabric / Power BI (Phase 5 — Property Dashboard, Pipeline Health Das
 - Data-plane access from Databricks runs through a user-assigned managed identity on the Databricks Access Connector. No SAS tokens, no mounted credentials, no key rotation in the data path.
 - Each medallion layer maps one-to-one to a Blob container, a Unity Catalog schema, and a schema-level managed location (or, for Bronze, a set of External Volumes), so the architecture is visible in the storage account.
 - Each layer should do work the previous one didn't. Bronze stays as raw files exposed through Volumes rather than copied into Delta, because at this scale that copy step adds nothing the raw files don't already give.
+- Silver filters on whether data is trustworthy; Gold filters on what a question needs. Measured, clean data stays in Silver even when nothing in the project joins it yet.
 
 ---
 
@@ -183,6 +210,10 @@ One External Volume per source under `uk_property_intel.bronze`, named to match 
 | `bronze.doogal` | `bronze/doogal/` | `silver.doogal` |
 | `bronze.ons` | `bronze/ons/` | `silver.ons` |
 | `bronze.police` | `bronze/police/` | `silver.police` |
+
+The Volume namespace is flat while the storage layout beneath it is not. Four sources sit at the container root; the two Land Registry sources nest under a publisher folder, because Land Registry publishes two distinct sources rather than one. A Volume roots at its source folder and never at a dataset folder inside it, so notebooks append any dataset segment themselves: the BoE notebook appends `base_rate/`, while HPI's files sit directly at the Volume root.
+
+This table is confirmed against `information_schema.volumes`, not the other way round. The Volume audit established that a script, a document, and a deployment can each be wrong independently, so the storage locations are read from the catalog rather than assumed from here.
 
 Silver notebooks reference `/Volumes/uk_property_intel/bronze/<source>/...` rather than `abfss://bronze@...` paths, so all Bronze access flows through Unity Catalog.
 
@@ -287,7 +318,7 @@ A single JSON array in ADLS containing one object per source. Each object declar
 ### Workspace and compute
 
 - **Workspace:** Premium tier, in the same region and resource group as the ADLS Gen2 storage account. Premium is required for Unity Catalog, RBAC, audit logs, and secret scopes.
-- **Compute:** all-purpose cluster, single-node, Dedicated access mode (formerly "single user"), latest DBR LTS, auto-terminate at 15 minutes.
+- **Compute:** all-purpose cluster, single-node, Dedicated access mode (formerly "single user"), DBR 17.3 LTS (Spark 4.0, Scala 2.13), auto-terminate at 15 minutes. ANSI mode is on by default at this runtime version, which changes cast behaviour across every transform (see Decision 15).
 - **Photon engine:** off initially. I'll decide whether to enable it by testing against a representative Silver transformation (likely the Police.uk dedup) rather than turning it on by default.
 - **Serverless SQL warehouse:** used for ad-hoc DDL, catalog administration, and verification queries between notebook runs. Cluster usage is reserved for PySpark notebook work; serverless handles SQL-only operations at lower cost and faster cold-start.
 
@@ -417,7 +448,7 @@ The Bank of England base rate is the first Silver table, modelled as a Type 2 sl
 - **Source reality.** `baserate.xls` is a multi-sheet FAME database export. The machine-readable sheet is `Raw Data`, a daily series from 1973-01-01 to present with real datetime cells and the header on row 2. The report sheets (`BOEBASERATE`, `HISTORICAL SINCE 1694`) are human-formatted and skipped.
 - **Regime coalescing.** The BoE has renamed the policy rate across five era-specific columns (Bank Rate, Minimum Lending Rate, Minimum Band 1 Dealing Rate, Repo Rate, Official Bank Rate). These coalesce into a single `rate_pct` and a `rate_type`, newest regime first. Both columns are populated only on the two regime-changeover days (1981-08-24 and 1997-05-05), where the two values agree.
 - **Collapse on rate value only.** The daily series collapses to change events; a regime relabel that does not move the rate is not an SCD2 event, and `rate_type` records the regime in effect at `effective_date`.
-- **1973 cutoff.** Pre-1973 history lives only in the fragile report sheet, and PPD and HPI both start in 1995, so older rates would join to nothing. The first row's `effective_date` is the series start rather than a true change date (left-censored), which is noted in the code docstring.
+- **1973 cutoff.** Pre-1973 history lives only in the fragile report sheet, so the cut is on data quality rather than on what joins. The 1973 to 1995 rates join nothing in this project yet, since PPD and HPI both start in 1995, and they are kept because they are clean measured data. Decision 14 applies the same rule to HPI. The first row's `effective_date` is the series start rather than a true change date (left-censored), which is noted in the code docstring.
 - **`DecimalType(6, 4)`.** Repo-era rates were quoted in sixteenths (for example 5.9375), so a scale-2 decimal would silently round them. Decimal rather than double also gives exact equality, which the change-detection step depends on.
 - **Fail-loud data-quality guard.** `assert_rate_columns_consistent` aborts the run if any row carries conflicting non-null values across the rate columns, rather than letting the coalesce silently pick one.
 
@@ -432,6 +463,110 @@ Test and development dependencies stay off the cluster entirely. chispa is insta
 The split is about blast radius. A cluster library installs for every workload attached to the cluster and cannot be uninstalled from inside a notebook, so a version conflict is resolved at the cluster level and costs a restart. A notebook-scoped install reaches one notebook and disappears with the session, which is the right lifetime for something only the test runner needs. Keeping the cluster spec to what the pipeline needs at runtime also keeps it an accurate description of the pipeline.
 
 This would change if the test suite moved to a scheduled job or to serverless compute, where the pinned environment belongs in the job or bundle environment specification rather than either place above.
+
+### 14. HPI keeps measured data only, with a per-nation coverage floor
+
+The published HPI file extends back to 1968, but not all of it is measured. Under the UK HPI, data is available from 1995 for England and Wales, 2004 for Scotland, and 2005 for Northern Ireland. The earlier portion is a derived series built from the historic path of the older ONS index. Silver keeps the measured era and drops the derived one.
+
+**Per-nation floors, resolved from the ONS area-code prefix:**
+
+| Prefix | Nation | Floor |
+|---|---|---|
+| `E` | England | 1995 |
+| `W` | Wales | 1995 |
+| `S` | Scotland | 2004 |
+| `N` | Northern Ireland | 2005 |
+
+**Composite geographies floor at the latest native start among the nations they span:**
+
+| Area code | Geography | Floor | Why |
+|---|---|---|---|
+| `K04000001` | England and Wales | 1995 | both nations native from 1995 |
+| `K03000001` | Great Britain | 2004 | includes Scotland |
+| `K02000001` | United Kingdom | 2005 | includes Northern Ireland |
+
+A flat 1995 floor would keep United Kingdom and Great Britain rows for 1995 to 2005 whose values are part measured and part derived. A row that is partly derived is harder to reason about than one that is wholly either, so the composite rule exists to remove that category rather than to save storage.
+
+**Why the cut is on reliability rather than on joinability.**
+
+An earlier draft of this decision floored HPI at 1995 on the grounds that PPD starts in 1995 and anything earlier joins nothing in the project. That reasoning does not belong in a Silver table, and applying it consistently would have made things worse: it would also cut the BoE table's 1973 to 1995 rates, which are clean measured data that nothing currently joins either.
+
+The division this project settled on is that Silver filters on whether data is trustworthy, and Gold filters on what a question needs. PPD and Police.uk cover England and Wales only, so Scottish and Northern Irish HPI rows join neither of them. They stay, because they are measured data, and because they do join Doogal on geography and BoE on date. A Gold model joining HPI to PPD will narrow itself to England and Wales as a consequence of the join, without Silver having pre-decided that on its behalf.
+
+The practical argument is reuse. A Silver table narrowed to one consumer's assumptions has to be rebuilt when a second consumer appears, and re-deriving dropped rows means re-ingesting and re-validating the source.
+
+**Unmapped geographies abort the run.**
+
+The floor is applied by comparing each row's year against a start year derived from its area code. A code matching no rule yields null, and a comparison against null is false, so the row would be dropped silently. A guard runs before the filter and fails on any unmapped code, naming it and its region. Land Registry does reorganise local authorities, and a new prefix or a fourth composite is a realistic future event; without the guard, the failure mode is an entire geography quietly disappearing from the table.
+
+**Left-censoring.** The first row for each geography is its first measured month, not a market start. This mirrors the BoE table, whose first row is the start of the clean series rather than a rate change, and it is noted in the transform docstring.
+
+### 15. Typing under ANSI mode
+
+Databricks Runtime 17.0 and above enables ANSI mode by default, following Apache Spark 4.0. Under ANSI, an invalid cast raises a runtime exception rather than returning null.
+
+For a wide source read as all-string, that is the wrong failure mode. The HPI file is 148,000 rows by 54 columns, so one malformed cell aborts the job with a `CAST_INVALID_INPUT` error naming neither the column nor the row, and locating it means bisecting the file.
+
+Disabling ANSI on the cluster trades one problem for another: every malformed value silently becomes null, which contradicts the project's position that nothing fails quietly.
+
+The transforms take a third path:
+
+1. Cast with `try_cast` and `try_to_date`, which return null on a malformed value whatever the ANSI setting. Behaviour stops depending on a cluster-level flag that a future runtime upgrade could flip again.
+2. After typing, compare non-null counts per column against the untyped frame. A column whose populated count fell has lost values in the cast, and the error names it.
+
+That gives a loud failure with a diagnosis attached, which neither default provides alone. The cost is one aggregation pass over a small frame.
+
+Key columns are excluded from the count comparison. A dedicated guard already fails on any null date or area code and reports the offending row, which covers strictly more: it catches a date that was empty at source as well as one that failed to parse. Covering `date` in both places produced a defect, recorded below.
+
+**Volume columns cast through decimal first.** `try_cast('388.0' as int)` returns null, because the string-to-integer parser rejects a decimal point. Sales volumes are currently written as whole numbers, but this file has already changed its price formatting between releases, so volumes route through `decimal(18,6)` before `int`.
+
+### 16. PPD retention differs by file kind, and the medallion stays acyclic
+
+Land Registry publishes PPD in two forms that need different handling. The yearly files are state: `pp-2019.csv` is regenerated every month and stays available at a stable URL, so any version can be re-fetched at will. The monthly file is a change feed at a static URL that each release overwrites, so a release missed is a release lost.
+
+Retention follows that asymmetry rather than following the source. Monthly deltas are stamped and kept permanently, because they cannot be recovered. Yearly files overwrite in place, because the current version is the correct one and past vintages answer no question this project asks. HPI reached the same conclusion for the same reason: a source that restates previously published values should be stored as its latest state, not as an accumulation of superseded ones. What makes PPD different is that it carries both kinds at once, so the rule is set per file kind rather than per source.
+
+**The delta is a genuine change feed.** Two releases four months apart carry the same structure: 89,083 additions, 2,962 changes and 1,452 deletions in one, and 85,791 additions, 3,057 changes and 1,439 deletions in the other, both spanning transfer dates from 1995 to the current year. A change row carries the complete corrected record rather than a key and a changed field, so applying a correction never requires re-fetching the yearly file the record came from. Silver applies the file as a single Delta `MERGE` on TUID: insert, update, and delete in one statement.
+
+**The delta filename records when it was fetched, not what it contains.** The landing path is stamped with the ingestion month, and the gap between that stamp and the data month is not constant: it depends on whether the run fell before or after that month's release, which lands on the 20th working day. One file stamped April held February data, another stamped July held June data. Release identity therefore comes from the content, as the largest transfer date in the file, which matched the expected month on both samples. A contiguity check over filenames proves the pipeline ran on schedule, not that consecutive releases are held.
+
+That distinction carries a safety rule. A delta may only be applied when its release is newer than the state Silver already holds. An older delta applied to newer state would overwrite corrected values with superseded ones through its change rows, and resurrect deleted transactions through its additions. The yearly files and the delta from the same release describe the same state, so that delta applied to a table built from those files is a no-op, which makes it a usable idempotency check on the merge rather than something to skip.
+
+**Bronze does no processing.** An earlier sketch had Bronze read each delta, work out which yearly files it affected, and re-fetch those. It is unnecessary, because the delta already contains the corrected records. It is also the wrong shape. A layer deciding what an earlier layer should ingest makes the medallion cyclic, which costs reproducibility, because Bronze can no longer be rebuilt from source alone; it makes lineage meaningless, because the arrows no longer describe dependency; and it lets a defect in Silver corrupt Bronze. Control flow of that kind belongs in the orchestrator, where the dependency runs from orchestrator to layers rather than from one layer back to another. The watermark is already that mechanism.
+
+**Reconcile is an audit, not a completeness mechanism.** Because the delta covers every year, nothing is missing by design. A reconcile catches three other things: an ingestion that was missed, a defect in the merge, and any publisher restatement that reaches the yearly files without matching delta rows. The third is unverified, and the first full run is what tests it.
+
+A full reconcile runs each June across 1995 to the current year. June rather than January because the current-year file appears somewhere between late March and early May, so a January run would report a missing file every year and train me to ignore it. A narrower reconcile over named years runs on demand, triggered when the delta contiguity assertion fires rather than on a calendar. Both re-pull the yearly files, diff against Silver, then overwrite the affected year partitions with `replaceWhere`.
+
+**The reconcile has no year floor.** Two vintages of the complete yearly set, fetched four months apart, differ in every one of the 32 files. The 1995 file gained 18 rows, 2005 gained 34, 2019 gained 124, and 2025 gained 82,798. Recent years move most, because registration lags transfer, but no year is static. The deltas say the same thing independently: both sampled releases carry rows against every year from 1995 onward. Restricting the reconcile to recent years on the assumption that old files are frozen would therefore miss real corrections, and a spot check on one file over one interval could never have established that they were frozen in the first place.
+
+**Why `replaceWhere` on transfer year is safe.** The download page describes the yearly files as transactions received in the calendar period. Read literally that is registration date, which would put a December 2018 sale registered in January 2019 into `pp-2019.csv` and make a transfer-year predicate delete rows belonging to a different file. Measured across all 32 files on two separate vintages, that is not what happens: each file contains exactly one transfer year, and `pp-2019.csv` runs from 2019-01-01 to 2019-12-31. One Bronze file maps to one Silver year partition. The published wording is loose, and the files themselves settled it.
+
+The category B distribution says the same thing from a different direction. Land Registry began capturing category B at registration on 14 October 2013, yet the table holds 1,857 category B rows with earlier transfer dates, rising steadily from 11 in 1995 to 432 in 2012. That gradient is registration lag: the closer a transfer sits to the capture date, the more likely it was still unregistered when capture began. A file keyed on registration date could not produce it, because every category B row would then fall in 2013 or later.
+
+**TUID is unique across the dataset**, 31,430,611 rows against the same number of distinct identifiers in the July 2026 release, and the same equality held on the earlier vintage. Silver asserts uniqueness rather than deduplicating. The two cost the same shuffle, but an assertion names the offending identifiers where a dedup silently discards rows, which is the same reasoning as the unmapped-geography guard in Decision 14. Uniqueness is not permanence: a category correction is published as a delete of the original transaction and an addition under a new identifier, so a category change arrives as a D and an A rather than as a C.
+
+**The diff is recorded before the heal.** `quality.reconcile_run` takes one row per run and year whether or not anything differed, which is what distinguishes a clean run from one that never happened. `quality.reconcile_diff` takes the detail: identifier, difference type, and for a value mismatch the column name and both values. The reconcile then heals automatically. Halting on any difference would be too brittle to leave scheduled, but healing without recording would make the pipeline silently self-correcting, which is the failure mode the rest of this project is built to avoid. The record is what makes the overwrite accountable.
+
+**Row counts cannot serve as the comparison.** A change row leaves the count untouched and a delete offsets an addition, so a year can match exactly on count and differ in every value. The measured gap is large: the 1995 file moved by 18 rows across four releases while a single release's delta carried 31 rows against that year. The diff therefore hashes the business columns on both sides, anti-joins on TUID for presence, then compares hashes for rows present in both, and only rows whose hash differs are unpacked to find which columns moved. Hashing also avoids comparing 31M rows column by column, but correctness is the reason for it rather than cost.
+
+This decision would change if Land Registry stopped applying corrections to the yearly files, which would make the delta the only source of truth and remove the reconcile's basis, or if the delta stopped carrying complete records, which would force a re-fetch of affected yearly files to apply a correction.
+
+### 17. One shared contract across Silver transforms
+
+The first two Silver transforms diverged. BoE took lineage as function parameters and declared its Delta table in SQL with CHECK constraints; HPI let the caller stamp lineage afterwards and let `saveAsTable` infer the schema. Both worked, and neither was obviously wrong on its own, so the divergence only became visible once a third source arrived and the question became which one PPD should copy.
+
+Each half of the split had a better answer, and they were independent, so PPD did not have to choose between them.
+
+Lineage belongs inside the transform, taken as a parameter. Both files were reaching for determinism under test, and passing the timestamp in achieves it without cost: the transform stays pure, its output schema equals the table schema, and the tests can assert lineage. Stamping it in the caller buys the same determinism by removing two columns from the transform's contract, which then cannot be tested and do not match what the table holds.
+
+The table is declared, not inferred. `saveAsTable` with overwrite replaces the table definition, so it cannot carry CHECK constraints or a comment. Declaring the schema once, adding constraints, and writing with `INSERT OVERWRITE` keeps the definition across runs. That matters most for PPD, which will later be modified in place by a merge and by `replaceWhere`: a bad full rebuild is fixed by re-running, while a bad merge corrupts state, and constraints are the backstop for the second case.
+
+The column list is generated from the same constants the casts use, rather than written out again in SQL. HPI declares 56 columns, and a hand-written copy would have been free to drift from the cast without anything failing.
+
+Two rules came out of the guards rather than the structure. A guard reports offenders as a sample and returns its frame so guards chain, but it only counts the full offending population where the frame is small enough that the extra pass is free, which holds for a daily rate series and not for 31M transactions. And a check belongs on whichever frame still carries the column: PPD validates Record Status on the source frame, because the column is deliberately dropped before the typed frame exists.
+
+The convergence was done as a refactor with the logic held still, and verified by running the existing suites unchanged before touching them. It stopped at a shared convention. There is no base class and no shared helper module, because the three sources read a multi-sheet Excel export, a wide CSV panel with a header, and 32 headerless CSVs, and a generic guard over those would hide more than it saved.
 
 ---
 
@@ -489,7 +624,7 @@ This would change if the test suite moved to a scheduled job or to serverless co
 
 **Fix (metadata class: boe, ons, police):** the Volumes were dropped and recreated at their source roots. An external Volume's location cannot be altered in place, so drop-and-recreate is the mechanism, and it touches metadata only.
 
-**Fix (data class: hpi):** corrected at the data layer instead, the same way `doogal` had been handled. The watermark sink folder moved to `land_registry/hpi`, the rotating URL was refreshed to the current release, the master pipeline re-ran to land the file at the new path, and the stale `uk_hpi/` was deleted only after verifying the new file (the Phase 1 lesson: Succeeded is not the same as the right bytes). The Volume was then recreated at `land_registry/hpi/`.
+**Fix (data class: hpi):** corrected at the data layer instead, the same way `doogal` had been handled. The watermark sink folder moved to `land_registry/hpi`, the rotating URL was refreshed, the master pipeline re-ran to land the file at the new path, and the stale `uk_hpi/` was deleted only after verifying the new file (the Phase 1 lesson: Succeeded is not the same as the right bytes). The Volume was then recreated at `land_registry/hpi/`.
 
 **Script hygiene:** `02_create_bronze_volumes.py` was corrected in three places, and a stray one-time `DROP VOLUME ... doogal` repair line was removed. A lone `DROP` in a committed bootstrap script silently destroys and recreates one of six Volumes on every run, and one-off repairs belong in the runbook or a serverless session. The same reasoning removed the one-time `SHOW SCHEMAS` and `DROP CATALOG ..._ws CASCADE` cells from `01_create_schemas.py`, where a bare `DROP` would abort a fresh rebuild and a new workspace's default catalog carries a different name anyway. Two verification changes also came out of the audit: it moved to an `information_schema.volumes` query selecting `storage_location`, because `SHOW VOLUMES` lists names only and a wrong-rooted Volume is invisible in a name listing; and `02_create_bronze_volumes.py` now closes with a `dbutils.fs.ls` on the BoE Volume path, the same path the Silver notebook reads, so a mis-rooted Volume fails in the bootstrap script rather than downstream.
 
@@ -517,6 +652,49 @@ This would change if the test suite moved to a scheduled job or to serverless co
 - A managed location is only meaningful where managed objects exist. Bronze holds External Volumes that carry their own explicit `LOCATION`, so the clause was inert. Inert is not the same as harmless: it set the blast radius of a mistake nobody had made yet.
 - `IF NOT EXISTS` concealed a schema-level definition error for two months, the same way it concealed the wrong-rooted Volumes. Create-if-absent DDL can state absence, never desired state.
 - Vendor documentation is where verification starts, not where it ends. The overlap rule was quoted, contradicted by the live deployment, then settled by a four-statement probe.
+
+### HPI Silver built on a seven-month-old release
+
+**Discovered:** validating the first HPI Silver run. The notebook reports the newest month present in the data next to the filename it read. Both said October 2025, while the current release was May 2026.
+
+**Root cause:** HPI's URL rotates with every monthly release, so `relative_url` in the watermark is maintained by hand. It had not been updated since the October 2025 release. Every run afterwards fetched that same URL, landed the same file, and reported success. At the transport layer a stale URL is indistinguishable from a current one. The Volume audit weeks earlier had re-run the pipeline to verify the corrected sink path, which confirmed a file landed in the right place without examining what was in it.
+
+**Fix:** updated `relative_url` to the May 2026 release, re-ran the master pipeline, then re-ran the Silver notebook. Overwrite write mode meant no cleanup step, and the accumulated revisions to previously published months arrived with the new file. Row count rose by exactly 405 × 7, one row per geography per new month, which also confirmed no geography had appeared or disappeared in the interval.
+
+**What the two vintages showed.** Every recent month had been restated: October 2025 moved from £269,862 to £271,441, August 2025 from £272,114 to £271,013, June 2025 from £268,547 to £266,865. Sales volumes that were null or partial filled in as registrations completed, with August 2025 rising from 59,848 to 82,989. That is the 13-month revision window working as documented, and it is the concrete case for overwrite over append: an append would have preserved every superseded value beside its correction.
+
+**Verification:** the rebuilt table's United Kingdom row for May 2026 reads £271,295 with an index of 104.0, matching the published figure exactly.
+
+**Lesson:** Phase 1 established that a success flag confirms bytes moved, not that the right bytes moved. This is the same failure one level up: the right bytes moved, and they were old. Neither the run status nor the filename could tell the difference, because the filename is metadata the pipeline assigned rather than a property of the content. The Silver notebook now prints the newest month found in the data beside the filename it read, so a stalled rotation is visible on every run rather than on inspection.
+
+**Related detail:** the landed object is lower-cased (`uk-hpi-full-file-2026-05.csv`) while the source URL is mixed-case, so vintage selection matches case-insensitively. Selection is by the date token in the filename rather than by `modificationTime`, because a re-fetch of an older release would reorder by timestamp, while the filename token is the file's last data month.
+
+### Two guards covering one column, and the less useful one won
+
+**Discovered:** by a unit test, before the HPI transform ran on real data. A test asserting that an unparseable date fails with a message naming the expected format instead received a message reporting that the `date` column had lost a value during casting.
+
+**Root cause:** the transform ran its cast-preservation check before its key-presence check, and the cast check covered every column including `date`. An unparseable date is a populated string that `try_to_date` turns to null, so both guards were correct about the condition and the first one reached produced the message. What it produced, `date: (1, 0)`, is true and close to useless for diagnosis.
+
+**Fix:** excluded key columns from the cast-preservation check. This is not merely reordering. The key guard is strictly stronger on `date`, because it fails on any null date whatever the cause, while the cast check only detects populated-then-null. Covering the column in both places added no coverage and cost the better error message.
+
+**Lessons:**
+
+- Overlapping validation is not free. When two guards can fire on the same condition, whichever runs first defines the diagnosis, so the question is not whether every failure is caught but which guard owns each failure. That is worth deciding deliberately rather than inheriting from the order the checks happen to sit in.
+- I changed the transform rather than the test's expectation. The test was asserting the behaviour I wanted; the code was the part that was wrong. Adjusting the assertion would have made the suite green and left the worse error message in place, which is the failure mode a test suite is supposed to prevent.
+
+### A storage timestamp read as a fetch time
+
+**Discovered:** auditing the PPD Bronze layout before writing the Silver transform. The monthly delta file was stamped `2026-04` in its landing path and its blob `modificationTime` read 14 May 2026, but the newest transfer date inside it was 27 February 2026. A file fetched in May should have carried the release published on 30 April.
+
+**First hypothesis, wrong:** that the S3 website endpoint in the watermark had stopped receiving updates, since the download page switched to a different published host in February 2026. A HEAD request against both hosts returned identical `Last-Modified` and `Content-Length`, so the older name is an alias for the same object rather than a frozen mirror. The URL was never the problem.
+
+**Root cause:** `modificationTime` records when bytes were last written to that path, not when they were fetched from source. The `raw` to `bronze` container restructure earlier in Phase 2 rewrote the timestamp on every object without re-fetching any of them. The content was the release published on 27 March 2026, carrying February registrations, and the May timestamp described the move rather than the data.
+
+**Corroboration:** `pp-2026.csv` was 17.2 MB in Bronze against 41.8 MB live at the same URL. That is independent of the transfer-date reasoning and settled it without argument.
+
+**Fix:** re-ran the master pipeline against the documented host. The reload landed the July 2026 release, and the row count moved from 31,192,683 to 31,430,611.
+
+**Lesson:** this inverts the conclusion recorded against the BoE source. There, byte-identical refreshes between revisions mean an unchanged row count is expected, so freshness has to come from `modificationTime` rather than from the content. Here `modificationTime` was the misleading signal and the content was the honest one. Neither is reliable alone, because a storage timestamp is a property of the path while freshness is a property of the bytes. Where the two disagree the content decides, which means the check that catches it has to read something the pipeline did not assign.
 
 ---
 
@@ -557,7 +735,8 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 ### In progress
 
-- Silver-layer ingestion notebooks, one per source. BoE is complete: transform module, notebook, and unit tests are committed and the table is live. HPI is next.
+- Silver-layer ingestion notebooks, one per source. BoE, HPI, and PPD are complete: transform modules, notebooks, and unit tests are committed, and all three tables are live. BoE and HPI are validated against externally published figures; PPD reconciles three ways on its own row counts, by category split, by property type and tenure, and by transfer year. Doogal is next.
+- The PPD delta merge and the reconcile path described in Decision 16 are designed but not built. Silver is currently a full rebuild from the yearly files.
 
 ### Planned (Silver scope)
 
@@ -583,10 +762,11 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
    - Replace manual JSON editing
    - Notebook programmatically updates the watermark on successful runs
    - Migration of the watermark from JSON-in-ADLS to a Delta table
+   - Raised in priority by the stale-release bug above: the three rotating-URL sources fail silently when their URL is not maintained
 
 5. **pytest + chispa test suite**
    - SparkSession fixture in `tests/conftest.py`. It reuses the cluster's session when one already exists, because builder options are ignored at that point and stopping the session would detach the notebook.
-   - Per-source transform tests in `tests/test_silver_transforms/`. BoE is covered by 16 tests: the data-quality guard, an exact end-to-end SCD2 scenario, the multi-row invariants Delta CHECK constraints cannot express (exactly one current row, contiguous non-overlapping intervals), and edge cases including sixteenth-precision decimals and null-rate gaps.
+   - Per-source transform tests in `tests/test_silver_transforms/`. BoE is covered by 26 tests: the data-quality guard, an exact end-to-end SCD2 scenario, the multi-row invariants Delta CHECK constraints cannot express (exactly one current row, contiguous non-overlapping intervals), and edge cases including sixteenth-precision decimals and null-rate gaps. HPI is covered by 35 tests: the four integrity guards, the coverage floor at every nation and composite boundary, typing across both published decimal formats and the volume decimal-point case, null preservation, and an end-to-end projection. PPD is covered by 47 tests: the positional read contract, the code sets at every published value, the one-year-per-file rule the partition key rests on, key uniqueness across files, and the cases where a fault would change no row count and raise nothing, such as a reordered projection or a transfer date carrying a real time component. 108 tests in total across the three sources.
    - Quality framework tests in `tests/test_quality_framework/`
    - Runs locally with `pytest` against the versions pinned in `requirements-dev.txt`, and on the cluster through `tests/run_tests.py`. CI integration deferred to Phase 4.
    - Test-only dependencies stay notebook-scoped or local rather than on the cluster spec (see Decision 13)
@@ -600,8 +780,8 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 1. ✅ Databricks workspace + cluster + Unity Catalog + storage layer + Bronze Volumes
 2. ✅ First Silver notebook against the simplest source (BoE): minimal schema complexity
-3. HPI (single CSV, well-structured)
-4. PPD (large, multi-year, schema-evolution considerations)
+3. ✅ HPI (single cumulative CSV, wide monthly panel, per-nation coverage floor)
+4. ✅ PPD (31.4M rows, partitioned on transfer year, TUID uniqueness asserted)
 5. Doogal (ZIP unzip, large postcode table)
 6. ONS (XLSX with headers and footers to skip)
 7. Police.uk (most complex: ZIP containing ~4500 nested CSVs, multi-snapshot deduplication)
@@ -611,4 +791,4 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 ---
 
-*Design document status: Phase 2 in progress. Foundation provisioned, BoE Silver complete and unit-tested, five sources remaining.*
+*Design document status: Phase 2 in progress. Foundation provisioned, BoE, HPI, and PPD Silver complete and unit-tested, three sources remaining.*
