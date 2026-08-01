@@ -15,13 +15,14 @@ from datetime import datetime, timezone
 
 from databricks_src.silver.transforms.boe_base_rate import (
     RAW_DATA_SCHEMA,
+    SILVER_COLUMNS,
     assert_rate_columns_consistent,
     transform_boe_base_rate,
 )
 
-CATALOG       = "uk_property_intel"
-SOURCE_PATH   = f"/Volumes/{CATALOG}/bronze/boe/base_rate/baserate.xls"
-TARGET_TABLE  = f"{CATALOG}.silver.boe_base_rate"
+CATALOG      = "uk_property_intel"
+SOURCE_PATH  = f"/Volumes/{CATALOG}/bronze/boe/base_rate/baserate.xls"
+TARGET_TABLE = f"{CATALOG}.silver.boe_base_rate"
 
 # COMMAND ----------
 
@@ -34,7 +35,7 @@ TARGET_TABLE  = f"{CATALOG}.silver.boe_base_rate"
 # COMMAND ----------
 
 raw_df = (
-    spark.read
+    spark.read  # noqa: F821
     .format("dev.mauch.spark.excel")
     .option("header", "true")
     .option("dataAddress", "'Raw Data'!A2")
@@ -139,9 +140,13 @@ silver_df.orderBy("effective_date", ascending=False).show(5, truncate=False)
 
 # COMMAND ----------
 
+# INSERT OVERWRITE matches on position, so a projection that drifts from the DDL
+# would load values into the wrong columns.
+assert tuple(silver_df.columns) == SILVER_COLUMNS, silver_df.columns
+
 silver_df.createOrReplaceTempView("_boe_silver_staging")
-spark.sql(f"INSERT OVERWRITE {TARGET_TABLE} TABLE _boe_silver_staging")
-print(f"Wrote {spark.table(TARGET_TABLE).count():,} rows to {TARGET_TABLE}")
+spark.sql(f"INSERT OVERWRITE {TARGET_TABLE} TABLE _boe_silver_staging")  # noqa: F821
+print(f"Wrote {spark.table(TARGET_TABLE).count():,} rows to {TARGET_TABLE}")  # noqa: F821
 
 # COMMAND ----------
 
@@ -161,7 +166,7 @@ print(f"Wrote {spark.table(TARGET_TABLE).count():,} rows to {TARGET_TABLE}")
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC SELECT COUNT(*)            AS total_rows,
+# MAGIC SELECT COUNT(*)             AS total_rows,
 # MAGIC        COUNT_IF(is_current) AS current_rows,
 # MAGIC        MIN(effective_date)  AS earliest,
 # MAGIC        MAX(effective_date)  AS latest_change,
