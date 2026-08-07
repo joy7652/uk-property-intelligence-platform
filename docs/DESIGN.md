@@ -2,7 +2,7 @@
 
 This document captures the architectural decisions, engineering trade-offs, and delivery plan behind the platform. It complements the project README with deeper rationale and serves as the working design reference across phases.
 
-> **Status:** Phase 1 (Bronze ingestion) complete. Phase 2 (Databricks Silver layer) in progress: foundation provisioned (workspace, Unity Catalog, per-layer storage, identity model, Bronze Volumes), and three Silver tables live, unit-tested, and committed: the BoE base rate, the UK House Price Index, and Price Paid Data. Three sources remain.
+> **Status:** Phase 1 complete, Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3, the Gold layer, is next.
 
 ---
 
@@ -90,16 +90,32 @@ United Kingdom sales volume for March 2025 reads 134,340 against a baseline near
 
 **3. Doogal UK Postcode Lookup**
 - ZIP file, static URL: `https://www.doogal.co.uk/files/postcodes.zip`
-- ~90 MB zipped, ~950 MB unzipped
-- Mirrors ONS postcode data under the Open Government Licence. I chose it as a practical alternative when ArcGIS Hub access proved unworkable
-- Updated quarterly
+- **239 MB zipped, 2.01 GB unzipped, one CSV of 60 columns and 2,713,360 rows** (measured 03-08-2026 against the May 2026 release). The earlier figures in this document, ~90 MB and ~950 MB, were recorded in Phase 1 and the file has more than doubled since.
+- Mirrors ONS postcode data under the Open Government Licence, with the publisher's own columns appended. I chose it as a practical alternative when ArcGIS Hub access proved unworkable
+- Refreshed each quarter when ONS release the postcode directory. The publisher keeps no history, so only latest state is available and the correct write mode is a full overwrite
+- The URL and the filename never change, so neither the run status nor the landed path can distinguish a current release from a stale one. `Last updated` inside the file is the only freshness signal the content carries
+- Grain is one row per postcode. Postcode is unique across all 2,713,360 rows, so Silver asserts uniqueness rather than deduplicating
+- 1,798,006 live postcodes and 915,354 terminated. Terminated rows are retained: PPD transfers run to 1995 and 14,395 distinct PPD postcodes resolve only through them
+- Header carries a UTF-8 byte order mark. The Spark reader strips it, and the column-set guard is what would surface a reader change that let it through
+- The publisher's field documentation lists 61 columns including a "Built up sub-division" the file does not carry, and differs from the file in capitalisation on three more. The header is the contract; the documentation is reference
+- No auth, no headers required
+
+*Positional quality and the fabricated coordinate.* The `Quality` column is the ONS positional quality indicator, 1 to 9. Value 9 means no grid reference is available, and the file leaves easting and northing blank on those 11,071 rows while writing zero into latitude and longitude. Zero is a valid coordinate in the Gulf of Guinea, so it survives every range check a consumer might apply; the blank grid columns are the honest signal. Silver nulls the coordinate pair on quality 9 and asserts the two conditions coincide. Value 7 is published as "deliberately left blank" and is absent from the current release, which is a fact about the release rather than the contract. Those rows lose their statistical geography too: without a grid reference the source assigns no LSOA, so quality 9 postcodes join PPD on postcode but cannot join Police.uk on LSOA.
+
+*Non-geographic postcodes.* The BF area is British Forces Post Office, introduced in 2012 to give BFPO addresses UK-style postcodes. Its 48 rows carry coordinates at overseas bases (Sennelager, Ramstein, Lisbon, Naples, Stavanger) and null in every administrative and statistical column, including the introduction date. That block was last updated 2018-10-14 against 2026-05-29 for the rest of the file, and gov.uk has since removed at least one entry that is still present here, so it is a frozen appendix rather than a maintained series.
+
+*Columns that look usable and are not.* Population and households are 2011 census figures. Average income is a 2020 model-based estimate at MSOA level. Both sit in a quarterly-refreshed row with nothing marking them as fixed-vintage. The deprivation rank holds four separate national indices at four vintages and four scales under one name, England ranking to 33,755, Wales to 1,909, Scotland to 6,976 and Northern Ireland to 890, with a 0 appearing in the data that falls in none of those ranges. See Decision 18.
+
+*Coverage by nation, from the 03-08-2026 load:* England 2,277,064, Scotland 230,924, Wales 142,084, Northern Ireland 63,240, BFPO 48. Postcodes with no grid reference are unevenly distributed: 4.56% in Northern Ireland against 0.31% in England, a fifteenfold gap that any geography-dependent Gold model inherits.
 
 **4. Bank of England Base Rate**
 - Single XLS file, stable URL
 - URL: `https://www.bankofengland.co.uk/-/media/boe/files/monetary-policy/baserate.xls`
 - Requires User-Agent header (anti-bot filtering)
 - Full rate history since 1694
-- The published `baserate.xls` is revised periodically, and the daily `Raw Data` series is pre-filled to roughly a month past the save date (a revision saved 2026-03-31 carried daily rows through 2026-04-30). Between revisions, ADF refreshes land byte-identical copies, so an unchanged row count after re-ingestion is expected rather than a failed fetch; confirm freshness from the blob's `modificationTime`, not a content change.
+- The published `baserate.xls` is revised periodically, and the daily `Raw Data` series is pre-filled to roughly a month past the save date (a revision saved 2026-03-31 carried daily rows through 2026-04-30). Between revisions, ADF refreshes land byte-identical copies, so an unchanged row count after re-ingestion is expected rather than a failed fetch.
+- Freshness therefore comes from the file's size, not from its `modificationTime`. An earlier note here recommended the timestamp; the PPD finding below shows why that was wrong, since a container restructure rewrote every timestamp without re-fetching anything. Size moves whenever the workbook is re-saved, whether or not a rate changed. The Silver notebook records it as `source_bytes`.
+- The pre-filled rows carry the rate forward rather than leaving it blank, so the last row of the sheet and the newest day carrying a rate are the same date. Measured equal on two runs. Because the series runs ahead of the save date, the freshness lag the notebook reports understates the workbook's true age by about a month.
 - An unchanged **event** count is likewise expected between rate changes. The table has held at 278 change events since the December 2025 cut to 3.75%, through unchanged decisions in March, April, and June 2026.
 
 **5. ONS Price Index of Private Rents**
@@ -108,13 +124,42 @@ United Kingdom sales volume for March 2025 reads 134,340 against a baseline near
 - Relative URL pattern uses `?uri=...` query string
 - **Platform quirk:** the relative URL must begin with `?` to stop the query delimiter being URL-encoded
 
+Monthly rent indices and price levels for the UK, its countries, English regions, and local geographies, from January 2015. Base period January 2023 = 100. Not seasonally adjusted. Became official statistics on 20 May 2026, having previously been official statistics in development; the workbook's own cover sheet still carries the older wording, so the status is taken from the bulletin rather than the file.
+
+*Shape.* One sheet of data, Table 1, in an accessibility-formatted workbook alongside a cover sheet, contents, and notes. Header on row 3, 40 columns: four label columns, then a headline block of index, monthly change, annual change and rental price, then the same four metrics for eight breakdowns, being one, two, three and four-or-more bedrooms, and detached, semi-detached, terraced and flat or maisonette. The July 2026 release carries 49,266 data rows: 357 geographies with all 138 months each, a rectangular panel with no ragged starts.
+
+*Geography is not uniform.* England and Wales report by local authority district, Scotland and Northern Ireland by broad rental market area. The 316 English and Welsh authorities, the nine English regions and the country and UK aggregates all carry GSS codes that match HPI. The 18 Scottish rental market areas carry S33 codes that match nothing else in the project, and the eight Northern Irish areas carry no code at all. City of London and Isles of Scilly are not published, because collection volumes are too low, which is a different pair from the HPI gap.
+
+*Absence is marked, not blank.* `[x]` is data that cannot exist and `[z]` is data that does not apply. In the July 2026 release there are 42,417 instances of `[x]` and every one is structural: annual change across the first twelve months, monthly change in the first month, and all 36 measures for the nine Northern Irish geographies in the two months ONS has not yet published. `[z]` appears only in the area code column, for the eight uncoded areas, and in the parent geography column, for rows that have no parent.
+
+*Northern Ireland lags by two months,* and ONS imputes it forward to publish a UK figure, so the latest two UK rows are part measured and part estimated. Those same two months are revised on the following release under a stated two-month revision policy. Great Britain excludes Northern Ireland and is unaffected.
+
+*The URL cannot be templated.* The dataset path carries a release-date folder, which follows the publication calendar, and a filename with an arbitrary suffix that does not. Across 29 editions the suffixes run 1, 2, 6, 8, 10, 13, 14 with no relationship to the edition sequence, plus one file with a doubled dot and two early ones under a different stem. There is no rule that derives next month's filename from this month's, so the URL has to be read off the dataset page rather than pattern-matched.
+
 **6. UK Police Street-level Crime**
-- Rolling 3-year snapshot ZIPs, ~1.7 GB each, ~4500 CSVs inside (36 months × ~125 files per force/category)
+- Snapshot ZIP archives, 1.4 to 1.7 GB each, roughly 4,500 CSVs inside, one per month, force, and dataset
 - Historical snapshot URL pattern: `https://data.police.uk/data/archive/{YYYY}-12.zip`
 - Latest monthly snapshot URL pattern: `https://data.police.uk/data/archive/{YYYY-MM}.zip`
 - No auth
-- Full-load iterates 2-yearly (2013-12, 2015-12, …, 2025-12); incremental fetches the latest published monthly snapshot
-- Silver-layer strategy: deduplicate overlapping months, keeping the most recent snapshot's version of each `(month, force, category)` tuple. Where overlapping snapshots disagree, that becomes a quality signal.
+- Each archive holds three datasets: street-level crime, outcomes, and stop and search. Silver takes street only, because the crime-against-price overlay is the analytical purpose and the other two serve it in no way that justifies three times the volume.
+- **The archive window is not constant.** Archives from December 2013 to April 2017 carry the full history back to December 2010. From May 2017 they carry a rolling 36 months. The full load runs the December archives at a two-year step, which against a three-year window leaves twelve months of overlap between consecutive archives and no gaps.
+- The watermark starts at 2015. The 2013-12 archive was ingested, inventoried, and then deleted: 2015-12 covers every month it held from a later snapshot, and the only slots it uniquely carried were nine header-only files of 130 bytes and zero rows.
+- police.uk publish an MD5 beside every archive. All eight in Bronze matched the published digests on 05-08-2026, which makes this the only source in the project where Bronze fidelity is proved rather than preserved by convention.
+- Monthly retention is latest-only. Each monthly archive is a full 36-month snapshot, so a missed month is recovered by the next one. That inverts PPD, whose monthly file is a change-only delta at a static URL that cannot be recovered if missed. See Decision 16.
+- Bronze at 06-08-2026 holds seven archives spanning 2010-12 to 2026-06, 187 months, no gaps. After path-level deduplication that is 8,288 winning `(month, force)` files and 19.2 GB unzipped, from 3.6 GB of compressed input.
+- Crime ID is a one-way hash of the force's offence reference and is blank for anti-social behaviour. Dates are truncated to year and month at anonymisation and coordinates are snapped to shared map points, both deliberately. See Decision 23.
+
+*Force coverage is not constant, and the gaps are large.* Greater Manchester stop after June 2019, with one stray file in August 2022 and nothing since. British Transport Police stop after January 2025, which matters beyond the row count because they were the only force publishing Scottish locations. Gloucestershire's series ends January 2026, short enough to read as filing lag rather than departure. Together that is roughly 2.8M records against full coverage, near 3%, and almost all of it Manchester. Missing force-months are silent by construction: the load reads whichever archive holds each slot, so a force that backfills reappears on the next run without intervention.
+
+*Anti-social behaviour is 53.8% of records across 2010 to 2014 and 16.4% across 2023 to 2026.* Any total-crime series that does not separate it shows a fall and then a recovery, both of which are artefacts of composition rather than movements in crime.
+
+*Crime type vocabulary runs in three eras:* six categories to August 2011, eleven to April 2013, then fourteen from May 2013, when the Home Office split public disorder and weapons into two categories and renamed violent crime. The boundary is clean, with no month carrying both vocabularies.
+
+*Northern Ireland reuses offence references.* 8,654 crime IDs recur monthly across the whole series, covering 1,405,213 rows, so Crime ID identifies nothing for 1.5% of the table. No model should join on it.
+
+*LSOA follows the ONS boundary vintage of the day.* From 2024 every code resolves against the postcode lookup's 2021 codes; before that roughly 1,100 do not, and 2023 carries the most distinct codes of any year because it spans both vintages.
+
+*Force is a reporter, not a geography.* Only 7,353 of about 36,000 LSOAs have a single reporting force, yet every force except City of London has under 1.2% of its rows in an LSOA another force dominates. City of London is 5.9%, which is what an enclave inside the Metropolitan area produces. The two readings agree: the dominant force holds nearly all the volume in each LSOA, and the rest is a thin spray of boundary and distant snap points. Aggregate by LSOA across forces, and never split an LSOA by force.
 
 ### Source swap: EPC → Police.uk
 
@@ -129,6 +174,8 @@ I evaluated three options:
 I chose option 3. Police.uk crime data meets the structural requirements (stepped yearly pattern, real analytical value) and arguably strengthens the analysis, since crime-against-price overlays are a well-established dimension in property investment.
 
 A smoke test before implementation showed that each police.uk monthly archive is a rolling 3-year snapshot, not a monthly delta. That changed the ingestion pattern from the originally-planned monthly-backfill to `yearly_stepped` with a 2-year step, which avoids duplicate data while keeping full historical coverage.
+
+That reading held for the archives the smoke test looked at and not for the older ones, which the Phase 2 inventory found: everything before May 2017 carries the full history from December 2010. The two-year step was still correct, since a three-year window leaves twelve months of overlap either way, but it means the earliest archive in the chain is far wider than the pattern name suggests.
 
 ---
 
@@ -568,6 +615,162 @@ Two rules came out of the guards rather than the structure. A guard reports offe
 
 The convergence was done as a refactor with the logic held still, and verified by running the existing suites unchanged before touching them. It stopped at a shared convention. There is no base class and no shared helper module, because the three sources read a multi-sheet Excel export, a wide CSV panel with a header, and 32 headerless CSVs, and a generic guard over those would hide more than it saved.
 
+### 18. Doogal keeps the ONS spine and drops the publisher's additions
+
+The postcode file is two datasets under one header. Most of it mirrors the ONS Postcode Directory: versioned, quarterly, documented, and reproducible from the ONS release itself. The rest is the publisher's own enrichment, computed from unnamed inputs at unstated dates. Silver keeps 42 columns and drops 18.
+
+The 18 fall into four groups, and only one of them is a judgement call.
+
+**Restatements, 5 columns.** Grid reference is a reformatting of easting and northing. Postcode area and postcode district are substrings of the postcode. Plus Code is an encoding of the coordinate pair. The in-use flag is the interesting one: it holds exactly when the termination date is null, with no exception in 2,713,360 rows, so it carries no information at all. It is still checked. The transform asserts the equivalence on the source frame before dropping the column, on the same reasoning as PPD's record status: a break there would mean the publisher changed what a column means, which is worth failing on even for a column that does not survive.
+
+**Wrong grain, 2 columns.** The UPRN list and the road list are comma-separated inside a CSV. A multi-valued attribute at postcode grain is a different table, not a column, and the two of them are a large share of the file's growth from 950 MB to 2.01 GB.
+
+**Derived with no provenance, 9 columns.** Altitude, nearest station, distance to station, distance to sea, and most common property type are computed by the publisher from inputs the file does not name at dates it does not state. Population and households are 2011 census figures and average income is a 2020 model estimate, all three pre-joined down to postcode grain from a coarser one. The output area and MSOA codes are retained, which is what makes those three cheap to drop: a Gold model that wants population or income can join the published source at its real grain instead of inheriting an apportionment with no methodology attached.
+
+**Deprivation, 2 columns.** This is the case that took the most thought. The rank column holds four separate national indices, at four vintages, on four scales: England 2025 ranking to 33,755, Scotland 2020 to 6,976, Wales 2019 to 1,909, Northern Ireland 2017 to 890. Nothing in the row says which applies. A consumer reading it as one series gets an answer that is wrong and looks right, which is the same shape as the HPI derived back-series in Decision 14: a value that is part one thing and part another. The decile column is worse rather than better, because 1 to 10 everywhere conceals the incompatibility instead of hinting at it. Both go, and the LSOA codes stay so a published index can be joined properly.
+
+**Why a column rule can be stricter than the row rule.** Decision 14 argues against narrowing Silver to today's consumers, and that argument was about rows. It does not transfer here because the cost of reversal differs. Re-deriving a dropped HPI row means re-ingesting and re-validating a source. Doogal is a full rebuild from a snapshot that is re-read every run, so restoring a column is one line and a few minutes. Cheap to reverse makes a stricter rule affordable. That is a distinction, not an exception.
+
+**What was kept for reasons worth recording.** Terminated postcodes are 915,354 rows and resolve 14,395 distinct PPD postcodes that no longer exist. Both LSOA vintages are kept because Police.uk publishes against whichever ONS boundary vintage was current at the time, so the crime history spans both and needs one join key per era. The county council column is renamed `county_council` rather than carrying the source's "Local authority", which names the wrong thing: it holds the county council area, is unpopulated for unitary authorities and London, and the actual local authority district is the district column. Keeping the source name would have handed every future consumer a wrong join.
+
+**Null geography is legitimate, so it is bounded rather than rejected.** The BF postcodes carry no country, no positional quality, and no user type, because they are not in a UK geography. Those rows are measured data and are kept. That makes the guard the inverse of Decision 14's: there an unmapped area code always signals a fault, here a null is expected for one postcode area and a fault everywhere else. The transform aborts on null geography outside BF, so a geography the publisher has not yet mapped cannot hide among the forces addresses.
+
+**A known join asymmetry, recorded rather than fixed.** 360 of Doogal's 361 district codes appear in HPI's geographies. The one gap is the Isles of Scilly, which Land Registry states it does not publish because of low monthly sales volumes. PPD records transactions there and Doogal resolves their postcodes, so a Gold join through to HPI drops them. Neither table is wrong, so the answer belongs in the Gold model rather than in either Silver table. ONS excludes both the Isles of Scilly and the City of London from the private rents index for the same reason, which is a different pair, so the ONS source cannot inherit this answer.
+
+This decision would change if the publisher began stating the vintage and method of its derived columns, which would make them assessable rather than unassessable, or if a consumer needed a measure only available pre-joined here.
+
+### 19. Decompression is transport, not processing
+
+Spark cannot read inside a ZIP archive, so something has to unpack it before Silver can parse anything. Bronze keeps the archive exactly as published, and the Silver notebook extracts to cluster-local disk on each run.
+
+The question looks like a medallion-purity question and is not one. Compression is transport encoding rather than content: unwrapping an archive touches no column, no type, and no value, so unpacking at ingest would not have violated the rule that Bronze does no processing any more than decoding base64 would. What the two positions actually disagree about is what Bronze is made of. Where Bronze is a table layer, a ZIP cannot go into it and decompression happens at or before ingest by necessity, which is why most Databricks material treats that as the default. Where Bronze is a landing zone, as it is here under Decision 11, byte fidelity is the stated purpose and unpacking destroys it.
+
+What decides it in practice is how many reads each ingest serves. Doogal publishes quarterly, is ingested quarterly, and is rebuilt quarterly, so decompressing once at ingest amortises across exactly one read. It would buy nothing and cost 2.01 GB of stored output plus the ability to check Bronze against the source.
+
+Police.uk inverts that arithmetic and makes the strongest case in the project for expanding at ingest. Seven archives, every one restating up to three years, all read far more often than they are ingested, and police.uk publish an MD5 for every archive, which turns fidelity from something preserved into something proved and recorded. It still loses, for a reason the Doogal case never raises. Roughly 4,500 CSVs per archive is about 31,500 small files if expanded into blob storage, and the deduplication in Decision 24 discards 40% of them from the file names alone. Expanding at ingest would write every losing copy to storage in order to never read it. So Police.uk keeps the archive too, and extracts at Silver like Doogal, but one archive at a time: the full winning set expands to 19.2 GB against 4.4 GB for the largest single archive, and only the second of those fits comfortably on one node.
+
+Reading from a local path ties these notebooks to a single-node cluster. On a multi-node cluster the executors do not share the driver's filesystem and the read raises file-not-found, so the constraint announces itself instead of returning partial data. That makes it cheap to carry and cheap to fix, which is why it is preferred over staging the extracted file back into managed storage.
+
+### 20. The ONS workbook is converted, not read in place
+
+spark-excel reads the other Excel source in this project, the Bank of England workbook, directly from Bronze. It cannot read this one.
+
+Reading as string returns the cell's display format rather than its stored value. ONS holds these figures to six decimal places and displays them to one, so an index of 81.413747 arrives as 81.4. Nothing fails: the row count is right, the column count is right, the casts succeed, and the numbers look reasonable. Five decimal places are gone and no guard in the shared contract would notice.
+
+Reading with an explicit schema recovers the stored value, which is how the Bank of England transform is typed. But the 36 measure columns contain `[x]` and `[z]` as text. Under a numeric schema those collapse to null at best, merging "not available", "not applicable" and "failed to parse" into one indistinguishable state. It also removes the all-string frame that `assert_casts_preserved` compares against, so the guard that turns a silent null into a named failure cannot run at all.
+
+Neither path yields the published values as strings, which is what Decision 17's contract needs. The `usePlainNumberFormat` option does not help: it overrides the General and Text formats, and these cells carry an explicit one-decimal format.
+
+So the Silver notebook converts Table 1 to CSV on cluster-local disk using openpyxl in read-only mode, which returns the stored value and a real date, and reads that CSV with the same all-string pattern every other source uses. Bronze keeps the workbook exactly as published. This is the shape Decision 19 already argues for with the postcode archive, and it inherits the same single-node constraint.
+
+Two guards make the conversion auditable. The sheet's declared dimension gives an expected row count from a different code path than the row iteration, so a reader that skips rows is caught rather than trusted. And floats are serialised through `Decimal`, because Python's shortest round-trip representation switches to scientific notation below 1e-4 and would otherwise hand Spark an exponent to parse.
+
+A secondary reason, discovered first: spark-excel materialises the sheet through POI in the driver heap, and `dataAddress` selects cells after that rather than bounding it. On a four-core, 16 GiB single node a 17 MB workbook that is almost entirely one sheet kills the driver. That would have justified a memory workaround; the fidelity problem is what makes conversion the correct answer rather than a larger driver.
+
+### 21. ONS keys on area name, because eight geographies have no code
+
+ONS publishes no GSS code for the eight Northern Irish broad rental market areas, writing `[z]` in the area code column instead. Area code therefore cannot be the key, and cannot be `NOT NULL`, which the shared contract requires of key columns.
+
+Area name is unique across the release, so the grain is `(area_name, date)`. Area code stays nullable and is what joins to HPI and the postcode lookup where it exists. A guard fails the run if a null code appears outside Northern Ireland, so a release that starts coding those areas, or that drops a code elsewhere, changes the join surface loudly rather than quietly.
+
+Identifying Northern Ireland needs both a code test and a parent-column test, and each one carries a different set. The country row `N92000002` has `[z]` in its parent column, so only the code test finds it. The eight rental areas have no code, so only the parent test finds them. Either test alone fails on the real file.
+
+### 22. Absence is asserted into position, then nulled
+
+Both markers become null in Silver. Neither is preserved as a value, and no flag column records where they were.
+
+That is safe only because the positions are asserted first. Every `[x]` must fall into one of the three structural cases the source publishes it in, and `[z]` must not reach a measure column at all. A marker anywhere else aborts the run. So the information the marker carries is either already derivable from the row, since "first month of the series" is a fact about the date, or it is a source change that should stop the load rather than become a null.
+
+A fourth guard checks that unpublished months are the trailing ones. A nation that lags is missing its latest months; a gap in the middle would pass the structural check, which tests position by column rather than by date.
+
+The part-imputed UK rows are kept on the same reasoning turned around. They are ONS's own published headline with a documented method, not something derived here, and Great Britain covers the same months fully measured for anyone who needs that. Dropping them would delete the most recent UK figures, which is the opposite of useful. Which months are affected moves every release, so it is derivable from the Northern Ireland rows rather than fixed, and it belongs in the table comment rather than the schema: a flag column would be meaningful on 138 rows out of 49,266.
+
+This is the same shape as Decision 14, where HPI's derived back-series was dropped, and the outcome differs because the claim is weaker. HPI spliced on a different index entirely. This imputes one nation's two-month lag forward within the same index.
+
+### 23. Police street crime has no key, so duplicates are counted rather than removed
+
+Every other Silver table asserts a key and fails on a repeat. This one cannot, and the reason is in the source's design rather than its quality.
+
+Crime ID is a one-way hash of the force's offence reference, and police.uk leave it blank for anti-social behaviour, which is 31% of the table. Dates are truncated to year and month at anonymisation. Coordinates are snapped to shared map points. Those three together mean two genuine burglaries on one street in one month produce byte-identical rows, and police.uk separately state they suspect some forces of double counting anti-social behaviour. Identical rows therefore have two causes that cannot be told apart from the row, and deleting them would remove real crimes.
+
+So Silver keeps them and measures the population instead: 5,410,380 groups and 10,932,596 rows beyond the first, 11.4% of the table. The obvious objection is that this is an artefact of records with no location, and the split says otherwise. Only 95,723 of those extra rows carry no location at all. The rest are located records at shared snap points, which is what the published format produces rather than evidence of a fault.
+
+Crime ID is no use as a fallback either. 8,654 IDs recur monthly across the whole series, covering 1,405,213 rows, every one of them Northern Ireland. The hash is of a reused reference rather than of a crime.
+
+The table therefore names the columns that must be populated without calling them keys. Crime month, crime year, force, and snapshot month are the grain the file selection works at plus the vintage the row came from. None of them identifies a row, and a constant named `KEY_COLUMNS` would have implied otherwise to every later reader.
+
+`snapshot_month` is the other half of this decision. Outcome state is whatever the archive that supplied the row happened to hold, so a 2011 crime has years of settlement behind it and a crime from the newest month has none. Carrying the vintage as a column makes the lag derivable rather than hidden, and a Gold model comparing outcome rates across years is wrong without it.
+
+### 24. Overlapping snapshots are resolved from file names, before anything is decompressed
+
+The planned approach, recorded in Phase 1, was a window function over the loaded rows keeping the newest snapshot's version of each month, force, and category. That would have worked and it would have been the expensive way to do it.
+
+The whole key is in the path. The archive filename gives the snapshot, the inner path gives the month and the force. So the winning copy of each slot is decidable from the ZIP central directories alone, which cost no decompression: 13,887 street members collapse to 8,288, removing 40% of the read before a byte is expanded, and no shuffle is spent on it. It also removes the need for a row key to tell copies apart, which matters given Decision 23, because there is no row key to be had.
+
+The cost is that cross-snapshot disagreement stops being a by-product of loading and becomes a separate comparison. Byte sizes from the same central directories give a cheap approximation, and it found the largest restatement in the source: British Transport Police restated the whole of 2023 downward by roughly 45% between the December 2023 and June 2026 archives. Twelve consecutive months at about half the bytes. Newest-wins keeps the smaller version, which is right, and the table alone would never have shown it.
+
+Deleting the 2013-12 archive was correct and did cost something here, which is worth recording rather than glossing. It held nothing but header-only files that no other archive lacked, so no data was lost. But it was the second copy of 2010-12 to 2013-12, and without it 101 of 187 months are now held by a single snapshot, in alternating years, with no second copy to compare against. Fair trade for 0.86 GB, and it should have been priced at the time rather than after.
+
+### 25. Validation runs in one pass where the table is large enough for it to matter
+
+The other five sources declare one guard function per rule, each called as a statement, each an action over the frame. That is the right shape for a table of thousands or a few million rows, and it is what Decision 17's shared contract describes.
+
+Police is 96,092,836 rows. The same shape cost roughly seven full passes before anything was written, and it dominated the run.
+
+Every rule here is a row predicate, so they fold. Each stays a named function with its constraint written out and its own evidence columns, but returns a predicate rather than raising, and one aggregate evaluates all of them together with eight non-fatal measures and two bounded vocabularies. A clean archive costs one pass. A broken one costs one more short read per failing rule, capped, which is affordable because the load is aborting anyway.
+
+Two things improve beyond the speed. Every failing rule is reported at once rather than the first, which matters when each retry costs a twenty-minute extraction. And the cast check becomes sharper: comparing populated counts between the raw and typed frames can only say a column lost values, while a predicate reports the string that failed.
+
+What does not fold is aggregate guards. Uniqueness, grain, and per-file span checks shuffle, and no amount of restructuring makes them share a pass with a row predicate. Police has none of those, which is why the collapse is complete here and would be partial on PPD.
+
+The same lesson has a second instance in the same notebook. `ALTER TABLE ADD CONSTRAINT` validates every existing row before it attaches, so the sibling habit of dropping and re-adding every constraint each run is free on an empty table and nine full scans on a populated one. Reading the attached constraints from Delta's table properties and touching only what differs costs metadata alone.
+
+The general rule, and the one worth carrying forward: read the sibling files, then decide. A convention written for nineteen thousand rows can be wrong for ninety-six million, and nothing about it announces that.
+
+### 26. Aborting is the default, so a quarantine table has to earn its place
+
+The roadmap has carried a quarantine table since Phase 1, on the standard reasoning that bad rows go aside and good rows proceed. Building all six Silver transforms produced the opposite habit, and the habit is right.
+
+Almost every guard in this platform is a contract check rather than a value check. An unrecognised crime type, a column set that no longer matches, a code outside its published set: each means the source changed shape, and loading the rows that happen to still parse would produce a table whose schema nobody understands any more. Decision 16 states it for PPD, that a new code is a source change rather than a row to skip. Quarantining a contract violation converts a loud stop into a quiet partial load, which is the failure mode Principle 4 exists to prevent.
+
+That leaves the population a quarantine table would actually hold: rows that satisfy the contract and fail a plausibility bound. Across six sources and roughly 130M rows the clearest instance is the 24 rows in Decision 23's source where British Transport Police published Scottish stations with corrupted longitudes, and those are better handled by nulling the coordinate and counting it than by removing the crime.
+
+So the table is deferred rather than scheduled, and the decision that gates it is which checks are contract and which are value. That split is worth making explicitly when the quality framework is designed, because it also decides which rules belong in config and which stay in code. If the value population stays this thin, the honest outcome is to record why the table was not built.
+
+### 27. The watermark does not obviously belong in Delta
+
+The Phase 1 plan records migrating `watermark.json` to a Delta table as part of watermark automation. That is worth re-deciding rather than inheriting, because the cost sits somewhere the original framing did not look.
+
+ADF reads the watermark on every orchestration run, from a JSON file in blob storage, at no compute cost. Moving that state into a Delta table means ADF starts a cluster to read it, on every run, before any data moves. The benefit sought was write-side: Databricks updating state after a successful load rather than the state being edited by hand.
+
+Having Databricks write the JSON back gets the write-side benefit and leaves ADF's read path untouched. The Delta version buys transactional history and queryable state, which matter if the watermark grows beyond six source entries or if several writers ever contend for it. Neither is true today.
+
+This is the same shape as Decision 11, where Bronze stayed as Volumes rather than Delta because the table format earned nothing at that scale. Recorded here so the choice is made on its cost rather than on the default that Delta is the answer to state.
+
+### 28. The audit layer is two tables, because a failed run has to leave a row behind
+
+`pipeline_metric` holds one row per measured value; `pipeline_run` holds one row per notebook execution whatever the outcome.
+
+A metrics-only table records nothing when a load fails, so the absence of rows for a source cannot be told apart from the notebook never having been run. That is the same failure the freshness work exists to catch, and it would have been least visible in the record itself. The run row is inserted at start with status `started` and updated on completion, which gives three end states rather than two: a killed cluster leaves an open row instead of disappearing and quietly raising the observed success rate.
+
+Metrics buffer in the run object and flush once, on success or failure, so a load that aborts still records what it measured before it broke. A Delta commit per metric would cost a transaction for every printed count.
+
+Three rules follow from the tables being read by a dashboard in Phase 5. Counts are stored with the base they are a share of, never as a pre-computed ratio, because counts and bases re-aggregate across runs and percentages do not. Metric names come from a registry in the writer rather than being typed into six notebooks, since a rename that nothing catches looks exactly like a series that was discontinued. And a metric's `kind` lives on that registry rather than on the rows, so it joins at read time and applies retroactively to everything already recorded: a share sitting at a third of all rows can be the source's shape rather than a fault, and only the registry can say which.
+
+Police needed one addition. It validates seven archives in one run, so the same metric name appears seven times under one run id, distinguished by a `scope` column and each carrying its own archive's row count as the denominator. Summing numerators and denominators before dividing gives the correct share for the load; averaging seven percentages would weight a 264-file archive the same as a 2,196-file one.
+
+### 29. Freshness bounds are read from the data, not from a publisher's calendar
+
+Bronze sat on a four-month-old Police archive until an inventory surfaced it. Nothing failed, because nothing was wrong with the file that was loaded. The gap was that no source asserted anything about how new its content was, and the planned watermark automation would not have closed it either, since ONS cannot be pattern-matched from its URL.
+
+Each Silver notebook now records the newest date its content carries, and each source has a bound in days above which the load aborts. Every bound ships unset, and the first observations show why that matters: the healthy lag runs from 8 days for the BoE workbook to 98 for the HPI release, with PPD at 38, ONS at 67, Police at 67, and Doogal at 69. A single observation cannot say whether a source was measured at the top of its cycle or the middle, and the difference decides the bound. Setting one from a publisher's stated release calendar would be a guess about a cycle nobody here controls, which is the mistake the whole approach exists to avoid.
+
+Two sources needed a signal other than the obvious one, and both are instances of the same thing: the file and the data are different objects.
+
+The BoE rate has held since December 2025 through four unchanged decisions, so the newest rate change is stale by design and asserting on it would fire every month while the pipeline is healthy. The newest day carrying any rate is the signal instead.
+
+ONS is the sharper case. Its URL is rewritten by hand every month, so the landed filename records which release was asked for rather than which one was served. The workbook's cover sheet carries a publication statement, and the date parsed out of it is the only value in the file that can contradict the filename. On the 2026-07 release those agree: filename claims 2026-07, cover sheet says published 22 July 2026, while the newest data month is June. That gap is publication lag rather than staleness, which is exactly why the content date alone cannot answer the question. The parser returns nothing rather than raising if ONS rewords the statement, since that should cost the cross-check and not the load, and the statement is recorded verbatim either way so the change stays visible.
+
 ---
 
 ## Bugs found and fixed
@@ -694,7 +897,9 @@ The convergence was done as a refactor with the logic held still, and verified b
 
 **Fix:** re-ran the master pipeline against the documented host. The reload landed the July 2026 release, and the row count moved from 31,192,683 to 31,430,611.
 
-**Lesson:** this inverts the conclusion recorded against the BoE source. There, byte-identical refreshes between revisions mean an unchanged row count is expected, so freshness has to come from `modificationTime` rather than from the content. Here `modificationTime` was the misleading signal and the content was the honest one. Neither is reliable alone, because a storage timestamp is a property of the path while freshness is a property of the bytes. Where the two disagree the content decides, which means the check that catches it has to read something the pipeline did not assign.
+**Lesson:** this inverts the conclusion originally recorded against the BoE source, which was that byte-identical refreshes make `modificationTime` the only usable signal. Here `modificationTime` was the misleading one and the content was honest. Neither is reliable alone, because a storage timestamp is a property of the path while freshness is a property of the bytes.
+
+The resolution came later, with the audit work. Two signals get recorded per source and they answer different questions. The artefact signal is the file inventory the notebook already reads, its names, count, and total size, which changes when the bytes change and needs no per-source logic. The content signal is the newest date the data carries, which is a different expression for each source. A stale re-fetch moves neither; a publisher restating without extending moves the first and not the second. `modificationTime` is used for neither, because it describes when a path was written.
 
 ---
 
@@ -733,10 +938,25 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 - Bronze container restructured: `raw` → `bronze`, redundant subfolder removed, ADF pipelines updated, end-to-end re-run validated
 - GitHub integration in Databricks via Git folder, PAT-authenticated, trunk-based workflow operational
 
-### In progress
+### Complete (Silver transforms)
 
-- Silver-layer ingestion notebooks, one per source. BoE, HPI, and PPD are complete: transform modules, notebooks, and unit tests are committed, and all three tables are live. BoE and HPI are validated against externally published figures; PPD reconciles three ways on its own row counts, by category split, by property type and tenure, and by transfer year. Doogal is next.
+- Silver-layer ingestion notebooks, one per source. All six are complete: transform modules, notebooks, and unit tests are committed, and all six tables are live. BoE, HPI, and ONS are validated against externally published figures. PPD reconciles three ways on its own row counts, by category split, by property type and tenure, and by transfer year. Doogal reconciles against PPD on postcode coverage and against HPI on district code. Police reconciles on vintage exclusivity, no month drawing from two archives, and on force coverage by year.
+
+### Phase 2.8 — pipeline audit and freshness
+
+Two Phase 2 items ran ahead of Gold rather than after it. The audit table because six writers exist now and Gold adds more, so the schema is decided once rather than twice. The freshness assertion because that failure has already happened, and the planned watermark automation would not have caught the one source whose URL cannot be pattern-matched.
+
+`uk_property_intel.quality` holds `pipeline_run` and `pipeline_metric`, created by `databricks_src/setup/03_create_quality_tables.py` from DDL generated by the writer, so the table definition and the write schema cannot drift. `databricks_src/quality/audit/writer.py` carries the writer and a 29-entry metric registry. All six Silver notebooks record through it, and the folder sits beside `framework/` and `rules/` rather than inside them, because it writes what a notebook hands it and evaluates nothing.
+
+Everything the notebooks previously printed and discarded is now recorded: the file inventory, row counts in and out, the newest date the content carries, and per-source measures. Three sources record entity coverage against a rolling twelve-month window, which separates a permanently departed reporter from one that stopped recently. On the Police load that distinguished Greater Manchester and British Transport Police, both long gone and correctly excluded from the denominator, from Gloucestershire, which stopped in January 2026 and is named.
+
+### Carried into later phases
+
 - The PPD delta merge and the reconcile path described in Decision 16 are designed but not built. Silver is currently a full rebuild from the yearly files.
+- The quality-rules framework, watermark automation, and the quarantine table follow Gold. Gold produces a second class of check, covering join integrity, referential coverage, and aggregate reconciliation, that looks nothing like the Silver row checks. Committing to a config schema before seeing it risks a shape Gold has to work around.
+- Every freshness bound is unset. The mechanism is built and the values are recorded on every run, but a bound needs to be read off observations spanning a release boundary, and one run per source cannot say where in its cycle a source was measured.
+- The eight per-archive Police measures and both crime vocabularies are written by code that has not yet executed against a real load. Staging was complete when the audit wiring landed, so the loop was skipped. They first record on the next monthly archive.
+- The audit tables have no way to mark a run as synthetic, so a probe has to claim to be one of the six real sources and be deleted afterwards. Once ADF orchestrates the notebooks, its pipeline run id lands in a `parent_run_id` column and the dashboard's success rate is computed over scheduled runs alone, which keeps development re-runs in the history without distorting the headline.
 
 ### Planned (Silver scope)
 
@@ -752,11 +972,11 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
    - `quality_rules.json` under `config/` defining per-source validation rules
    - Generic validation notebook reads rules and applies them dynamically (PySpark, not SQL, since rule application needs to be programmatic)
    - Rejected records routed to a quarantine Delta table in the `quality` schema
-   - Quality scores logged to a `pipeline_audit` Delta table on every run
+   - Quality metrics logged to `quality.pipeline_run` and `quality.pipeline_metric` on every run
 
-3. **Police.uk overlapping-snapshot deduplication**
-   - Primary: `row_number() over (partition by month, force, category order by snapshot_date desc) = 1`
-   - Cross-snapshot consistency check as a bonus quality signal: data that disagrees between overlapping snapshots for the same month is flagged for investigation
+3. **Police.uk overlapping-snapshot deduplication** — built, and not as planned
+   - The window function above was replaced by selection from the ZIP central directories, which resolves the same thing without decompressing the losing copies or shuffling. See Decision 24.
+   - The cross-snapshot consistency check is no longer a by-product of loading and is not built. A byte-level approximation runs against the archive inventory and already found British Transport Police restating the whole of 2023 downward by roughly 45%.
 
 4. **Automated watermark updates from Databricks**
    - Replace manual JSON editing
@@ -766,7 +986,8 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 5. **pytest + chispa test suite**
    - SparkSession fixture in `tests/conftest.py`. It reuses the cluster's session when one already exists, because builder options are ignored at that point and stopping the session would detach the notebook.
-   - Per-source transform tests in `tests/test_silver_transforms/`. BoE is covered by 26 tests: the data-quality guard, an exact end-to-end SCD2 scenario, the multi-row invariants Delta CHECK constraints cannot express (exactly one current row, contiguous non-overlapping intervals), and edge cases including sixteenth-precision decimals and null-rate gaps. HPI is covered by 35 tests: the four integrity guards, the coverage floor at every nation and composite boundary, typing across both published decimal formats and the volume decimal-point case, null preservation, and an end-to-end projection. PPD is covered by 47 tests: the positional read contract, the code sets at every published value, the one-year-per-file rule the partition key rests on, key uniqueness across files, and the cases where a fault would change no row count and raise nothing, such as a reordered projection or a transfer date carrying a real time component. 108 tests in total across the three sources.
+   - Per-source transform tests in `tests/test_silver_transforms/`. BoE is covered by 26 tests: the data-quality guard, an exact end-to-end SCD2 scenario, the multi-row invariants Delta CHECK constraints cannot express (exactly one current row, contiguous non-overlapping intervals), and edge cases including sixteenth-precision decimals and null-rate gaps. HPI is covered by 35 tests: the four integrity guards, the coverage floor at every nation and composite boundary, typing across both published decimal formats and the volume decimal-point case, null preservation, and an end-to-end projection. PPD is covered by 47 tests: the positional read contract, the code sets at every published value, the one-year-per-file rule the partition key rests on, key uniqueness across files, and the cases where a fault would change no row count and raise nothing, such as a reordered projection or a transfer date carrying a real time component. Doogal is covered by 53 tests: the column contract that proves every one of the 60 source columns is either mapped or explicitly dropped, the in-use equivalence checked on a column that does not survive the projection, the code sets at every published value, null geography admitted only in the BF postcode area, and the fabricated zero coordinate in both directions. ONS is covered by 45 tests: the marker positions in all three structural cases, the two-branch Northern Ireland test that either half alone fails, and the conversion guards. Police is covered by 103 tests, and its split is different from the others because most of the logic is not Spark: 12 cover the archive selection rule over member names alone, the rest cover the predicate registry, the coordinate box in both directions, and the duplicate measurement helpers. That is 309 across the six sources.
+   - The audit writer is covered by a further 46 in `tests/test_quality_audit/`, and it is the only suite that needs no SparkSession: the metric registry, the generated DDL against the write schema, the routing of a value to its column, the freshness verdict, and the failure path. 366 tests in total, all passing on DBR 17.3.
    - Quality framework tests in `tests/test_quality_framework/`
    - Runs locally with `pytest` against the versions pinned in `requirements-dev.txt`, and on the cluster through `tests/run_tests.py`. CI integration deferred to Phase 4.
    - Test-only dependencies stay notebook-scoped or local rather than on the cluster spec (see Decision 13)
@@ -782,13 +1003,13 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 2. ✅ First Silver notebook against the simplest source (BoE): minimal schema complexity
 3. ✅ HPI (single cumulative CSV, wide monthly panel, per-nation coverage floor)
 4. ✅ PPD (31.4M rows, partitioned on transfer year, TUID uniqueness asserted)
-5. Doogal (ZIP unzip, large postcode table)
-6. ONS (XLSX with headers and footers to skip)
-7. Police.uk (most complex: ZIP containing ~4500 nested CSVs, multi-snapshot deduplication)
+5. ✅ Doogal (ZIP unzip, 2.71M postcodes, ONS spine only)
+6. ✅ ONS (XLSX converted rather than read in place, 49,266 rows)
+7. ✅ Police.uk (most complex: seven archives, 8,288 selected files, 96.1M rows, no natural key)
 8. Quality-rules framework, extracted from patterns observed during (2)–(7)
 9. Watermark automation
 10. Gold-layer joins
 
 ---
 
-*Design document status: Phase 2 in progress. Foundation provisioned, BoE, HPI, and PPD Silver complete and unit-tested, three sources remaining.*
+*Design document status: Phase 2 complete. Foundation provisioned, all six Silver tables built, unit-tested, and confirmed on the cluster, and the pipeline audit tables recording every run. Phase 3, the Gold layer, is next. Last updated 07-08-2026.*
