@@ -1,20 +1,26 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # HPI to Silver
+# MAGIC # Silver: House Price Index (HPI)
 # MAGIC
 # MAGIC Reads the newest UK House Price Index vintage from the Bronze Volume and
 # MAGIC overwrites `uk_property_intel.silver.hpi`.
 # MAGIC
 # MAGIC The file is cumulative and revises the previous twelve months on every
 # MAGIC release, so a full overwrite from the newest vintage is the correct write.
+# MAGIC
+# MAGIC What the run measured is written to `uk_property_intel.quality.pipeline_run`
+# MAGIC and `pipeline_metric` rather than only printed. `run.step()` wraps whichever
+# MAGIC cells can raise, so a failure records why before it stops the notebook.
 
 # COMMAND ----------
 
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from pyspark.sql import functions as F
+from pyspark.storagelevel import StorageLevel
 
+from databricks_src.quality.audit.writer import AuditRun
 from databricks_src.silver.transforms.hpi import (
     SILVER_COLUMNS,
     silver_table_ddl,
@@ -26,6 +32,20 @@ TARGET_TABLE = "uk_property_intel.silver.hpi"
 # Case-insensitive: the landed name is lowercased relative to the source URL.
 VINTAGE_PATTERN = re.compile(r"^uk-hpi-full-file-(\d{4})-(\d{2})\.csv$", re.IGNORECASE)
 
+# One timestamp for the whole run, stamped on every Silver row and carried on the
+# audit row, so the two can be joined.
+INGESTION_TS = datetime.now(timezone.utc)
+
+# Set when rebuilding from a Bronze copy kept on purpose. The freshness bound cannot
+# tell a deliberate rebuild from a stale release.
+SKIP_FRESHNESS = False
+
+# COMMAND ----------
+
+run = AuditRun(source="hpi", layer="silver", ingestion_ts=INGESTION_TS)
+run.start()
+print(f"run {run.run_id}")
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -33,23 +53,31 @@ VINTAGE_PATTERN = re.compile(r"^uk-hpi-full-file-(\d{4})-(\d{2})\.csv$", re.IGNO
 
 # COMMAND ----------
 
-# Vintage comes from the filename, not modificationTime: re-fetching an older
-# release would reorder by timestamp.
-entries = dbutils.fs.ls(VOLUME_PATH)  # noqa: F821
-vintages = [
-    (VINTAGE_PATTERN.match(entry.name).groups(), entry)
-    for entry in entries
-    if VINTAGE_PATTERN.match(entry.name)
-]
-if not vintages:
-    raise FileNotFoundError(
-        f"No file matching {VINTAGE_PATTERN.pattern} under {VOLUME_PATH}. "
-        f"Present: {[entry.name for entry in entries]}"
-    )
+with run.step():
+    # Vintage comes from the filename, not modificationTime: re-fetching an older
+    # release would reorder by timestamp.
+    entries = dbutils.fs.ls(VOLUME_PATH)  # noqa: F821
+    vintages = [
+        (VINTAGE_PATTERN.match(entry.name).groups(), entry)
+        for entry in entries
+        if VINTAGE_PATTERN.match(entry.name)
+    ]
+    if not vintages:
+        raise FileNotFoundError(
+            f"No file matching {VINTAGE_PATTERN.pattern} under {VOLUME_PATH}. "
+            f"Present: {[entry.name for entry in entries]}"
+        )
 
-_, source_file = max(vintages, key=lambda item: item[0])
-SOURCE_PATH = f"{VOLUME_PATH}/{source_file.name}"
+    label, source_file = max(vintages, key=lambda item: item[0])
+    SOURCE_PATH = f"{VOLUME_PATH}/{source_file.name}"
+
+    run.measure("vintages_present", len(vintages))
+    run.measure("vintage_label", "-".join(label))
+    run.measure("source_files", 1)
+    run.measure("source_bytes", source_file.size)
+
 print(f"{len(vintages)} vintage(s) present, reading {source_file.name}")
+print(f"{source_file.size / 1024 ** 2:,.1f} MB")
 
 # COMMAND ----------
 
@@ -58,15 +86,20 @@ print(f"{len(vintages)} vintage(s) present, reading {source_file.name}")
 
 # COMMAND ----------
 
-# Types are asserted in the transform, never inferred: decimal precision in this
-# file varies between releases.
-raw = (
-    spark.read.option("header", True)  # noqa: F821
-    .option("inferSchema", False)
-    .csv(source_file.path)
-)
+with run.step():
+    # Types are asserted in the transform, never inferred: decimal precision in this
+    # file varies between releases.
+    raw = (
+        spark.read.option("header", True)  # noqa: F821
+        .option("inferSchema", False)
+        .csv(source_file.path)
+    )
+    # The transform runs five guards, each an action. Without this the file is parsed
+    # once per guard and again per action on the frame the transform returns.
+    raw.persist(StorageLevel.DISK_ONLY)
+    source_rows = run.measure("source_rows", raw.count())
 
-print(f"{raw.count():,} source rows")
+print(f"{source_rows:,} source rows")
 
 # COMMAND ----------
 
@@ -75,19 +108,79 @@ print(f"{raw.count():,} source rows")
 
 # COMMAND ----------
 
-silver = transform_hpi(
-    raw_df=raw,
-    source_file=SOURCE_PATH,
-    ingestion_ts=datetime.now(timezone.utc),
-)
+with run.step():
+    silver = transform_hpi(
+        raw_df=raw,
+        source_file=SOURCE_PATH,
+        ingestion_ts=INGESTION_TS,
+    )
 
-print(f"{silver.count():,} rows after the coverage floor")
+    # One pass carries every measure below. A global aggregate for the row count and
+    # a separate groupBy for coverage would evaluate the transform twice.
+    by_geography = (
+        silver.groupBy("area_code")
+        .agg(
+            F.count(F.lit(1)).alias("rows"),
+            F.max("date").alias("last_month"),
+        )
+        .collect()
+    )
 
-# The filename labels a release; this is what the file holds. HPI data lags its
-# release label, so these differ by design, but a large gap means the watermark
-# is fetching a stale release.
-newest_month = silver.agg(F.max("date")).collect()[0][0]
-print(f"filename vintage {source_file.name}, newest month in data {newest_month}")
+    silver_rows = sum(row["rows"] for row in by_geography)
+    newest_month = max(row["last_month"] for row in by_geography)
+
+    run.measure("silver_rows", silver_rows)
+    run.measure("geographies", len(by_geography))
+    # The filename labels a release; this is what the file holds. HPI data lags its
+    # release label, so these differ by design.
+    lag = run.freshness(newest_month, skip=SKIP_FRESHNESS)
+
+print(f"{silver_rows:,} rows after the coverage floor")
+print(f"{len(by_geography):,} geographies")
+print(f"filename vintage {source_file.name}, "
+      f"newest month in data {newest_month}")
+print(f"{lag} days between that month and this run")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Geography coverage
+# MAGIC
+# MAGIC Which geographies reported in the newest month, against those reporting anywhere
+# MAGIC in the last twelve. The panel is not rectangular across its whole history, since
+# MAGIC each nation floors at its own measured start, but a geography active in the
+# MAGIC recent window and absent from the newest month is a coverage change rather than
+# MAGIC a floor.
+# MAGIC
+# MAGIC Measured rather than asserted. Local authorities merge and split, so an
+# MAGIC assertion here would fire on a boundary change that is a fact about the country
+# MAGIC rather than a fault in the load.
+
+# COMMAND ----------
+
+with run.step():
+    # First month of the twelve ending at newest_month. Month arithmetic on a
+    # zero-based ordinal: year * 12 + month - 1 keeps December in its own year, which
+    # a year * 12 + month form does not.
+    _ordinal = newest_month.year * 12 + newest_month.month - 1 - 11
+    window_start = date(_ordinal // 12, _ordinal % 12 + 1, 1)
+
+    active = [row for row in by_geography if row["last_month"] >= window_start]
+    absent = sorted(
+        row["area_code"] for row in active if row["last_month"] != newest_month
+    )
+
+    run.measure(
+        "entities_in_newest_period",
+        len(active) - len(absent),
+        denominator=len(active),
+    )
+    if absent:
+        run.measure("entities_absent_from_newest_period", absent)
+
+print(f"{len(active) - len(absent):,} of {len(active):,} geographies active since "
+      f"{window_start} report in {newest_month}")
+print(f"absent: {absent or 'none'}")
 
 # COMMAND ----------
 
@@ -99,16 +192,10 @@ print(f"filename vintage {source_file.name}, newest month in data {newest_month}
 # MAGIC constraints are dropped and re-added each run so the notebook is idempotent.
 # MAGIC Single-row invariants live here; multi-row invariants (unique grain, per-nation
 # MAGIC coverage floors) belong in the chispa test.
-# MAGIC
-# MAGIC **One-time step.** The table predates this definition, so it carries an
-# MAGIC inferred schema with no `NOT NULL` and no comment. Run
-# MAGIC `DROP TABLE uk_property_intel.silver.hpi` by hand once before the first run of
-# MAGIC this notebook. A `DROP` is deliberately not committed here: a bare drop in a
-# MAGIC script that runs every time destroys the table on every rebuild.
 
 # COMMAND ----------
 
-spark.sql(  # noqa: F821
+_ = spark.sql(  # noqa: F821
     f"""
     CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
     {silver_table_ddl()}
@@ -161,13 +248,19 @@ spark.sql(  # noqa: F821
 
 # COMMAND ----------
 
-# INSERT OVERWRITE matches on position, so a projection that drifts from the DDL
-# would load values into the wrong columns.
-assert tuple(silver.columns) == SILVER_COLUMNS, silver.columns
+with run.step():
+    # INSERT OVERWRITE matches on position, so a projection that drifts from the DDL
+    # would load values into the wrong columns.
+    assert tuple(silver.columns) == SILVER_COLUMNS, silver.columns
 
-silver.createOrReplaceTempView("_hpi_silver_staging")
-spark.sql(f"INSERT OVERWRITE {TARGET_TABLE} TABLE _hpi_silver_staging")  # noqa: F821
-print(f"Wrote {spark.table(TARGET_TABLE).count():,} rows to {TARGET_TABLE}")  # noqa: F821
+    silver.createOrReplaceTempView("_hpi_silver_staging")
+    spark.sql(f"INSERT OVERWRITE {TARGET_TABLE} TABLE _hpi_silver_staging")  # noqa: F821
+    written = spark.table(TARGET_TABLE).count()  # noqa: F821
+
+_ = raw.unpersist()
+run.succeed(rows_written=written)
+print(f"Wrote {written:,} rows to {TARGET_TABLE}")
+print(f"run {run.run_id} recorded as succeeded")
 
 # COMMAND ----------
 
@@ -224,3 +317,18 @@ print(f"Wrote {spark.table(TARGET_TABLE).count():,} rows to {TARGET_TABLE}")  # 
 # MAGIC SELECT date, sales_volume FROM uk_property_intel.silver.hpi
 # MAGIC WHERE area_code = 'K02000001' AND date BETWEEN '2025-01-01' AND '2025-05-01'
 # MAGIC ORDER BY date
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## What this run recorded
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT r.status, r.started_ts, r.ended_ts, r.rows_written, r.error_type,
+# MAGIC        m.metric, m.value_numeric, m.value_text, m.value_date, m.denominator
+# MAGIC FROM uk_property_intel.quality.pipeline_run r
+# MAGIC LEFT JOIN uk_property_intel.quality.pipeline_metric m USING (run_id)
+# MAGIC WHERE r.source = 'hpi'
+# MAGIC ORDER BY r.started_ts DESC, m.metric

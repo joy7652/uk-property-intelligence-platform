@@ -25,6 +25,11 @@
       "maven": {
         "coordinates": "dev.mauch:spark-excel_2.13:4.0.0_0.31.2"
       }
+    },
+    {
+      "pypi": {
+        "package": "openpyxl==3.1.5"
+      }
     }
   ]
 }
