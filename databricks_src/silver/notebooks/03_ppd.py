@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # PPD to Silver
+# MAGIC # Silver: Price Paid Data (PPD)
 # MAGIC
 # MAGIC Reads every yearly Price Paid Data file from the Bronze Volume and overwrites
 # MAGIC `uk_property_intel.silver.ppd`.
@@ -8,6 +8,10 @@
 # MAGIC Land Registry regenerates the yearly files on each monthly release, so a full
 # MAGIC overwrite from the current vintage is the correct write. The monthly
 # MAGIC change-only file is a separate feed and is not read here.
+# MAGIC
+# MAGIC What the run measured is written to `uk_property_intel.quality.pipeline_run`
+# MAGIC and `pipeline_metric` rather than only printed. `run.step()` wraps whichever
+# MAGIC cells can raise, so a failure records why before it stops the notebook.
 
 # COMMAND ----------
 
@@ -16,6 +20,7 @@ from datetime import datetime, timezone
 from pyspark.sql import functions as F
 from pyspark.storagelevel import StorageLevel
 
+from databricks_src.quality.audit.writer import AuditRun
 from databricks_src.silver.transforms.ppd import (
     DOMAINS,
     SILVER_COLUMNS,
@@ -25,8 +30,54 @@ from databricks_src.silver.transforms.ppd import (
 )
 
 VOLUME_PATH = "/Volumes/uk_property_intel/bronze/ppd"
-YEARLY_GLOB = f"{VOLUME_PATH}/yearly/*/pp-*.csv"
+YEARLY_ROOT = f"{VOLUME_PATH}/yearly"
+YEARLY_GLOB = f"{YEARLY_ROOT}/*/pp-*.csv"
 TARGET_TABLE = "uk_property_intel.silver.ppd"
+
+# One timestamp for the whole run, stamped on every Silver row and carried on the
+# audit row, so the two can be joined.
+INGESTION_TS = datetime.now(timezone.utc)
+
+# Set when rebuilding from a Bronze copy kept on purpose. The freshness bound cannot
+# tell a deliberate rebuild from a stale release.
+SKIP_FRESHNESS = False
+
+# COMMAND ----------
+
+run = AuditRun(source="ppd", layer="silver", ingestion_ts=INGESTION_TS)
+run.start()
+print(f"run {run.run_id}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Inventory
+# MAGIC
+# MAGIC Every yearly file keeps its name across releases, so the filenames carry no
+# MAGIC vintage and cannot distinguish a current fetch from a stale one. Total size is
+# MAGIC the signal: Land Registry regenerates all 32 files monthly, and the bytes move
+# MAGIC whenever they do. Not `modificationTime`, which records when a path was written
+# MAGIC rather than when the content was fetched.
+
+# COMMAND ----------
+
+with run.step():
+    # One directory level under yearly/. dbutils.fs.ls returns a file unchanged when
+    # given one, so a flat layout would list correctly too.
+    inventory = [
+        item
+        for entry in dbutils.fs.ls(YEARLY_ROOT)  # noqa: F821
+        for item in dbutils.fs.ls(entry.path)  # noqa: F821
+        if item.name.lower().endswith(".csv")
+    ]
+    if not inventory:
+        raise FileNotFoundError(f"No yearly CSV found under {YEARLY_ROOT}.")
+
+    source_bytes = sum(item.size for item in inventory)
+    run.measure("source_files", len(inventory))
+    run.measure("source_bytes", source_bytes)
+
+print(f"{len(inventory)} files, {source_bytes / 1024 ** 3:,.2f} GB")
 
 # COMMAND ----------
 
@@ -39,22 +90,23 @@ TARGET_TABLE = "uk_property_intel.silver.ppd"
 
 # COMMAND ----------
 
-raw = (
-    spark.read.option("header", False)  # noqa: F821
-    .option("quote", '"')
-    .option("escape", '"')
-    .option("nullValue", "")
-    .option("mode", "FAILFAST")
-    .schema(string_schema())
-    .csv(YEARLY_GLOB)
-    .withColumn("_source_file", F.col("_metadata.file_path"))
-)
+with run.step():
+    raw = (
+        spark.read.option("header", False)  # noqa: F821
+        .option("quote", '"')
+        .option("escape", '"')
+        .option("nullValue", "")
+        .option("mode", "FAILFAST")
+        .schema(string_schema())
+        .csv(YEARLY_GLOB)
+        .withColumn("_source_file", F.col("_metadata.file_path"))
+    )
 
-# Every guard is an action. Without this the 32 files are parsed once per guard.
-raw.persist(StorageLevel.DISK_ONLY)
+    # Every guard is an action. Without this the 32 files are parsed once per guard.
+    raw.persist(StorageLevel.DISK_ONLY)
+    source_rows = run.measure("source_rows", raw.count())
 
-files = raw.select("_source_file").distinct().count()
-print(f"{raw.count():,} source rows across {files} files")
+print(f"{source_rows:,} source rows across {len(inventory)} files")
 
 # COMMAND ----------
 
@@ -64,14 +116,25 @@ print(f"{raw.count():,} source rows across {files} files")
 # MAGIC The code sets in the transform abort the run on an unrecognised value. Run this
 # MAGIC against a full vintage before trusting them, and again whenever Land Registry
 # MAGIC changes the published column set.
+# MAGIC
+# MAGIC One pass over five columns. A `distinct` per column would scan the whole load
+# MAGIC five times to answer a question about a handful of single-character codes.
+# MAGIC
+# MAGIC Not recorded as a metric: an unrecognised code aborts the transform, so the
+# MAGIC failed run and its message are the record. A vocabulary that cannot drift
+# MAGIC silently does not need trending.
 
 # COMMAND ----------
 
-for column in DOMAINS:
-    observed = sorted(
-        str(row[column]) for row in raw.select(column).distinct().collect()
+observed = (
+    raw.agg(*[F.collect_set(column).alias(column) for column in DOMAINS])
+    .collect()[0]
+    .asDict()
+)
+for column, values in DOMAINS.items():
+    print(
+        f"{column:<20}observed={sorted(observed[column])}  configured={sorted(values)}"
     )
-    print(f"{column:<20}observed={observed}  configured={sorted(DOMAINS[column])}")
 
 # COMMAND ----------
 
@@ -79,17 +142,32 @@ for column in DOMAINS:
 # MAGIC ## Transform
 # MAGIC
 # MAGIC Every guard runs here, so a failure aborts before anything is written.
+# MAGIC
+# MAGIC TUID uniqueness is asserted inside the transform rather than measured here. A
+# MAGIC `countDistinct` over the whole load is a full shuffle to confirm something the
+# MAGIC guard has already proved by aborting if it were false.
 
 # COMMAND ----------
 
-silver = transform_ppd(raw_df=raw, ingestion_ts=datetime.now(timezone.utc))
+with run.step():
+    silver = transform_ppd(raw_df=raw, ingestion_ts=INGESTION_TS)
 
-print(f"{silver.count():,} rows after typing")
+    # One pass. transfer_year has 32 values, so counting it distinctly here is free
+    # next to the row count it rides along with.
+    totals = silver.agg(
+        F.count(F.lit(1)).alias("rows"),
+        F.countDistinct("transfer_year").alias("years"),
+        F.max("date_of_transfer").alias("newest"),
+    ).collect()[0]
 
-# The filenames label years; this is what the files hold. A gap means the watermark
-# is fetching a stale release.
-newest = silver.agg(F.max("date_of_transfer")).collect()[0][0]
-print(f"newest transfer date in data {newest}")
+    run.measure("silver_rows", totals["rows"])
+    run.measure("transfer_years", totals["years"])
+    # The filenames label years; this is what the files hold. Registration lag puts
+    # the newest transfer weeks to months behind the release.
+    lag = run.freshness(totals["newest"], skip=SKIP_FRESHNESS)
+
+print(f"{totals['rows']:,} rows after typing across {totals['years']} years")
+print(f"newest transfer date in data {totals['newest']} ({lag} days before this run)")
 
 # COMMAND ----------
 
@@ -107,7 +185,7 @@ print(f"newest transfer date in data {newest}")
 
 # COMMAND ----------
 
-spark.sql(  # noqa: F821
+_ = spark.sql(  # noqa: F821
     f"""
     CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
     {silver_table_ddl()}
@@ -161,15 +239,19 @@ spark.sql(  # noqa: F821
 
 # COMMAND ----------
 
-# INSERT OVERWRITE matches on position, so a projection that drifts from the DDL
-# would load values into the wrong columns.
-assert tuple(silver.columns) == SILVER_COLUMNS, silver.columns
+with run.step():
+    # INSERT OVERWRITE matches on position, so a projection that drifts from the DDL
+    # would load values into the wrong columns.
+    assert tuple(silver.columns) == SILVER_COLUMNS, silver.columns
 
-silver.createOrReplaceTempView("_ppd_silver_staging")
-spark.sql(f"INSERT OVERWRITE {TARGET_TABLE} TABLE _ppd_silver_staging")  # noqa: F821
-print(f"Wrote {spark.table(TARGET_TABLE).count():,} rows to {TARGET_TABLE}")  # noqa: F821
+    silver.createOrReplaceTempView("_ppd_silver_staging")
+    spark.sql(f"INSERT OVERWRITE {TARGET_TABLE} TABLE _ppd_silver_staging")  # noqa: F821
+    written = spark.table(TARGET_TABLE).count()  # noqa: F821
 
 _ = raw.unpersist()
+run.succeed(rows_written=written)
+print(f"Wrote {written:,} rows to {TARGET_TABLE}")
+print(f"run {run.run_id} recorded as succeeded")
 
 # COMMAND ----------
 
@@ -252,3 +334,18 @@ _ = raw.unpersist()
 # MAGIC FROM uk_property_intel.silver.ppd
 # MAGIC WHERE transfer_year = 2019
 # MAGIC LIMIT 10
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## What this run recorded
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT r.status, r.started_ts, r.ended_ts, r.rows_written, r.error_type,
+# MAGIC        m.metric, m.value_numeric, m.value_text, m.value_date, m.denominator
+# MAGIC FROM uk_property_intel.quality.pipeline_run r
+# MAGIC LEFT JOIN uk_property_intel.quality.pipeline_metric m USING (run_id)
+# MAGIC WHERE r.source = 'ppd'
+# MAGIC ORDER BY r.started_ts DESC, m.metric
