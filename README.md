@@ -244,13 +244,15 @@ Silver transforms cast with `try_cast`, which yields null on a malformed value w
 
 Key columns are excluded from that comparison. A null date is already caught by a dedicated guard that reports the offending row, which covers more ground than a count check does.
 
-### 15. PPD retention differs by file kind
+### 15. PPD retention differs by file kind, and the changelog is a download list
 
-Land Registry publishes PPD in two forms that need different handling. The yearly files are state: `pp-2019.csv` is regenerated every month at a stable URL, so any version can be re-fetched at will. The monthly file is a change feed at a static URL that each release overwrites, so a release missed is a release lost. Retention follows that asymmetry rather than the source. Deltas are stamped and kept permanently because they cannot be recovered; yearly files overwrite in place because the current version is the correct one.
+Land Registry publishes PPD in two forms that need different handling. The yearly files are state: `pp-2019.csv` is regenerated every month at a stable URL, and Land Registry states that the single and yearly files carry the most current data on every release. The monthly change-only file sits at a static URL that each release overwrites, so a release missed is a release lost.
+
+Both are published from the same release and describe the same state, so the change-only file carries no data the yearly files lack. It is not retained: the orchestrator fetches it, selects the distinct transfer years it names, re-downloads those yearly files, and deletes it. One column is read. Nothing parses the operation type or compares anything, because a stale yearly file is fully described by the current one and the changelog only says which to fetch. A run that never fetched one cannot recover the years it named, and those wait for the annual reconcile; the state stays correct throughout, since the yearly files are authoritative whenever pulled.
 
 Silver is rebuilt in full from the current yearly files and partitioned by transfer year. Every file holds exactly one transfer year, confirmed across all 32 files on two separate vintages, so one Bronze file maps to one Silver partition and a reconcile can overwrite a year with `replaceWhere`. TUID is unique across all 31.4M rows, so Silver asserts uniqueness rather than deduplicating. The two cost the same shuffle, but an assertion names the offending identifiers where a dedup silently discards rows.
 
-An earlier sketch had Bronze read each delta, work out which yearly files it affected, and re-fetch those. It is unnecessary, because a change row carries the complete corrected record. It is also the wrong shape: a layer deciding what an earlier layer should ingest makes the medallion cyclic, which costs reproducibility and leaves lineage describing something other than dependency. Control flow of that kind belongs in the orchestrator, and the watermark is already that mechanism.
+An earlier sketch had Bronze read the change-only file, work out which yearly files it affected, and re-fetch those. That is the wrong shape whatever the file contains: a layer deciding what an earlier layer should ingest makes the medallion cyclic, which costs reproducibility and leaves lineage describing something other than dependency. The difference is not which component opens the file, it is that the decision originates in the orchestrator and never travels upward from a layer.
 
 See DESIGN.md Decision 16 for the reconcile design and the conditions that would change this.
 
@@ -592,9 +594,6 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 - [x] Magic-byte validation for binary inputs (postcode archive, ONS workbook, all seven crime archives)
 - [x] Pipeline audit tables for per-run quality metrics — `quality.pipeline_run` and `quality.pipeline_metric`, written by all six Silver notebooks
 - [x] Freshness value recorded per Silver source, with a per-source bound that aborts the load
-- [ ] Parameterised quality-rules framework (`quality_rules.json`) — after Gold, so the rule shape accounts for join and reconciliation checks as well as row checks
-- [ ] Watermark automation from Databricks — after Gold; whether the watermark moves to Delta or stays JSON written back from Databricks is undecided
-- [ ] Quarantine table for rejected records — after Gold, and only if the population justifies it
 - [x] pytest + chispa harness (SparkSession fixture, cluster runner), all six transform suites plus the audit writer, 366 tests
 
 ### Phase 3 — Gold layer
@@ -605,6 +604,11 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 
 ### Phase 4 — Advanced features
 
+- [ ] Parameterised quality-rules framework (`quality_rules.json`), shaped so a rule can express join and reconciliation checks as well as row checks
+- [ ] Watermark automation from Databricks; whether the watermark moves to Delta or stays JSON written back from Databricks is undecided
+- [ ] PPD changelog-driven refresh: the orchestrator reads the distinct transfer years in the change-only file, re-downloads those yearly files, and discards it. Fetched only when the refresh is narrow, since a full or named-year reconcile already covers what it would name
+- [ ] PPD reconcile: annual full pass and an on-demand pass over named years, diffing against Silver and healing with `replaceWhere`
+- [ ] Quarantine table for rejected records, only if the population justifies it
 - [ ] Statistical anomaly detection (3-sigma rolling window on price changes)
 - [ ] Delta Lake schema evolution demonstration
 - [ ] GitHub Actions CI/CD (JSON schema validation for ADF pipelines and config)
@@ -618,4 +622,4 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 
 ---
 
-*Project status: Phase 2 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested, and confirmed on the cluster. Last updated 07-08-2026.*
+*Project status: Phase 2 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested, and confirmed on the cluster. Last updated 08-08-2026.*
