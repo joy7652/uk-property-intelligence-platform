@@ -220,6 +220,73 @@ def test_nations_floor_independently_in_one_frame(spark):
 
 
 # --------------------------------------------------------------------------- #
+# Series continuity
+# --------------------------------------------------------------------------- #
+
+
+def series(area_code: str, region_name: str, months: list[tuple[int, int]]):
+    """One geography's rows, one per (year, month) given."""
+    return [
+        raw_row(
+            Date=f"01/{month:02d}/{year}", AreaCode=area_code, RegionName=region_name
+        )
+        for year, month in months
+    ]
+
+
+def test_a_contiguous_series_passes(spark):
+    rows = series("E92000001", "England", [(2010, 1), (2010, 2), (2010, 3)])
+    assert transform(spark, rows).count() == 3
+
+
+def test_a_missing_month_inside_a_series_raises(spark):
+    rows = series("E92000001", "England", [(2010, 1), (2010, 3)])
+    with pytest.raises(ValueError, match="missing a month inside"):
+        transform(spark, rows)
+
+
+def test_a_gap_across_a_year_boundary_raises(spark):
+    """The span counts year-months, so December to March is two missing rather than
+    one, and a naive month subtraction would read it as nine."""
+    rows = series("E92000001", "England", [(2010, 12), (2011, 3)])
+    with pytest.raises(ValueError, match="missing a month inside"):
+        transform(spark, rows)
+
+
+def test_a_series_starting_after_its_floor_passes(spark):
+    """An authority created partway through the series. Reorganisation is a fact about
+    the country, so the notebook records it and this does not raise."""
+    rows = series("E06000060", "Buckinghamshire", [(2020, 5), (2020, 6)])
+    assert transform(spark, rows).count() == 2
+
+
+def test_a_series_stopping_early_passes(spark):
+    """The same in the other direction: an abolished authority ends where it ends."""
+    rows = series("E92000001", "England", [(2010, 1), (2010, 2)])
+    rows += series("W92000004", "Wales", [(2010, 1), (2010, 2), (2010, 3)])
+    assert transform(spark, rows).count() == 5
+
+
+def test_a_single_month_series_passes(spark):
+    rows = series("E92000001", "England", [(2010, 1)])
+    assert transform(spark, rows).count() == 1
+
+
+def test_the_offending_geography_is_named(spark):
+    rows = series("E92000001", "England", [(2010, 1), (2010, 2), (2010, 3)])
+    rows += series("W92000004", "Wales", [(2010, 1), (2010, 3)])
+    with pytest.raises(ValueError, match="W92000004"):
+        transform(spark, rows)
+
+
+def test_the_gap_is_measured_after_the_coverage_floor(spark):
+    """Rows the floor removes are not a hole. Scotland floors at 2004, so the 2003 row
+    is gone before this counts anything, and the two months left are contiguous."""
+    rows = series("S12000034", "Aberdeenshire", [(2003, 1), (2004, 1), (2004, 2)])
+    assert transform(spark, rows).count() == 2
+
+
+# --------------------------------------------------------------------------- #
 # Typing
 # --------------------------------------------------------------------------- #
 

@@ -308,6 +308,42 @@ def assert_grain_unique(df: DataFrame) -> DataFrame:
     return df
 
 
+def assert_months_are_contiguous(df: DataFrame) -> DataFrame:
+    """Fail where a geography's series has a month missing inside it.
+
+    A geography that starts after its nation's floor, or stops before the newest month,
+    is a boundary change: authorities are created, merged and abolished, and the file
+    publishes each one over the period it existed. A hole between a geography's own
+    first and last month is not that. The file carries a row for every month a
+    geography is published in, so a gap means the release lost one.
+
+    Year-months are counted directly. months_between returns a double, which would put
+    a float comparison inside an equality test.
+    """
+    span = (
+        (F.year("last_month") - F.year("first_month")) * 12
+        + (F.month("last_month") - F.month("first_month"))
+        + 1
+    )
+    offenders = (
+        df.groupBy("area_code")
+        .agg(
+            F.count(F.lit(1)).alias("months"),
+            F.min("date").alias("first_month"),
+            F.max("date").alias("last_month"),
+        )
+        .filter(F.col("months") != span)
+        .limit(5)
+        .collect()
+    )
+    if offenders:
+        raise ValueError(
+            "HPI geographies are missing a month inside their published series, so "
+            f"the release dropped one: {[row.asDict() for row in offenders]}"
+        )
+    return df
+
+
 def transform_hpi(
     raw_df: DataFrame,
     source_file: str,
@@ -335,6 +371,9 @@ def transform_hpi(
     # Grain is asserted on the output, not the source: a duplicate among rows this
     # transform discards is not a contract the table makes.
     assert_grain_unique(kept)
+    # Also on the output. A gap among rows the floor removes is the derived back-series
+    # ending, not a hole in what the table publishes.
+    assert_months_are_contiguous(kept)
     return (
         kept.withColumn("_source_file", F.lit(source_file))
         .withColumn("_ingestion_ts", F.lit(ingestion_ts).cast("timestamp"))

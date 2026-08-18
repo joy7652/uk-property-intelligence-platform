@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Silver: House Price Index (HPI)
 # MAGIC
@@ -23,6 +27,7 @@ from pyspark.storagelevel import StorageLevel
 from databricks_src.quality.audit.writer import AuditRun
 from databricks_src.silver.transforms.hpi import (
     SILVER_COLUMNS,
+    native_start_year,
     silver_table_ddl,
     transform_hpi,
 )
@@ -122,6 +127,9 @@ with run.step():
         .agg(
             F.count(F.lit(1)).alias("rows"),
             F.max("date").alias("last_month"),
+            # Constant within a geography, so any aggregate returns it. Read off the
+            # module rather than restated here, since it is the rule the floor used.
+            F.min(native_start_year()).alias("start_year"),
         )
         .collect()
     )
@@ -178,9 +186,25 @@ with run.step():
     if absent:
         run.measure("entities_absent_from_newest_period", absent)
 
+    # Months from January of the coverage floor year through newest_month. A geography
+    # short of that started late or ended early, which the transform allows and this
+    # counts. A hole inside a series aborts there instead.
+    complete = [
+        row
+        for row in by_geography
+        if row["rows"]
+        == (newest_month.year - row["start_year"]) * 12 + newest_month.month
+    ]
+    run.measure(
+        "geographies_with_a_full_series",
+        len(complete),
+        denominator=len(by_geography),
+    )
+
 print(f"{len(active) - len(absent):,} of {len(active):,} geographies active since "
       f"{window_start} report in {newest_month}")
 print(f"absent: {absent or 'none'}")
+print(f"{len(complete):,} of {len(by_geography):,} carry every month from their floor")
 
 # COMMAND ----------
 
