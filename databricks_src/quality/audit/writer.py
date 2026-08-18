@@ -20,6 +20,12 @@ rename break a series silently, and the reader cannot tell a renamed metric from
 discontinued one. `kind` is carried here rather than on the rows so it joins at read
 time and applies to everything already recorded.
 
+A run names what identifies it. Silver names the Bronze source it read; Gold names the
+table it built, because a Gold load reads several Silver tables and no one of them
+identifies the run. Both vocabularies are closed and each name carries the layer it
+belongs to, so a run naming one layer's vocabulary under the other's label fails at
+construction rather than landing a row nothing will find.
+
 FRESHNESS_BOUND_DAYS is empty of values by design. Each bound is set from what the
 first recorded runs report, not from a publisher's release calendar. Until a source
 has a bound, its freshness value is recorded and nothing is asserted.
@@ -61,7 +67,37 @@ STATUSES: tuple[str, ...] = (STARTED, SUCCEEDED, FAILED)
 # names, so a run row names where the data came from.
 SOURCES: tuple[str, ...] = ("boe", "hpi", "ppd", "doogal", "ons", "police")
 
+# Gold runs name the table they build instead. A dimension load reads four or five
+# Silver tables at once, so no single source identifies it, while the target always
+# does. One run per Gold table, which is also what makes rows_written a real number
+# rather than a total across whatever a notebook happened to write.
+GOLD_TABLES: tuple[str, ...] = (
+    "dim_date",
+    "dim_area",
+    "dim_lsoa",
+    "dim_crime_type",
+    "fact_area_month_hpi",
+    "fact_area_month_rent",
+    "fact_area_month_price",
+    "fact_area_month_transaction_mix",
+    "fact_area_month_crime",
+    "fact_area_month_crime_total",
+    "fact_lsoa_month_crime",
+    "fact_lsoa_month_crime_total",
+    "fact_lsoa_year_price",
+)
+
 LAYERS: tuple[str, ...] = ("silver", "gold")
+
+RUN_NAMES: tuple[str, ...] = SOURCES + GOLD_TABLES
+
+# Which layer each run name belongs to. The pairing is total: a Bronze source name is
+# only ever loaded to Silver and a Gold table name is only ever produced by Gold, so a
+# run naming one with the other's layer is a typo rather than a case to allow.
+LAYER_OF: dict[str, str] = {
+    **{name: "silver" for name in SOURCES},
+    **{name: "gold" for name in GOLD_TABLES},
+}
 
 # Police error text carries row samples and the transform reports every failing rule
 # at once, so the message is bounded rather than assumed short.
@@ -172,6 +208,20 @@ _BOE = (
     ),
 )
 
+# The index publishes every geography over the period it existed, back to its nation's
+# coverage floor at the earliest. A series shorter than that span started late or ended
+# early, and both are local government reorganisation rather than a fault, which is why
+# this is measured. A hole inside a series has no such cause and the transform aborts on
+# it instead.
+_HPI = (
+    Metric(
+        "geographies_with_a_full_series",
+        "share",
+        "geographies carrying every month from their nation's coverage floor to the "
+        "newest month in the release",
+    ),
+)
+
 # Recorded by the two sources published as a dated release file carrying a monthly
 # geography panel. HPI keys its panel on area code and ONS on area name, since the
 # eight Northern Irish rental areas carry no GSS code, but the count means the same
@@ -271,8 +321,61 @@ _COVERAGE = (
     ),
 )
 
+# Recorded by Gold loads. gold_rows is the counterpart to silver_rows and is the one
+# metric every Gold run records. Two more are recorded by every fact, and the rest
+# belong to a single dimension each. There is no Gold equivalent of source_rows or
+# source_bytes, because a Gold run reads Silver tables whose own runs already recorded
+# what they hold; where a fact needs a base for a share it carries it as the
+# denominator rather than as a metric of its own.
+#
+# Breakdowns ride on gold_rows through scope rather than earning their own names:
+# dim_area records it once per area level and dim_lsoa once per boundary vintage, so
+# a level or a vintage appearing or vanishing is visible without a registry edit.
+# dimension_rows_with_facts uses scope the same way, naming the dimension it measured,
+# so one entry serves nine facts against four dimensions.
+_GOLD = (
+    Metric("gold_rows", "volume", "rows the transform produced"),
+    Metric(
+        "rows_without_a_measure",
+        "share",
+        "rows the source publishes carrying a key and no value, dropped rather than "
+        "loaded, against the rows read. The rent series lags in Northern Ireland and "
+        "marks those months unavailable across every measure",
+    ),
+    Metric(
+        "dimension_rows_with_facts",
+        "share",
+        "rows of the dimension named in scope that this fact reaches, against all of "
+        "its rows. Coverage rather than integrity: a dimension row no fact reaches is "
+        "ordinary, while a fact key with no dimension row aborts the load",
+    ),
+    Metric(
+        "derived_area_codes",
+        "volume",
+        "areas carrying a code this project assigned, because the publisher issues "
+        "none. The eight Northern Irish rental market areas",
+    ),
+    Metric(
+        "majority_assigned_small_areas",
+        "share",
+        "small areas straddling two districts, counted under the one holding most of "
+        "their postcodes, against all small areas",
+    ),
+    Metric(
+        "small_areas_with_crime",
+        "share",
+        "small areas the crime source publishes, against all small areas",
+    ),
+    Metric(
+        "small_areas_with_price",
+        "share",
+        "small areas at least one transaction resolves to, against all small areas",
+    ),
+)
+
 _ALL: tuple[Metric, ...] = (
-    _COMMON + _RELEASE_PANEL + _BOE + _PPD + _DOOGAL + _ONS + _POLICE + _COVERAGE
+    _COMMON + _RELEASE_PANEL + _BOE + _HPI + _PPD + _DOOGAL + _ONS + _POLICE
+    + _COVERAGE + _GOLD
 )
 
 METRICS: dict[str, Metric] = {metric.name: metric for metric in _ALL}
@@ -309,6 +412,26 @@ def assert_registry_consistent() -> None:
     if unbounded:
         raise ValueError(
             f"audit: freshness bounds named for unknown sources: {unbounded}"
+        )
+
+    if len(RUN_NAMES) != len(set(RUN_NAMES)):
+        counted = {}
+        for name in RUN_NAMES:
+            counted[name] = counted.get(name, 0) + 1
+        raise ValueError(
+            "audit: a run name is defined in both SOURCES and GOLD_TABLES, so its "
+            "layer would be decided by declaration order: "
+            f"{sorted(name for name, n in counted.items() if n > 1)}"
+        )
+
+    unpaired = sorted(set(RUN_NAMES) - set(LAYER_OF))
+    if unpaired:
+        raise ValueError(f"audit: run names with no layer paired to them: {unpaired}")
+
+    stray = sorted({name for name, layer in LAYER_OF.items() if layer not in LAYERS})
+    if stray:
+        raise ValueError(
+            f"audit: run names paired to a layer outside {list(LAYERS)}: {stray}"
         )
 
 
@@ -541,10 +664,19 @@ class AuditRun:
         ingestion_ts: dt.datetime,
         started_ts: dt.datetime | None = None,
     ) -> None:
-        if source not in SOURCES:
-            raise ValueError(f"audit: source {source!r} is not one of {list(SOURCES)}.")
+        if source not in RUN_NAMES:
+            raise ValueError(
+                f"audit: source {source!r} is neither a Bronze source {list(SOURCES)} "
+                f"nor a Gold table {list(GOLD_TABLES)}."
+            )
         if layer not in LAYERS:
             raise ValueError(f"audit: layer {layer!r} is not one of {list(LAYERS)}.")
+        if LAYER_OF[source] != layer:
+            raise ValueError(
+                f"audit: {source!r} belongs to the {LAYER_OF[source]} layer, not "
+                f"{layer!r}. A Silver run names its Bronze source and a Gold run names "
+                "the table it builds."
+            )
         self.run_id = str(uuid.uuid4())
         self.source = source
         self.layer = layer
