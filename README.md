@@ -1,9 +1,9 @@
 # UK Property Market Intelligence Platform
 Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
-A multi-source Azure data platform that ingests, validates, and transforms UK residential property data from six official open datasets, built around HM Land Registry's 31.4M residential transactions since 1995. The pipelines run off a single JSON config file, so adding a source means editing config rather than writing code. It loads incrementally from a per-source watermark, validates every file against its expected format before parsing instead of trusting the orchestrator's success flag, and governs all access through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
+An Azure data platform built around HM Land Registry's 31.4M residential transactions since 1995, joined with five more official UK datasets covering house prices, private rents, postcodes, the Bank of England base rate and street-level crime. The pipelines run off a single JSON config file, so adding a source means editing config, not writing code. Loads are incremental from a per-source watermark. Every file is validated against its expected format before parsing, because a pipeline reporting success only proves bytes moved, and all data access is governed through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
 
-> **Status:** Phase 1 complete — Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3, the Gold layer, is next.
+> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is in progress: the Gold star schema is designed, its thirteen tables are created, all four dimensions are loaded, and the first two facts are loaded and verified on the cluster. Seven facts remain.
 
 **Highlights**
 
@@ -36,7 +36,7 @@ A multi-source Azure data platform that ingests, validates, and transforms UK re
 
 ## Why this project
 
-Property data shows up across finance, consulting, and the public sector, and the sources refresh monthly, so this runs as a live pipeline rather than a one-off analysis. The data is messy enough to make the transformations real, and the config-driven design would ingest any other multi-source dataset without code changes.
+Property data shows up across finance, consulting, and the public sector, and the sources refresh monthly, so this runs as a live pipeline. The data is messy enough to make the transformations real, and the config-driven design would ingest any other multi-source dataset without code changes.
 
 ---
 
@@ -63,7 +63,7 @@ Fabric / Power BI  (planned)
 
 - Adding a source means appending a JSON block to the watermark, not writing a new pipeline.
 - Two ingestion patterns (`yearly_stepped` and `single_file`) cover every source. Each source declares which one it uses.
-- After the first full load, each source tracks its own state in the watermark, so later runs fetch only what's new. What counts as "new" is source-specific (a change-only delta for PPD, a fresh rolling snapshot for Police.uk), so incremental loading routes by type rather than assuming one mechanism.
+- After the first full load, each source tracks its own state in the watermark, so later runs fetch only what's new. What counts as "new" is source-specific (a change-only delta for PPD, a fresh rolling snapshot for Police.uk), so incremental loading routes by type. Assuming one mechanism would break the other.
 - A pipeline reporting success only tells me bytes moved, not that the right bytes moved. Binary files are checked against their expected magic bytes before any Silver-layer parsing.
 - HTTP linked services are host-agnostic and take their base URL per request via `@{linkedService().p_base_url}`, instead of one linked service per host.
 - Silver filters on reliability; Gold filters on the question being asked. Data that is measured and clean stays in Silver even when nothing in the project joins it yet.
@@ -110,7 +110,7 @@ Two patterns cover every ingestion shape I ran into:
 - **`yearly_stepped`** — iterate across years with a configurable step, one file per step. Incremental work dispatches to one of two children via `incremental_type`: `static_url` (PPD's change-only update file) or `templated_latest` (Police.uk's monthly-rotating snapshot URL).
 - **`single_file`** — one URL fetches one file per refresh. Used by HPI, Doogal, BoE, and ONS.
 
-`yearly_stepped` grew out of an earlier `yearly_range` pattern. I added the step parameter only once Police.uk's 2-year cadence gave me a real second use for it, rather than generalising before I needed to.
+`yearly_stepped` grew out of an earlier `yearly_range` pattern. I added the step parameter only once Police.uk's 2-year cadence gave me a real second use for it.
 
 The incremental logic is a three-level route cascade: an outer full-vs-incremental decision, then a month rate-limiter, then the type dispatch. The layering exists because Azure Data Factory won't let control-flow activities nest (an If inside a Switch inside a ForEach), so each layer unwraps exactly one activity.
 
@@ -167,7 +167,7 @@ Bronze is complete. Silver is in active development; Gold and Quality follow.
 
 ### 6. Unity Catalog over hive_metastore
 
-I adopted Unity Catalog from day one of Phase 2 rather than the legacy hive_metastore that older Databricks projects (and most tutorials) still use. Reasoning:
+I adopted Unity Catalog from day one of Phase 2, over the legacy hive_metastore that older Databricks projects (and most tutorials) still use. Reasoning:
 
 - Databricks has confirmed that from 30 September 2026, all new workspaces (Azure included) are provisioned Unity Catalog-only, with no Hive metastore, so building on UC now is the forward-compatible path.
 - UC gives centralised access control, lineage, and discovery, which I'd otherwise have to build myself or skip.
@@ -201,7 +201,7 @@ A Standard cluster would also work for Phase 2. Dedicated isn't strictly necessa
 Unity Catalog external locations support Azure Event Grid file-change notifications for faster ingestion. Every external location here has the feature turned off. Reasoning:
 
 - Batch ingestion at this scale (sub-GB per source) gains nothing from event-driven discovery.
-- Turning file events on would require granting the UAMI `Storage Account Contributor` (control plane), `EventGrid EventSubscription Contributor`, and `Storage Queue Data Contributor` — a much wider scope than the `Storage Blob Data Contributor` (data plane only) the actual data path needs.
+- Turning file events on would require granting the UAMI `Storage Account Contributor` (control plane), `EventGrid EventSubscription Contributor`, and `Storage Queue Data Contributor`, a much wider scope than the `Storage Blob Data Contributor` (data plane only) the actual data path needs.
 - Least privilege is the right call here, and the one I'd make in any regulated environment anyway.
 
 ### 10. Bronze exposed as UC Volumes, not Delta tables
@@ -214,7 +214,7 @@ See DESIGN.md Decision 11 for the conditions that would change this call.
 
 ### 11. BoE base rate as an event-grain SCD2
 
-The first Silver table models the Bank of England policy rate as a Type 2 slowly-changing dimension at event grain: one row per rate level with a validity interval (`effective_date`, `expiry_date`, `is_current`), a rate and its regime label, and lineage columns. The daily source series collapses to change events only, so a day whose rate matches the day before is not a row. The BoE has renamed the policy rate five times since 1973, so the five era-specific rate columns coalesce into one `rate_pct` and a `rate_type`, and a rename that leaves the rate unchanged is not treated as a change. A fail-loud data-quality guard aborts the run if any day carries conflicting rate values across those columns rather than silently coalescing one of them. Daily-grain join surfaces, if a consumer needs them, are Gold's job.
+The first Silver table models the Bank of England policy rate as a Type 2 slowly-changing dimension at event grain: one row per rate level with a validity interval (`effective_date`, `expiry_date`, `is_current`), a rate and its regime label, and lineage columns. The daily source series collapses to change events only, so a day whose rate matches the day before is not a row. The BoE has renamed the policy rate five times since 1973, so the five era-specific rate columns coalesce into one `rate_pct` and a `rate_type`, and a rename that leaves the rate unchanged is not treated as a change. A fail-loud data-quality guard aborts the run if any day carries conflicting rate values across those columns. Coalescing one of them silently would hide the conflict. Daily-grain join surfaces, if a consumer needs them, are Gold's job.
 
 See the BoE base-rate decision in DESIGN.md for the full rationale.
 
@@ -232,7 +232,7 @@ The published HPI file carries a derived back-series to 1968, built from the his
 
 The cut is on reliability, not on joinability. PPD and Police.uk cover England and Wales only, so Scottish and Northern Irish rows join neither of them, and they stay anyway because they are measured data that other sources do join. Narrowing a table to what one question needs belongs in Gold; Silver's job is to be correct and reusable. The same reasoning keeps BoE rates from 1973 to 1995, which nothing in the project joins yet.
 
-An area code with no floor mapped aborts the run rather than defaulting to one. A geography whose measured start I haven't established cannot be filtered safely, and a null floor would silently drop every row belonging to it.
+An area code with no floor mapped aborts the run. A geography whose measured start I haven't established cannot be filtered safely, and a null floor would silently drop every row belonging to it.
 
 See DESIGN.md Decision 14 for the composite mapping and the full reasoning.
 
@@ -250,7 +250,7 @@ Land Registry publishes PPD in two forms that need different handling. The yearl
 
 Both are published from the same release and describe the same state, so the change-only file carries no data the yearly files lack. It is not retained: the orchestrator fetches it, selects the distinct transfer years it names, re-downloads those yearly files, and deletes it. One column is read. Nothing parses the operation type or compares anything, because a stale yearly file is fully described by the current one and the changelog only says which to fetch. A run that never fetched one cannot recover the years it named, and those wait for the annual reconcile; the state stays correct throughout, since the yearly files are authoritative whenever pulled.
 
-Silver is rebuilt in full from the current yearly files and partitioned by transfer year. Every file holds exactly one transfer year, confirmed across all 32 files on two separate vintages, so one Bronze file maps to one Silver partition and a reconcile can overwrite a year with `replaceWhere`. TUID is unique across all 31.4M rows, so Silver asserts uniqueness rather than deduplicating. The two cost the same shuffle, but an assertion names the offending identifiers where a dedup silently discards rows.
+Silver is rebuilt in full from the current yearly files and partitioned by transfer year. Every file holds exactly one transfer year, confirmed across all 32 files on two separate vintages, so one Bronze file maps to one Silver partition and a reconcile can overwrite a year with `replaceWhere`. TUID is unique across all 31.4M rows, so Silver asserts uniqueness. The two cost the same shuffle, but an assertion names the offending identifiers where a dedup silently discards rows.
 
 An earlier sketch had Bronze read the change-only file, work out which yearly files it affected, and re-fetch those. That is the wrong shape whatever the file contains: a layer deciding what an earlier layer should ingest makes the medallion cyclic, which costs reproducibility and leaves lineage describing something other than dependency. The difference is not which component opens the file, it is that the decision originates in the orchestrator and never travels upward from a layer.
 
@@ -278,7 +278,7 @@ Decompression changes transport encoding rather than content, so unpacking at in
 
 Police.uk makes the opposite case and still lands in the same place. Seven archives, each restating up to three years, all read far more often than they are ingested, and every one published with an MD5 that turns fidelity from something preserved into something proved. What settles it is that the deduplication in Decision 20 discards 40% of the files from their names alone, so expanding at ingest would write about 31,500 small files to storage in order never to read most of them. Police.uk extracts at Silver too, one archive at a time, because the full winning set expands to 19.2 GB against 4.4 GB for the largest single archive.
 
-Reading from local disk ties these notebooks to a single-node cluster. Scaling out raises a file-not-found on the executors rather than returning partial data, so the constraint announces itself.
+Reading from local disk ties these notebooks to a single-node cluster. Scaling out raises a file-not-found on the executors, so the constraint announces itself.
 
 ### 18. The ONS workbook is converted before Spark reads it
 
@@ -288,19 +288,19 @@ Read as string, spark-excel returns each cell's display format rather than its s
 
 Read with an explicit numeric schema, the stored values come back, but the `[x]` and `[z]` markers ONS writes into its measure columns collapse to null. That merges "not available", "not applicable" and "failed to parse" into one state, and it removes the all-string frame the cast-preservation guard compares against.
 
-So the Silver notebook converts the sheet to CSV on cluster-local disk with openpyxl, which returns stored values and real dates, and reads that with the same all-string pattern every other source uses. Bronze keeps the workbook as published. The conversion is cross-checked against the sheet's own declared dimension, so a reader that drops rows is caught rather than trusted.
+So the Silver notebook converts the sheet to CSV on cluster-local disk with openpyxl, which returns stored values and real dates, and reads that with the same all-string pattern every other source uses. Bronze keeps the workbook as published. The conversion is cross-checked against the sheet's own declared dimension, so a reader that drops rows is caught.
 
 The output reconciles to the ONS bulletin: £1,388 average UK monthly rent for June 2026, up 3.3%, and the monthly change column reproduces to six decimals when derived from consecutive index values. Neither check is possible against display-rounded data, which is what makes them worth running.
 
-### 19. Police street crime has no key, so duplicates are counted rather than removed
+### 19. Duplicates in police street crime are counted, because the source has no key
 
-Every other Silver table asserts a key and fails on a repeat. This one cannot, and the reason is in how the source is published rather than in its quality.
+Every other Silver table asserts a key and fails on a repeat. This one cannot, and the reason lies in how the source is published.
 
 Crime ID is a one-way hash of the force's offence reference and is blank for anti-social behaviour, which is 31% of the table. Dates are truncated to year and month at anonymisation, and coordinates are snapped to shared map points. Two genuine burglaries on one street in one month therefore produce byte-identical rows, and police.uk separately state they suspect some forces of double counting anti-social behaviour. The two causes cannot be told apart from the row, so removing duplicates would delete real crimes.
 
 Silver keeps them and measures the population instead: 11.4% of rows repeat another row exactly. The obvious objection is that this is an artefact of records with no location, and the split says otherwise, because under 1% of those extra rows carry no location at all. Crime ID is no fallback either: 8,654 identifiers recur monthly across the whole series, all Northern Ireland, covering 1.4M rows, so the hash is of a reused reference rather than of a crime.
 
-The table carries the archive it came from as a column instead. Outcome state is only as settled as the snapshot that supplied the row, so a 2011 crime has years of settlement behind it and a recent one has none. Recording the vintage makes that lag derivable rather than hidden.
+The table carries the archive it came from as a column instead. Outcome state is only as settled as the snapshot that supplied the row, so a 2011 crime has years of settlement behind it and a recent one has none. Recording the vintage makes that lag derivable.
 
 See DESIGN.md Decision 23.
 
@@ -318,19 +318,19 @@ The other five sources declare one guard per rule, each an action over the frame
 
 Every rule there is a row predicate, so they fold. Each stays a named function with its constraint written out and its own evidence columns, but returns a predicate rather than raising, and one aggregate evaluates all of them together with eight measures and two vocabularies. A clean archive costs one pass; a broken one costs one short read per failing rule.
 
-Two things improve beyond the speed. Every failing rule is reported at once rather than the first, which matters when each retry costs a twenty-minute extraction. And the cast check gets sharper: comparing populated counts between two frames can only say a column lost values, while a predicate reports the string that failed.
+Two things improve beyond the speed. Every failing rule is reported in one pass, which matters when each retry costs a twenty-minute extraction. And the cast check gets sharper: comparing populated counts between two frames can only say a column lost values, while a predicate reports the string that failed.
 
 The general rule, and the one worth carrying forward: read the sibling files, then decide. A convention written for nineteen thousand rows can be wrong for ninety-six million, and nothing about it announces that.
 
-### 22. Aborting is the default, so a quarantine table has to earn its place
+### 22. Aborting is the default, so a quarantine table needs a population to hold
 
 The roadmap has carried a quarantine table since Phase 1, on the standard reasoning that bad rows go aside and good rows proceed. Building all six Silver transforms produced the opposite habit, and the habit is right.
 
-Almost every guard in this platform is a contract check rather than a value check. An unrecognised crime type, a column set that no longer matches, a code outside its published set: each of those means the source changed shape, and loading the rows that happen to still parse would produce a table whose schema nobody understands any more. PPD states it plainly, that a new code is a source change rather than a row to skip. Quarantining a contract violation converts a loud stop into a quiet partial load.
+Almost every guard in this platform is a contract check. An unrecognised crime type, a column set that no longer matches, a code outside its published set: each of those means the source changed shape, and loading the rows that happen to still parse would produce a table whose schema nobody understands any more. PPD states it plainly, that a new code is a source change rather than a row to skip. Quarantining a contract violation converts a loud stop into a quiet partial load.
 
 That leaves the population a quarantine table would actually hold: rows that satisfy the contract and fail a plausibility bound. Across six sources and roughly 130M rows, the clearest instance is 24 rows where British Transport Police published Scottish stations with corrupted longitudes, and those are handled better by nulling the coordinate and counting it than by removing the crime.
 
-So the table is deferred rather than scheduled, and the decision that gates it is which checks are contract and which are value. If the value population stays this thin, the honest outcome is to record why the table was not built rather than to build one that stays empty.
+So the table is deferred, and the decision that gates it is which checks are contract and which are value. If the value population stays this thin, the honest outcome is to record why the table was not built.
 
 ### 23. A failed run has to leave a row behind
 
@@ -340,7 +340,7 @@ A metrics-only table records nothing when a load fails, so the absence of rows f
 
 Metrics buffer in the run object and flush once, on success or failure, so a load that aborts still records what it measured before it broke. The alternative, a Delta commit per metric, costs a transaction for every printed count.
 
-Two rules follow from the tables being read by a dashboard later. Counts are stored with the base they are a share of, never as a pre-computed ratio, because counts and bases re-aggregate across runs and percentages do not. And metric names come from a registry in the writer rather than being typed into six notebooks, because a rename that nothing catches looks exactly like a series that was discontinued.
+Two rules follow from the tables being read by a dashboard later. Counts are stored with the base they are a share of, never as a pre-computed ratio, because counts and bases re-aggregate across runs and percentages do not. And metric names come from a registry in the writer, because a rename that nothing catches looks exactly like a series that was discontinued.
 
 ### 24. Freshness bounds are read from the data, not from a publisher's calendar
 
@@ -350,7 +350,135 @@ Each Silver notebook now records the newest date its content carries, and each s
 
 Two sources needed a signal other than the obvious one. The BoE rate has held since December 2025, so the newest rate change is stale by design and asserting on it would fire every month while the pipeline is healthy; the newest day carrying any rate is the signal instead. ONS cannot be pattern-matched from its URL, so the landed filename records which release was asked for rather than which one was served, and the publication date parsed from the workbook's cover sheet is the only value in the file that can contradict the filename.
 
+### 25. Ancestry is flattened into the area dimension
+
+`dim_area` carries `region_code` and `nation_code` beside `parent_area_code`, so a row states every level it belongs to. A region figure then needs no recursive walk up the parent pointer.
+
+The reason is arithmetic. Areas do not all reach the same depth: a district in England has a region and a nation, a district in Wales has only a nation, and a composite geography has neither. A region-level figure has to count every area belonging to that region whether or not anything sits below it, and a nation-level figure has to count the areas that reach no further. Walking the pointer answers the first and quietly loses the second.
+
+`region_code` is null for the 65 districts outside England, 18% of the 361. That is structural, being every district in three of the four nations, so the column is explicit instead of the raggedness surfacing later as a failed drill-down.
+
+Two check constraints keep it honest. A region code must match `^E12[0-9]{6}$`, and only a district or a region may carry one. The first is not defensive. A district's region is resolved by matching the postcode directory's region name against the price index's, and the index publishes `E12000005` as "West Midlands Region" precisely because it also publishes the metropolitan county `E11000005` as "West Midlands". A name match landing on the county is a wrong parent rather than a missing one, and the constraint is what separates the two.
+
+### 26. A Gold run names the table it builds
+
+The audit writer validates a run's name against a closed vocabulary. A Silver load names the Bronze source it read, which identifies it exactly. A Gold load reads four or five Silver tables at once, so no single source names it and the target table does.
+
+The registry therefore holds two vocabularies, and each name carries the layer it belongs to. A dimension name used under the Silver layer, or a Bronze source name used under Gold, fails when the run object is constructed. A row written under a name no query filters on is a row no dashboard finds.
+
+One run per Gold table. The dimension load writes four tables from one notebook, and a single run across all four would make its row count a sum of unrelated things. Four runs keep each count a real number and leave the metric `scope` field free for genuine subdivisions, which the load uses to record rows per area level and per boundary vintage.
+
 ---
+
+### 27. An interior gap is a fault, a short series is a fact about the country
+
+The house price index publishes one row per geography per month over the period that
+geography existed. Two different things can make a series shorter than its nation's
+coverage floor implies, and only one of them is a defect.
+
+An authority created in 2020 has no rows before 2020, and an authority abolished in 2023
+has none after it. Local government reorganisation is a fact about the country, and the
+Silver notebook already refuses to assert on geography coverage for that reason. A month
+missing between a geography's own first and last month is different. Nothing in the
+publication model produces one, so it means the release lost a row.
+
+The transform therefore aborts on an interior gap and the notebook measures the rest. It
+records how many geographies carry every month from their coverage floor to the newest
+month in the release, which was 405 of 405 on the May 2026 file. A boundary change moves
+that number without stopping anything; a dropped month stops the load.
+
+The distinction was not obvious. My first answer was to measure both, on the reasoning
+that a reorganisation should not abort a load. That is true of a series that starts late
+or ends early and says nothing about a hole in the middle, and treating the two alike
+would have left the only case with no legitimate cause unguarded.
+
+### 28. Key and grain checks are one module, because the star declares twenty of them
+
+Unity Catalog does not enforce primary or foreign keys. It records them for the optimiser
+and for Power BI and enforces neither, so a fact naming a dimension row that does not
+exist loads without complaint and then vanishes from every rollup keyed on it. A repeated
+key loads too, and doubles whatever is summed over it. The load is the only place either
+is catchable.
+
+Nine facts point at two geography dimensions, the calendar and the crime type list, and
+the small-area dimension points at the area dimension. That is roughly twenty instances
+of the same two checks. Written per table they would be twenty wordings, and the table
+that reports the least is the one nobody notices is wrong.
+
+So they live in one module that takes the child frame, the parent frame and the names to
+use in the message. The check that already existed in the small-area dimension delegates
+to it and keeps its own name, because the order it imposes on the load, area dimension
+written before small areas are checked against it, is a property of that table.
+
+Failure detail costs a second pass that only a failing check runs. A clean load pays one
+action, which is what it cost before the detail existed.
+
+### 29. Both published panels are a projection, and the rent key comes from the dimension
+
+The house price index and the private rent series arrive at Gold as monthly area panels.
+All eleven index measures and all twelve rent measures already exist in Silver under the
+same names at the same types, so both facts are a column projection and one rename, with
+nothing computed and nothing cast.
+
+Eight geographies have no key. ONS publishes the Northern Irish broad rental market areas
+with no area code, so Silver keys that panel on area name. The area dimension already
+assigns each one a code derived from its name, deterministic across releases and flagged
+as project-assigned. The fact reads that code off the dimension. Recomputing the
+derivation inside the fact would put one rule on both sides of a foreign key with nothing
+forcing the two copies to agree.
+
+The lookup is checked for uniqueness before it is joined, because a name carried under
+two derived codes would fan one row into two rows with different keys, and the primary
+key is informational, so nothing downstream would notice. The join key is null wherever a
+row already carries a code, so a published area whose name happens to match a rental
+market area cannot be overwritten or duplicated.
+
+Rows carrying no measure are dropped, and the load records how many. Northern Ireland
+lags the other nations, ONS marks its unpublished months unavailable across every measure,
+and Silver keeps those rows because at that layer an unpublished month is absent and not
+unreliable. Eighteen of 49,266 rent rows on the June 2026 release, nine areas across two
+months, and the count moves with each release. Kept, they would make the latest published
+rent for Belfast render blank in a month where England renders a figure.
+
+Loaded: 147,453 index rows across 405 areas, and 49,248 rent rows across 357. Every key
+resolves in both the area dimension and the calendar.
+
+### 30. Seasonal adjustment stops above district, so it can only serve the benchmark
+
+The index publishes seasonally adjusted price and index columns for 15 of its 405
+geographies. All 15 are a region, a nation or a composite. No district and no county
+carries the series, and Northern Ireland carries none at nation level although the United
+Kingdom composite containing it does.
+
+The figures divide exactly. Nine regions and three composites are adjusted throughout.
+England, Wales and Scotland are adjusted at nation level, which accounts for the whole
+gap: 1,023 adjusted rows of 1,280 at that level, the difference being Northern Ireland's
+257 months from its 2005 coverage floor.
+
+The fact carries both columns anyway. The area profile screen compares an area against
+its region and its country, and a national trend line is where seasonal adjustment does
+the most work, so the columns serve the benchmark and never the subject. Building a screen
+that offers an adjusted series for a chosen district would have found nulls.
+
+Worth recording because the schema does not say it. Both columns are nullable like every
+other measure, and nothing in the declared table separates a structural null from a sparse
+one.
+
+### 31. A yield is computable for 316 districts, and the shortfall is all structural
+
+The yield map needs a district carrying both a price index and a rent. 316 of 361 do.
+
+The 45 that do not are three populations and no accidents. Scotland's 32 districts and
+Northern Ireland's 11 are published on broad rental market areas, which conform to
+nothing below nation and pair with no price. The Isles of Scilly carry postcodes and no
+price. The City of London carries a price and no rent. The area dimension already flags
+all four cases through `has_price_index` and `has_rent_index`, so the shortfall is
+derivable from the model without consulting the sources.
+
+Two of the three composites carry a rent. England and Wales does not, and the dimension
+records that as `has_rent_index` false, so the fact and the dimension agree. A United
+Kingdom or Great Britain yield is computable at composite level and an England and Wales
+one is not.
 
 ## Bugs found and fixed
 
@@ -368,7 +496,7 @@ Two sources needed a signal other than the obvious one. The BoE rate has held si
 **Fix:** Replaced every hardcoded URL in the dataset Base URL fields with the right `@dataset()` expression. Re-ran the master pipeline for the affected sources. Validated the output files by parsing them in their native format.
 
 **Lesson:** A pipeline reporting success confirms bytes moved, not that the right bytes moved. Two follow-ups came out of it:
-1. Magic-byte validation in the Silver-layer ingestion contract — every file checked against its expected format header before parsing.
+1. Magic-byte validation in the Silver-layer ingestion contract: every file checked against its expected format header before parsing.
 2. An audit of every parameterised dataset field to confirm the parameters are actually wired in, not just defined.
 
 ### ADF nested control-flow restriction
@@ -414,6 +542,21 @@ Two sources needed a signal other than the obvious one. The BoE rate has held si
 **Lesson:** the Phase 1 version of this was that a success flag confirms bytes moved, not the right bytes. This is the same failure one level up: the right bytes moved, but they were old, and nothing in the pipeline could tell the difference. Freshness has to come from the content, so the Silver notebook now reports the newest month found in the data alongside the filename it read. One is a claim the file makes about itself; the other is a claim the filename makes about the file.
 
 A smaller finding from the same run: the landed object is lower-cased (`uk-hpi-full-file-2026-05.csv`) while the source URL is mixed-case, so vintage selection matches case-insensitively.
+
+### Empty-array indexing under ANSI mode bypassed the guard written for it
+
+**Discovered:** running the `dim_area` test suite. One test failed, the one asserting that an area no publisher names aborts the load. The other 54 passed, including every other test of the same name-selection code.
+
+**Symptoms:**
+- The guard reporting an unnamed area never raised
+- The exception that surfaced was a Spark error, not the `ValueError` the guard raises, so `pytest.raises(ValueError)` did not catch it
+- A diagnostic against the real sources confirmed five areas with no name from any publisher, so the guard's input was correct
+
+**Root cause:** the area name is chosen from an ordered list of candidates filtered to the populated ones, then indexed at position zero. For an area no publisher names that list is empty. ANSI mode has been on since DBR 17.0, and under it indexing an empty array raises `INVALID_ARRAY_INDEX` rather than returning null. The guard was written to report exactly that case and never ran, because the index raised first. Every other test passed because those areas always had at least one candidate, so the array was never empty.
+
+**Fix:** replaced the index with `try_element_at`, which returns null where the position does not exist.
+
+**Lesson:** this is the same rule the Silver transforms already follow with `try_cast` over `cast`, applied somewhere I had not thought to apply it. Under ANSI, prefer the form that yields null so a guard can name what went wrong, over the form that raises with an error naming nothing. The pattern generalises past casting, and the failure mode is specifically that a guard's own exception gets pre-empted by an engine error, which makes it look as though the guard is wrong rather than unreachable.
 
 ---
 
@@ -485,8 +628,9 @@ uk-property-intelligence-platform/
 │   │       ├── ons.py                   # pure ONS transform + marker position guards
 │   │       └── police.py                # archive selection + single-pass rule registry
 │   ├── gold/
-│   │   ├── notebooks/
-│   │   └── transforms/
+│   │   ├── notebooks/                   # table DDL, dimension load, fact loads
+│   │   ├── transforms/                  # one module per table, plus shared conformance checks
+│   │   └── exploration/                 # read-only measurement behind the model's figures
 │   ├── quality/
 │   │   ├── audit/
 │   │   │   └── writer.py                # run and metric writer, metric name registry, freshness bounds
@@ -496,7 +640,14 @@ uk-property-intelligence-platform/
 ├── requirements-dev.txt                 # local + CI test stack (pyspark, pytest, chispa)
 ├── tests/
 │   ├── conftest.py                      # SparkSession fixture; reuses the cluster session
-│   ├── run_tests.py                     # runs the suite on the cluster, one cell per test file
+│   ├── run_tests_boe.py                 # one runner per source: its Silver suite, then every Gold suite reading it
+│   ├── run_tests_hpi.py
+│   ├── run_tests_ppd.py
+│   ├── run_tests_doogal.py
+│   ├── run_tests_ons.py
+│   ├── run_tests_police.py
+│   ├── run_tests_audit.py               # the audit writer
+│   ├── run_tests_shared.py              # suites belonging to no single source
 │   ├── test_silver_transforms/
 │   │   ├── test_boe_base_rate.py        # BoE transform + DQ guard
 │   │   ├── test_hpi.py                  # HPI transform, coverage floor, typing
@@ -504,6 +655,12 @@ uk-property-intelligence-platform/
 │   │   ├── test_doogal.py               # Doogal transform, column contract, BFPO, coordinates
 │   │   ├── test_ons.py                  # ONS transform, marker positions, cover-sheet date parser
 │   │   └── test_police.py               # archive selection, rule registry, coordinate box
+│   ├── test_gold_transforms/
+│   │   ├── test_dim_date.py             # calendar expansion, rate interval chain
+│   │   ├── test_dim_area.py             # levels, ancestry, name precedence, derived codes
+│   │   ├── test_dim_lsoa.py             # district assignment, boundary vintage, conformance
+│   │   ├── test_dim_crime_type.py       # vocabulary map, publication window
+│   │   └── test_conformance.py          # shared key and grain checks
 │   ├── test_quality_audit/
 │   │   └── test_writer.py               # metric registry, generated DDL, value routing, freshness verdict
 │   └── test_quality_framework/          # (planned)
@@ -598,9 +755,15 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 
 ### Phase 3 — Gold layer
 
-- [ ] Multi-source joins on postcode
-- [ ] Enrichment: price × rent yield, price × rate affordability, price × crime index
-- [ ] Denormalised analytical tables
+- [x] Dimensional model design: grain, keys and dimension structure settled against measurement before any transform was written
+- [x] Declared DDL for thirteen tables, four dimensions and nine facts, created on the cluster with informational keys and enforced check constraints
+- [x] All four dimensions loaded: 19,723 calendar days carrying the base rate, 432 published areas, 36,778 small areas with the majority-district assignment for the 82 that straddle a boundary, and 16 crime types across three vocabulary eras
+- [x] Index and rent facts loaded, the two published area panels: 147,453 and 49,248 rows
+- [ ] Transaction facts loaded: monthly price by published area, annual price by small area, and the composition breakdown
+- [ ] Crime facts loaded at both grains, with anti-social behaviour held out of every total by constraint
+- [ ] Own-versus-rent monthly cost at the base rate of the day, and rent yield, computed downstream from the facts
+- [ ] Join-integrity and referential-coverage checks recorded through the audit writer
+- [ ] Cross-source reconciliation of a transaction-derived price series against the published index
 
 ### Phase 4 — Advanced features
 
@@ -617,9 +780,10 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 
 - [ ] Synapse Serverless external tables over Gold
 - [ ] Fabric / Power BI dashboards:
-  - Property Market Dashboard (price trends, rent yields, crime overlay)
+  - Property Market Dashboard, four screens: area profile against regional and national benchmarks; own-versus-rent monthly cost at the base rate of the day; yield map with a crime overlay; and what actually sells in an area by property type, build age, tenure and sale category
   - Pipeline Health Dashboard (run history, quality scores, anomaly alerts)
+- [ ] Boundary polygons for the map layers, sourced at dashboard time. The platform holds postcode points, not area shapes, so a choropleth needs geometry the pipeline does not carry
 
 ---
 
-*Project status: Phase 2 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested, and confirmed on the cluster. Last updated 08-08-2026.*
+*Project status: Phase 2 complete, Phase 3 in progress. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested and confirmed on the cluster. The Gold model is designed, its thirteen tables are created, and all four dimensions are loaded and verified: 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types. Two of the nine facts are loaded, the house price index and the private rent series, at 147,453 and 49,248 rows. Last updated 18-08-2026.*
