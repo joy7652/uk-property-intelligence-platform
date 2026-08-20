@@ -3,7 +3,7 @@ Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
 An Azure data platform built around HM Land Registry's 31.4M residential transactions since 1995, joined with five more official UK datasets covering house prices, private rents, postcodes, the Bank of England base rate and street-level crime. The pipelines run off a single JSON config file, so adding a source means editing config, not writing code. Loads are incremental from a per-source watermark. Every file is validated against its expected format before parsing, because a pipeline reporting success only proves bytes moved, and all data access is governed through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
 
-> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is in progress: the Gold star schema is designed, its thirteen tables are created, all four dimensions are loaded, and the first two facts are loaded and verified on the cluster. Seven facts remain.
+> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is in progress: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,119,680 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998.
 
 **Highlights**
 
@@ -12,6 +12,7 @@ An Azure data platform built around HM Land Registry's 31.4M residential transac
 - 2.71M postcodes, live and terminated, so transactions back to 1995 still resolve
 - Private rents for 357 UK geographies monthly since 2015, reconciling to the published national figure
 - 96.1M crime records across 187 months, deduplicated from seven overlapping archives
+- 36.1M Gold fact rows across 9 facts and 4 dimensions, every key conforming and every dropped row counted by cause
 - Config-driven ingestion: a new source is 1 JSON block in the watermark, not a new pipeline
 - Incremental by per-source watermark, with 2 reusable load patterns covering all 6 sources
 - Magic-byte validation and a quarantine/quality layer, because a success flag only means bytes moved
@@ -480,7 +481,127 @@ records that as `has_rent_index` false, so the fact and the dimension agree. A U
 Kingdom or Great Britain yield is computable at composite level and an England and Wales
 one is not.
 
+### 32. Category B sales are excluded from the price facts and keyed in the composition fact
+
+Land Registry flags each sale as category A, a standard full-market-value transfer, or
+category B, which covers repossessions and portfolio transfers. B is near zero in the
+table until 2013, steps to 2.4% that year, and settles between 15% and 18% from 2017.
+That is a change in what gets published, so a median spanning 2013 and including B
+compares two different populations either side of it.
+
+Excluding B costs 14 of 120,109 district-months and 814 of 1,135,047 small-area years,
+and costs no area its series: all 318 districts and all 35,672 small areas a transaction
+reaches carry at least one category A sale. It also removes all 346 sales above £100M,
+where category A tops out at £90M.
+
+The composition fact keeps both categories, because the category is part of what that
+screen breaks down. The two tables then disagree on a bare count by design, and the
+relationship that does hold is checked at load: the price fact's count equals the
+composition fact's count over category A, across all 124,631 cells.
+
+### 33. One resolution serves the facts built from a source
+
+Price Paid Data carries a postcode and no area code, so all three transaction facts need
+the same join over 31.4M rows. Running it once per fact would let two tables disagree
+about which transactions exist, and that stays invisible until someone sums one against
+the other. The resolution is one module, and the load persists its output once: 200 of
+200 partitions stayed cached across all three facts, so the join ran once.
+
+Crime works the same way with four facts and a lookup, not a postcode join, since
+Police.uk publishes a small-area code on the row.
+
+Every record is labelled with an outcome before anything is filtered. 31,378,089 of
+31,430,611 transactions resolve, and 92,352,547 of 96,092,836 crime records. Every count
+is recorded against the run that dropped it.
+
+### 34. Counties carry a price index and no transaction price
+
+A transaction resolves to a district through its postcode, and the rollup runs district,
+region, nation, England and Wales. `dim_area` records no county on a district row, so the
+transaction facts reach 330 of its 432 areas and the 29 counties are not among them. The
+house price index does publish counties, so a county screen carries an index with no
+transaction price behind it. Closing the gap needs a district-to-county mapping the
+postcode directory does not supply.
+
+The other 73 unreached areas need no fixing. 43 are districts outside England and Wales,
+26 are the Scottish and Northern Irish rental market areas that carry a rent series and
+no transactions by construction, and the rest are the United Kingdom and Great Britain
+composites and the two nations behind them.
+
+### 35. Crime areas are summed up from small areas, prices are not
+
+A count is additive, so a district's crime is the sum of the small areas inside it, and
+the area facts roll up a 26 million row aggregate instead of counting 68 million records
+four times over. The load checks the identity instead of trusting it: the England and
+Wales composite reads 67,886,868 by three independent paths.
+
+A median cannot be recovered from the medians below it, so the price facts aggregate from
+the transactions at every level separately. The same star carries both rules because the
+measures differ, not because the geographies do.
+
+### 36. Anti-social behaviour is counted apart and refused by constraint
+
+Its share of crime records drifts from 42% in 2010 to 16% in 2026, with a rise to 28% in
+2020, so a series including it moves with reporting practice and not with crime.
+Forces also double count it.
+
+Both type tables refuse it by check constraint, so a row reaching Delta fails the write instead of loading as a number nobody questions. Both total tables carry it in a column
+of its own beside a total that excludes it, and both measures come from one aggregate:
+102,735 small-area cells hold anti-social behaviour and nothing else, and 1,272,887 hold
+none of it, so counting them apart and joining would lose one population or the other.
+
+The exclusion costs no small area its place. 36,751 codes carry a non-anti-social crime,
+which is exactly the number flagged as carrying any crime at all.
+
+### 37. A transaction-derived price series reconciles against the published index
+
+The strongest check available, and the only one that does not come from the pipeline
+itself. `fact_area_month_price` is built from 29.6M transactions; `fact_area_month_hpi` is the publisher's own mix-adjusted index over the same areas and months. Two products of one
+registry, built by different methods.
+
+The counts agree: the category A transaction count correlates with the publisher's sales volume at 0.9998 across 123,375 cells, with an aggregate ratio of 1.0036.
+
+The prices agree in a way worth knowing. The published average tracks the transaction median, and not the transaction mean: a median ratio of 1.011 against a mean ratio of 1.176. A raw mean carries the right
+tail and mix adjustment removes it, so a screen comparing against the published index
+should use the median. The gap widens with level, 1.173 at district to 1.355 at the
+composite, because mix adjustment removes geographic composition too.
+
+Every outlier is a thin high-value cell and not a fault: City of London at 11 to 55
+transactions a month, and Westminster, Kensington and Chelsea, and Camden.
+
+### 38. Owning against renting moves with the base rate, and the model shows it
+
+`dim_date` carries the Bank of England rate in force on every one of its 19,723 days, so
+the cost of owning is computed at the rate of the day rather than at a rate chosen once.
+Deposit share, mortgage term and the lender's margin are assumptions and stay as
+parameters.
+
+Between 2021 and 2024 the mean monthly mortgage across 331 areas moved from £879 to
+£1,631, up 86%, while mean rent moved from £886 to £1,061, up 20%. The share of
+area-months where owning costs more than renting went from 41.7% to 99.5%. Gross rental
+yield is computable for 316 districts at a median of 3.97%, which is the population
+Decision 31 predicted before any fact was loaded.
+
+
 ## Bugs found and fixed
+
+### A verification query Spark could not plan
+
+The transaction load's verification cell compared the small-area dimension's price flag
+against the small areas present in the fact, written as three scalar subqueries in a
+select list with one correlated `NOT EXISTS`. On DBR 17.3 it failed with
+`INTERNAL_ERROR_ATTRIBUTE_NOT_FOUND`, SQLSTATE XX000, reporting two expression ids for
+one column. The query scanned each table twice, and the correlated subquery had been
+rewritten into a nested-loop existence join whose outer key was pruned under a different
+id than the join looked for.
+
+XX000 is Spark's internal-error class, so the SQL was legal and the planner failed on it.
+Rewriting the check as a single left join avoided that path, halved the scans, and made
+the reverse direction free: a small area in the fact that the dimension does not flag,
+which the original query never asked about.
+
+It failed after all three loads had completed and all three audit runs had closed, so
+nothing was left half-written.
 
 ### Latent parameter-shadowing bug in dataset configuration
 
@@ -759,11 +880,11 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 - [x] Declared DDL for thirteen tables, four dimensions and nine facts, created on the cluster with informational keys and enforced check constraints
 - [x] All four dimensions loaded: 19,723 calendar days carrying the base rate, 432 published areas, 36,778 small areas with the majority-district assignment for the 82 that straddle a boundary, and 16 crime types across three vocabulary eras
 - [x] Index and rent facts loaded, the two published area panels: 147,453 and 49,248 rows
-- [ ] Transaction facts loaded: monthly price by published area, annual price by small area, and the composition breakdown
-- [ ] Crime facts loaded at both grains, with anti-social behaviour held out of every total by constraint
-- [ ] Own-versus-rent monthly cost at the base rate of the day, and rent yield, computed downstream from the facts
-- [ ] Join-integrity and referential-coverage checks recorded through the audit writer
-- [ ] Cross-source reconciliation of a transaction-derived price series against the published index
+- [x] Transaction facts loaded: monthly price by published area at 124,631 rows, the composition breakdown at 1,552,988, and annual price by small area at 1,134,233, all three from one resolution of 31.4M transactions through the postcode directory
+- [x] Crime facts loaded at both grains, with anti-social behaviour held out of every total by constraint: 25,984,439 and 6,328,185 rows by small area, 736,822 and 61,681 by published area, summed up from the small-area aggregate and checked against a direct count
+- [x] Own-versus-rent monthly cost at the base rate of the day, and rent yield, computed downstream from the facts: 45,346 area-months across 331 areas, a yield for 316 districts at a 3.97% median, and the rate cycle moving the share of area-months where owning costs more from 41.7% to 99.5%
+- [x] Join-integrity and referential-coverage checks recorded through the audit writer: every foreign key on all nine facts checked against the loaded dimension after write, and coverage recorded against `dim_area`, `dim_lsoa` and `dim_crime_type`
+- [x] Cross-source reconciliation of a transaction-derived price series against the published index: counts correlating at 0.9998 across 123,375 cells, and the published mix-adjusted average tracking our median to within 1.1%
 
 ### Phase 4 — Advanced features
 
@@ -786,4 +907,4 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 
 ---
 
-*Project status: Phase 2 complete, Phase 3 in progress. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested and confirmed on the cluster. The Gold model is designed, its thirteen tables are created, and all four dimensions are loaded and verified: 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types. Two of the nine facts are loaded, the house price index and the private rent series, at 147,453 and 49,248 rows. Last updated 18-08-2026.*
+*Project status: Phase 2 complete, Phase 3 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested and confirmed on the cluster. The Gold star is finished: thirteen tables created, all four dimensions loaded and verified at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; and the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998 across 123,375 cells. Phase 4 covers CI/CD, the testing framework and the quality layer. Last updated 20-08-2026.*
