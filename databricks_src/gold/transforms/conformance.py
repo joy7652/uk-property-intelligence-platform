@@ -1,4 +1,4 @@
-"""Gold conformance guards, shared by every fact and by dim_lsoa.
+"""Gold conformance and column guards, shared by every fact and by dim_lsoa.
 
 Unity Catalog does not enforce primary or foreign keys. They describe the model to the
 optimiser and to Power BI, and nothing else. A fact naming a dimension row that does not
@@ -47,6 +47,29 @@ def assert_column_present(
             f"{subject} conformance check needs {owner}'s {column} column, and the "
             f"frame carries {sorted(df.columns)}."
         )
+    return df
+
+
+def assert_columns_present(
+    df: DataFrame, required: tuple[str, ...], reader: str
+) -> DataFrame:
+    """Fail unless a frame carries the columns something reads from it.
+
+    One direction only. Gold reads a projection of tables it does not own, so a missing
+    column is a fault and an extra one is not.
+
+    Callers pass their own name, because a fact losing a column has to say which fact
+    rather than which shared module noticed. Every missing column is named rather than
+    the first one found, since a frame passed from the wrong place is usually missing
+    several, and one name per run turns that into one run per name.
+
+    The singular assert_column_present above guards one join key for a conformance
+    check and words its failure that way. This guards a read list, and both fact
+    families call it through their shared resolutions.
+    """
+    missing = sorted(set(required) - set(df.columns))
+    if missing:
+        raise ValueError(f"{reader} is missing columns it reads: {missing}")
     return df
 
 

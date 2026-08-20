@@ -21,6 +21,7 @@ from databricks_src.gold.transforms.conformance import (
     SAMPLE_ROWS,
     SAMPLE_VALUES,
     assert_column_present,
+    assert_columns_present,
     assert_grain_unique,
     assert_keys_conform,
     measure_dimension_coverage,
@@ -89,6 +90,51 @@ def test_missing_column_message_lists_what_the_frame_carries(spark):
         assert_column_present(
             parent(spark).drop("area_code"), "area_code", CHILD_NAME, PARENT_NAME
         )
+
+
+# --------------------------------------------------------------------------- #
+# Read lists
+# --------------------------------------------------------------------------- #
+
+
+def test_a_frame_carrying_every_column_passes(spark):
+    frame = child(spark)
+    assert assert_columns_present(frame, ("area_code", "measure"), CHILD_NAME) is frame
+
+
+def test_a_missing_column_names_it(spark):
+    with pytest.raises(ValueError, match="measure"):
+        assert_columns_present(
+            child(spark).drop("measure"), ("area_code", "measure"), CHILD_NAME
+        )
+
+
+def test_every_missing_column_is_named_and_sorted(spark):
+    """A frame passed from the wrong place is usually missing several. Naming one turns
+    that into one run per name, and sorting makes two runs report identically."""
+    frame = child(spark).drop("measure", "month_start_date")
+    with pytest.raises(ValueError, match=r"\['measure', 'month_start_date'\]"):
+        assert_columns_present(
+            frame, ("area_code", "measure", "month_start_date"), CHILD_NAME
+        )
+
+
+def test_the_reader_is_named_rather_than_the_shared_module(spark):
+    """Both fact families call this through their resolutions. A fact losing a column
+    has to say which fact, not which module noticed."""
+    with pytest.raises(ValueError, match=CHILD_NAME):
+        assert_columns_present(child(spark).drop("measure"), ("measure",), CHILD_NAME)
+
+
+def test_an_extra_column_is_accepted(spark):
+    """One direction only. Silver adding a column is not a Gold table's problem."""
+    assert assert_columns_present(child(spark), ("area_code",), CHILD_NAME).count() == len(
+        CHILD
+    )
+
+
+def test_requiring_nothing_passes(spark):
+    assert assert_columns_present(child(spark), (), CHILD_NAME).count() == len(CHILD)
 
 
 # --------------------------------------------------------------------------- #

@@ -105,7 +105,7 @@ run("tests/test_silver_transforms/test_doogal.py")
 # MAGIC %md
 # MAGIC ## 4. Gold tables built from this source
 # MAGIC
-# MAGIC Seven tables read this source. Some don't have a transform yet.
+# MAGIC Seven tables read this source.
 # MAGIC
 # MAGIC The remaining tables are declared in
 # MAGIC `databricks_src/gold/notebooks/00_create_gold_tables.py` and load from phase
@@ -122,9 +122,24 @@ run("tests/test_gold_transforms/test_dim_lsoa.py")
 
 # COMMAND ----------
 
-# Not yet written. Uncomment as each transform lands.
-# run("tests/test_gold_transforms/test_fact_area_month_price.py")
-# run("tests/test_gold_transforms/test_fact_area_month_transaction_mix.py")
-# run("tests/test_gold_transforms/test_fact_area_month_crime.py")
-# run("tests/test_gold_transforms/test_fact_area_month_crime_total.py")
-# run("tests/test_gold_transforms/test_fact_lsoa_year_price.py")
+run("tests/test_gold_transforms/test_fact_area_month_price.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_fact_area_month_transaction_mix.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_fact_lsoa_year_price.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_transactions.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_fact_area_month_crime.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_fact_area_month_crime_total.py")

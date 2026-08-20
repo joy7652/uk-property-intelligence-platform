@@ -142,12 +142,20 @@ COUNTRY_BY_INITIAL: dict[str, str] = {
     "N": "Northern Ireland",
 }
 
+# Named because the facts sum to one of them and have to say which. A source covering
+# two nations summed under a code spanning four reports a partial count under a whole
+# one's name, so the code a fact writes is part of its contract rather than a literal in
+# its transform.
+ENGLAND_AND_WALES = "K04000001"
+GREAT_BRITAIN = "K03000001"
+UNITED_KINGDOM = "K02000001"
+
 # Nations each composite spans. The same three codes the Silver price index module
 # floors at the latest native start among.
 COMPOSITE_NATIONS: dict[str, tuple[str, ...]] = {
-    "K04000001": ("England", "Wales"),
-    "K03000001": ("England", "Wales", "Scotland"),
-    "K02000001": ("England", "Wales", "Scotland", "Northern Ireland"),
+    ENGLAND_AND_WALES: ("England", "Wales"),
+    GREAT_BRITAIN: ("England", "Wales", "Scotland"),
+    UNITED_KINGDOM: ("England", "Wales", "Scotland", "Northern Ireland"),
 }
 
 # The only country divided into regions. The postcode directory restates the country
