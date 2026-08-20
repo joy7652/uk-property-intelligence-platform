@@ -56,6 +56,7 @@ from databricks_src.gold.transforms.fact_area_month_rent import (
     transform_fact_area_month_rent,
 )
 from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.utils.gold_write import overwrite
 
 CATALOG = "uk_property_intel"
 SILVER = f"{CATALOG}.silver"
@@ -76,39 +77,15 @@ INGESTION_TS = datetime.now(timezone.utc)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Write helpers
+# MAGIC ## Conformance helper
 # MAGIC
-# MAGIC `INSERT OVERWRITE` matches on position, so a projection that has drifted from the
-# MAGIC declared order would load values into the wrong columns without failing. The order is
-# MAGIC read off the target rather than written out here: the table is the contract, and a
-# MAGIC second copy of the column list in this notebook would be free to disagree with it.
-# MAGIC
-# MAGIC These two are copied from `01_load_dimensions.py` rather than shared. Extracting them
-# MAGIC would mean editing that notebook, whose rerun is the 96 million row crime scan, and
-# MAGIC right now there is one other caller. The decision is worth revisiting when
-# MAGIC `03_load_transaction_facts.py` needs them and there are three.
+# MAGIC The write helpers this notebook used to define are shared with the dimension
+# MAGIC load and the transaction load, in `databricks_src/utils/gold_write.py`. The
+# MAGIC column order every write depends on is still read off the created table there:
+# MAGIC the table is the contract, and a second copy of the list would be free to
+# MAGIC disagree with it.
 
 # COMMAND ----------
-
-
-def target_columns(table: str) -> list[str]:
-    """Column order as the created table declares it."""
-    return [field.name for field in spark.table(table).schema.fields]  # noqa: F821
-
-
-def overwrite(df, table: str) -> int:
-    """Replace a Gold table's contents, guarding the projection against the target."""
-    declared = target_columns(table)
-    if list(df.columns) != declared:
-        raise ValueError(
-            f"{table}: the transform produces {list(df.columns)}, the table declares "
-            f"{declared}. INSERT OVERWRITE matches on position, so this would load "
-            "values into the wrong columns."
-        )
-    view = f"_staging_{table.rsplit('.', 1)[-1]}"
-    df.createOrReplaceTempView(view)
-    spark.sql(f"INSERT OVERWRITE {table} TABLE {view}")  # noqa: F821
-    return spark.table(table).count()  # noqa: F821
 
 
 def record_area_conformance(audit_run, fact_table: str, fact_name: str) -> None:

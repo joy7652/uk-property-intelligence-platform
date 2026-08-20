@@ -122,9 +122,20 @@ run("tests/test_gold_transforms/test_dim_lsoa.py")
 
 # COMMAND ----------
 
-# Not yet written. Uncomment as each transform lands.
+run("tests/test_gold_transforms/test_crime.py")
 
-# run("tests/test_gold_transforms/test_fact_area_month_crime.py")
-# run("tests/test_gold_transforms/test_fact_area_month_crime_total.py")
-# run("tests/test_gold_transforms/test_fact_lsoa_month_crime.py")
-# run("tests/test_gold_transforms/test_fact_lsoa_month_crime_total.py")
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_fact_area_month_crime.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_fact_area_month_crime_total.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_fact_lsoa_month_crime.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_fact_lsoa_month_crime_total.py")

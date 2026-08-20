@@ -51,6 +51,7 @@ from databricks_src.gold.transforms.dim_lsoa import (
     transform_dim_lsoa,
 )
 from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.utils.gold_write import overwrite
 
 CATALOG = "uk_property_intel"
 SILVER = f"{CATALOG}.silver"
@@ -76,39 +77,6 @@ INGESTION_TS = datetime.now(timezone.utc)
 # a row waiting for it. Passed to the transform rather than computed inside it, which is
 # what keeps the transform deterministic under test.
 CALENDAR_END = date(INGESTION_TS.year, 12, 31)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Write helpers
-# MAGIC
-# MAGIC `INSERT OVERWRITE` matches on position, so a projection that has drifted from the
-# MAGIC declared order would load values into the wrong columns without failing. The order
-# MAGIC is read off the target rather than written out here: the table is the contract, and
-# MAGIC a second copy of the column list in this notebook would be free to disagree with it.
-
-# COMMAND ----------
-
-
-def target_columns(table: str) -> list[str]:
-    """Column order as the created table declares it."""
-    return [field.name for field in spark.table(table).schema.fields]  # noqa: F821
-
-
-def overwrite(df, table: str) -> int:
-    """Replace a Gold table's contents, guarding the projection against the target."""
-    declared = target_columns(table)
-    if list(df.columns) != declared:
-        raise ValueError(
-            f"{table}: the transform produces {list(df.columns)}, the table declares "
-            f"{declared}. INSERT OVERWRITE matches on position, so this would load "
-            "values into the wrong columns."
-        )
-    view = f"_staging_{table.rsplit('.', 1)[-1]}"
-    df.createOrReplaceTempView(view)
-    spark.sql(f"INSERT OVERWRITE {table} TABLE {view}")  # noqa: F821
-    return spark.table(table).count()  # noqa: F821
-
 
 # COMMAND ----------
 
