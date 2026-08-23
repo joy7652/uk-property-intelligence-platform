@@ -354,7 +354,7 @@ def source(name: str) -> Column:
 def typed(name: str, snapshot: str) -> Column:
     """The Silver value for a column, unaliased, from the raw frame."""
     if name == "crime_month":
-        return F.expr(f"try_to_date(`{SOURCE_OF['crime_month']}`, '{DATE_FORMAT}')")
+        return F.expr(f"CAST(try_to_timestamp(\{SOURCE_OF['crime_month']}`, '{DATE_FORMAT}') AS DATE)")
     if name == "crime_year":
         return F.year(typed("crime_month", snapshot))
     if name == "force":
