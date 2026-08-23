@@ -1,0 +1,65 @@
+# Runner versions track DBR 17.3 LTS: Ubuntu 24.04, Zulu Java 17, Python 3.12.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Reads the pin from requirements-dev.txt without installing PySpark, which
+      # linting does not need.
+      - name: Install ruff
+        run: pip install "$(grep -m1 '^ruff==' requirements-dev.txt)"
+
+      # Rules and the Databricks runtime builtins are declared in ruff.toml, so this
+      # runs what a local `ruff check` runs.
+      - name: Lint
+        run: ruff check .
+
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Pins the driver to loopback so session start does not depend on hostname
+      # resolution.
+      SPARK_LOCAL_IP: 127.0.0.1
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: "17"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      # tests/conftest.py puts the repo root on sys.path, so no install step and no
+      # pytest configuration file is needed.
+      - name: Run the suite
+        run: pytest tests/ -q
