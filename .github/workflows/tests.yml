@@ -15,6 +15,7 @@ permissions:
   contents: read
 
 jobs:
+  # Always runs, so a required check always reports even on a documentation change.
   lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -34,6 +35,52 @@ jobs:
       # runs what a local `ruff check` runs.
       - name: Lint
         run: ruff check .
+
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the suites need to run
+        id: filter
+        shell: bash
+        run: |
+          # Skipping the suites wrongly produces a green check over untested code, so
+          # every path that cannot establish a diff runs them.
+          changed=""
+          case "${{ github.event_name }}" in
+            pull_request)
+              changed=$(git diff --name-only \
+                "origin/${{ github.base_ref }}...HEAD") ;;
+            push)
+              before="${{ github.event.before }}"
+              if [ -n "$before" ] \
+                 && [ "$before" != "0000000000000000000000000000000000000000" ]; then
+                changed=$(git diff --name-only "$before" "${{ github.sha }}")
+              fi ;;
+          esac
+
+          if [ -z "$changed" ]; then
+            echo "No diff available, running the suites."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Changed:"
+          echo "$changed" | sed 's/^/  /'
+
+          if echo "$changed" \
+             | grep -qvE '(\.md$)|(^docs/)|(^LICENSE$)|(^\.gitignore$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Documentation only."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
 
   discover:
     runs-on: ubuntu-24.04
@@ -61,8 +108,8 @@ jobs:
             echo "::error::No suite directories found under tests/"
             exit 1
           fi
-          # A test file at the root of tests/ would belong to no leg and would be
-          # skipped by a run that still reported green.
+          # A test file at the root of tests/ would belong to no leg, and a run that
+          # never collected it would still report green.
           if compgen -G "tests/test_*.py" > /dev/null; then
             echo "::error::Test files directly under tests/ are not covered by any leg"
             exit 1
@@ -71,7 +118,8 @@ jobs:
           echo "matrix: [$suites]"
 
   tests:
-    needs: discover
+    needs: [changes, discover]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -99,8 +147,9 @@ jobs:
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
 
-      # pipefail is explicit: without it the pipe returns tee's exit code and a
-      # failing suite reports success.
+      # pipefail is explicit, so the behaviour does not depend on how the runner
+      # resolves its shell. Without it the pipe returns tee's exit code and a failing
+      # suite reports success.
       - name: Run ${{ matrix.suite }}
         shell: bash
         run: |
@@ -120,10 +169,27 @@ jobs:
   # One stable check name to require in branch protection. Matrix leg names change
   # whenever a suite directory is added or renamed; this one does not.
   tests-passed:
-    needs: tests
+    needs: [changes, tests]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Verify every leg passed
-        run: test "${{ needs.tests.result }}" = "success"
+      - name: Verify the suites passed or were legitimately skipped
+        shell: bash
+        run: |
+          result="${{ needs.tests.result }}"
+          echo "suites: $result"
+          case "$result" in
+            success)
+              ;;
+            skipped)
+              # Only a documentation-only change may skip. A skip from an upstream
+              # failure reaches here with code still true and fails.
+              if [ "${{ needs.changes.outputs.code }}" != "false" ]; then
+                echo "::error::Suites were skipped without a documentation-only diff"
+                exit 1
+              fi
+              echo "Documentation only, suites not required." ;;
+            *)
+              exit 1 ;;
+          esac
