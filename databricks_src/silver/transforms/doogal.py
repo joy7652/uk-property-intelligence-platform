@@ -43,6 +43,8 @@ from datetime import datetime
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
+from databricks_src.silver.transforms.expressions import parsed_date
+
 COORD_DDL = "double"
 GRID_DDL = "int"
 CODE_DDL = "tinyint"
@@ -371,7 +373,7 @@ def assert_domains_known(df: DataFrame) -> DataFrame:
 
 def _cast_expr(name: str) -> Column:
     if name in DATE_COLUMNS:
-        return F.expr(f"CAST(try_to_timestamp(`{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
+        return parsed_date(name, DATE_FORMAT).alias(name)
     if name in COORD_COLUMNS:
         return F.expr(f"try_cast(`{name}` as {COORD_DDL})").alias(name)
     if name in GRID_COLUMNS:

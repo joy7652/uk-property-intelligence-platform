@@ -38,6 +38,8 @@ from datetime import datetime
 
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
+
+from databricks_src.silver.transforms.expressions import parsed_date
 from pyspark.sql.types import StringType, StructField, StructType
 
 PRICE_DDL = "int"
@@ -182,11 +184,9 @@ def assert_date_format(raw_df: DataFrame) -> DataFrame:
 
 def _cast_expr(name: str) -> Column:
     if name == "date_of_transfer":
-        return F.expr(f"CAST(try_to_timestamp(`{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
+        return parsed_date(name, DATE_FORMAT).alias(name)
     if name == "transfer_year":
-        return F.expr(
-            f"year(CAST(try_to_timestamp(`date_of_transfer`, '{DATE_FORMAT}') AS DATE))"
-        ).alias(name)
+        return F.year(parsed_date("date_of_transfer", DATE_FORMAT)).alias(name)
     if name == "price":
         return F.expr(f"try_cast(`{name}` as {PRICE_DDL})").alias(name)
     return F.col(name)

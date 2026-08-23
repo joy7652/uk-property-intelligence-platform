@@ -89,7 +89,21 @@ def run(target: str, *args: str) -> None:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3. Gold conformance
+# MAGIC ## 3. Silver Expressions
+# MAGIC
+# MAGIC The `parsed_date` column expression that is shared across the Silver transforms.
+# MAGIC
+# MAGIC Asserts against synthetic frames through the `spark` fixture. No Delta table is
+# MAGIC touched.
+
+# COMMAND ----------
+
+run("tests/test_silver_transforms/test_expressions.py")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Gold conformance
 # MAGIC
 # MAGIC The key and grain checks every fact calls, and `dim_lsoa` through
 # MAGIC `assert_districts_conform`. Unity Catalog enforces neither the primary nor the

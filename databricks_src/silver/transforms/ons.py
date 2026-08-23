@@ -47,6 +47,8 @@ from datetime import date, datetime
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
+from databricks_src.silver.transforms.expressions import parsed_date
+
 MEASURE_DDL = "decimal(18, 6)"
 PRICE_DDL = "int"
 DATE_FORMAT = "yyyy-MM-dd"
@@ -220,7 +222,7 @@ def rename_columns(raw_df: DataFrame) -> DataFrame:
 
 def _parsed_date() -> Column:
     """The date column parsed, for guards that run before casting."""
-    return F.expr(f"CAST(try_to_timestamp(`date`, '{DATE_FORMAT}') AS DATE)")
+    return parsed_date("date", DATE_FORMAT)
 
 
 def is_northern_ireland() -> Column:
@@ -391,7 +393,7 @@ def null_markers(df: DataFrame) -> DataFrame:
 
 def _cast_expr(name: str) -> Column:
     if name == "date":
-        return F.expr(f"CAST(try_to_timestamp(`{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
+        return parsed_date(name, DATE_FORMAT).alias(name)
     if name in STRING_COLUMNS:
         return F.col(name)
     if name in RENTAL_PRICE_COLUMNS:
