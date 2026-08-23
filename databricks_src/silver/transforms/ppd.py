@@ -182,10 +182,10 @@ def assert_date_format(raw_df: DataFrame) -> DataFrame:
 
 def _cast_expr(name: str) -> Column:
     if name == "date_of_transfer":
-        return F.expr(f"CAST(try_to_timestamp(\{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
+        return F.expr(f"CAST(try_to_timestamp(`{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
     if name == "transfer_year":
         return F.expr(
-            f"year(CAST(try_to_timestamp(\date_of_transfer`, '{DATE_FORMAT}') AS DATE))"
+            f"year(CAST(try_to_timestamp(`date_of_transfer`, '{DATE_FORMAT}') AS DATE))"
         ).alias(name)
     if name == "price":
         return F.expr(f"try_cast(`{name}` as {PRICE_DDL})").alias(name)

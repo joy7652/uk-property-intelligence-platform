@@ -371,7 +371,7 @@ def assert_domains_known(df: DataFrame) -> DataFrame:
 
 def _cast_expr(name: str) -> Column:
     if name in DATE_COLUMNS:
-        return F.expr(f"CAST(try_to_timestamp(\{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
+        return F.expr(f"CAST(try_to_timestamp(`{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
     if name in COORD_COLUMNS:
         return F.expr(f"try_cast(`{name}` as {COORD_DDL})").alias(name)
     if name in GRID_COLUMNS:

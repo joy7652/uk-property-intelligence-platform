@@ -201,7 +201,7 @@ def rename_columns(raw_df: DataFrame) -> DataFrame:
 
 def _cast_expr(name: str) -> Column:
     if name == "date":
-        return F.expr(f"CAST(try_to_timestamp(\{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
+        return F.expr(f"CAST(try_to_timestamp(`{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
     if name in STRING_COLUMNS:
         return F.col(name)
     if name in VOLUME_COLUMNS:

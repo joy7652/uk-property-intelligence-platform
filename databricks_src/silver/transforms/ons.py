@@ -220,7 +220,7 @@ def rename_columns(raw_df: DataFrame) -> DataFrame:
 
 def _parsed_date() -> Column:
     """The date column parsed, for guards that run before casting."""
-    return F.expr(f"CAST(try_to_timestamp(\date`, '{DATE_FORMAT}') AS DATE)")
+    return F.expr(f"CAST(try_to_timestamp(`date`, '{DATE_FORMAT}') AS DATE)")
 
 
 def is_northern_ireland() -> Column:
@@ -391,7 +391,7 @@ def null_markers(df: DataFrame) -> DataFrame:
 
 def _cast_expr(name: str) -> Column:
     if name == "date":
-        return F.expr(f"CAST(try_to_timestamp(\{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
+        return F.expr(f"CAST(try_to_timestamp(`{name}`, '{DATE_FORMAT}') AS DATE)").alias(name)
     if name in STRING_COLUMNS:
         return F.col(name)
     if name in RENTAL_PRICE_COLUMNS:
