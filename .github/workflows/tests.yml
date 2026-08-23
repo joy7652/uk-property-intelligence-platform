@@ -35,9 +35,49 @@ jobs:
       - name: Lint
         run: ruff check .
 
-  tests:
+  discover:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      suites: ${{ steps.list.outputs.suites }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: List suite directories
+        id: list
+        shell: bash
+        run: |
+          # A directory with no tests exits pytest with 5, so only directories
+          # holding at least one test file become matrix legs. A new suite joins
+          # the matrix as soon as it has a test, with no edit here.
+          suites=""
+          for directory in tests/*/; do
+            name=$(basename "$directory")
+            if [ -n "$(find "$directory" -name 'test_*.py' -print -quit)" ]; then
+              suites="${suites:+$suites,}\"$name\""
+            fi
+          done
+          if [ -z "$suites" ]; then
+            echo "::error::No suite directories found under tests/"
+            exit 1
+          fi
+          # A test file at the root of tests/ would belong to no leg and would be
+          # skipped by a run that still reported green.
+          if compgen -G "tests/test_*.py" > /dev/null; then
+            echo "::error::Test files directly under tests/ are not covered by any leg"
+            exit 1
+          fi
+          echo "suites=[$suites]" >> "$GITHUB_OUTPUT"
+          echo "matrix: [$suites]"
+
+  tests:
+    needs: discover
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJson(needs.discover.outputs.suites) }}
     env:
       # Pins the driver to loopback so session start does not depend on hostname
       # resolution.
@@ -59,17 +99,15 @@ jobs:
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
 
-      # tests/conftest.py puts the repo root on sys.path, so no install step and no
-      # pytest configuration file is needed.
       # pipefail is explicit: without it the pipe returns tee's exit code and a
       # failing suite reports success.
-      - name: Run the suite
+      - name: Run ${{ matrix.suite }}
         shell: bash
         run: |
           set -o pipefail
-          pytest tests/ -q --tb=line | tee pytest.log
+          pytest "tests/${{ matrix.suite }}" -q --tb=line | tee pytest.log
 
-      # One shared cause can fail hundreds of tests. This collapses the run to the
+      # One shared cause can fail hundreds of tests. This collapses the leg to the
       # distinct errors raised, ordered by how many tests each one accounts for.
       - name: Distinct failure signatures
         if: failure()
@@ -78,3 +116,14 @@ jobs:
           grep -E '^/.+\.py:[0-9]+: ' pytest.log \
             | sed -E 's|^.*\.py:[0-9]+: ||' \
             | sort | uniq -c | sort -rn | head -40
+
+  # One stable check name to require in branch protection. Matrix leg names change
+  # whenever a suite directory is added or renamed; this one does not.
+  tests-passed:
+    needs: tests
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify every leg passed
+        run: test "${{ needs.tests.result }}" = "success"
