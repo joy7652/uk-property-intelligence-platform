@@ -61,5 +61,20 @@ jobs:
 
       # tests/conftest.py puts the repo root on sys.path, so no install step and no
       # pytest configuration file is needed.
+      # pipefail is explicit: without it the pipe returns tee's exit code and a
+      # failing suite reports success.
       - name: Run the suite
-        run: pytest tests/ -q
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest tests/ -q --tb=line | tee pytest.log
+
+      # One shared cause can fail hundreds of tests. This collapses the run to the
+      # distinct errors raised, ordered by how many tests each one accounts for.
+      - name: Distinct failure signatures
+        if: failure()
+        shell: bash
+        run: |
+          grep -E '^/.+\.py:[0-9]+: ' pytest.log \
+            | sed -E 's|^.*\.py:[0-9]+: ||' \
+            | sort | uniq -c | sort -rn | head -40
