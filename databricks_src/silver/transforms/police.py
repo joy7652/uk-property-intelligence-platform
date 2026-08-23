@@ -57,6 +57,8 @@ from datetime import datetime
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
+from databricks_src.silver.transforms.expressions import parsed_date
+
 COORDINATE_DDL = "decimal(9, 6)"
 YEAR_DDL = "int"
 DATE_FORMAT = "yyyy-MM"
@@ -354,7 +356,7 @@ def source(name: str) -> Column:
 def typed(name: str, snapshot: str) -> Column:
     """The Silver value for a column, unaliased, from the raw frame."""
     if name == "crime_month":
-        return F.expr(f"CAST(try_to_timestamp(`{SOURCE_OF['crime_month']}`, '{DATE_FORMAT}') AS DATE)")
+        return parsed_date(SOURCE_OF["crime_month"], DATE_FORMAT)
     if name == "crime_year":
         return F.year(typed("crime_month", snapshot))
     if name == "force":
