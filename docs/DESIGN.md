@@ -2,7 +2,7 @@
 
 This document captures the architectural decisions, engineering trade-offs, and delivery plan behind the platform. It complements the project README with deeper rationale and serves as the working design reference across phases.
 
-> **Status:** Phase 1 complete, Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, and all four dimensions and all nine facts are loaded and verified on the cluster at 36,119,680 fact rows. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998.
+> **Status:** Phase 1 complete, Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, and all four dimensions and all nine facts are loaded and verified on the cluster at 36,119,680 fact rows. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is in progress: continuous integration runs lint and the transform suites on every push and pull request.
 
 ---
 
@@ -1364,6 +1364,46 @@ mean monthly mortgage moved from £879 to £1,631, up 86%, while mean rent moved
 to £1,061, up 20%. The share of area-months where owning costs more than renting moved
 from 41.7% to 99.5%. The rate cycle, not the housing market, did most of that.
 
+### 58. Schema changes stop the load and get a human decision
+
+The roadmap carried a Delta schema evolution demonstration from Phase 1 through to Phase 4. Building six Silver transforms produced the opposite behaviour everywhere the feature could have applied, so the item is dropped and this entry records what happens instead.
+
+Two different changes both get called schema evolution. A new value inside an existing column is a value-set change, and Police.uk's crime type list has done this twice inside the loaded history: six categories to August 2011, eleven to April 2013, then fourteen from May 2013, when the Home Office split public disorder and weapons apart and renamed violent crime. At the 2011-09 boundary "Other crime" fell by 172,623 while five new types appeared totalling 169,645. `dim_crime_type` carries all 16 types with each one's first and last published month and what it was split out of, so a series can be reconstructed across the boundary. No Delta column moved either time. Both changes are in the history the platform loaded, so the bounded vocabulary guard that would stop a third has not yet fired against a live release.
+
+A column appearing or disappearing is the other change, and it is the one `mergeSchema` addresses. Every Silver transform declares its source column set and asserts it, and Doogal's suite proves each of the 60 published columns is either mapped or explicitly dropped. When Land Registry or Police.uk next moves a column, the guard raises, the load stops, and the column is mapped or dropped by a decision that reaches the constant and the tests before the next run. Decision 26 gives the reason: quarantining a contract violation turns a loud stop into a quiet partial load.
+
+The cost is a failed run and a commit before the load succeeds, where merging would have loaded the same night. I take that cost, because a table that gained a column nobody decided about is a table whose schema nobody can describe.
+
+`mergeSchema` is the right tool where the write schema is undeclared and the reader tolerant, typically an append-only landing table taking whatever a publisher sends. Decision 11 removed that table from this platform when Bronze stayed as Volumes over the raw files. Nothing in the design is left for the feature to do, which is why a demonstration would have run against invented data.
+
+This decision would change if a source were added whose publisher moves columns often enough that a stop per change is unaffordable, or if a landing table were introduced between the raw files and Silver.
+
+### 59. Continuous integration runs the layer that does not need a cluster
+
+Every suite ran on demand and nothing ran them on a schedule. The cluster runners cost eight minutes of fixed startup per notebook, which is why Decision 44 rejected a run-everything notebook; a GitHub runner pays no such cost, so continuous integration is where running everything belongs.
+
+Two jobs. `lint` installs ruff at the pin read out of `requirements-dev.txt` and runs `ruff check .`, with rules and configuration in `ruff.toml` so a local run and the runner run the same thing. `tests` installs the pinned stack and runs the suites. Runner versions track DBR 17.3 LTS: Ubuntu 24.04, Zulu Java 17, Python 3.12. A suite passing against a different Spark or a different Java says nothing about the cluster.
+
+Two details cost more thought than the rest. Ruff's F rules flag `spark`, `dbutils` and `display` as undefined names in every notebook, because Databricks injects them at runtime; `ruff.toml` declares them as builtins, which suppresses those three and still reports a genuine undefined name. And the test step pipes pytest through `tee` to collapse a failing run to its distinct errors, which without `pipefail` returns the exit code of `tee` and reports a failing suite as green. `set -o pipefail` is written into the step, so the behaviour does not depend on how the runner resolves its shell.
+
+The suites are discovered, not listed. Each directory under `tests/` holding at least one test file becomes a matrix leg on its own runner, so wall-clock time is the largest leg instead of the sum. A directory with no tests exits pytest with 5, which reads as a failure, so empty ones are skipped and join the matrix when they gain a test. A test file at the root of `tests/` would belong to no leg, so discovery fails, and a run cannot report green over a suite it never collected. Branch protection requires `tests-passed`, a gate job depending on the matrix, because leg names change whenever a directory is added.
+
+What this does not cover is the larger half. There is no Delta, no Unity Catalog, no write path, no ADLS and no data at volume, so a green check means the transform layer computes what it should on Apache Spark. It is not cluster confirmation, and the rule that nothing counts as done until it has run on the cluster is unchanged by it.
+
+### 60. Transforms are portable across storage, and were not across SQL dialect
+
+The transform modules take a DataFrame and return one, read no tables and touch no Delta, Unity Catalog or ADLS. That is what made them testable away from the cluster from Phase 2 onward. The first CI run failed several hundred tests on one cause, and the cause was that purity had been defined against storage and never against dialect.
+
+`try_to_date` is a Databricks function. Apache Spark 4.0 registers 21 `try_*` functions and that is not one of them. Seven call sites across five transforms parsed their dates through it, every one correct on the cluster and none of them runnable anywhere else. An expression built through `F.expr` is a string resolved by whichever engine evaluates it, so nothing about the module boundary catches this.
+
+The replacement is `CAST(try_to_timestamp(x, fmt) AS DATE)`, which both engines register. I checked it against the nine format shapes these sources publish before changing anything: each parses to the same date the direct call gives, unparseable and empty and null input all return null and none of them raise, and the date survives every session timezone including one across the date line, because the parse and the cast shift in opposite directions. The `try_` form is not cosmetic. ANSI mode defaults on from Spark 4.0, so a plain `to_date` aborts the load on the first malformed cell instead of leaving the null that the cast guards turn into a failure naming the column.
+
+The seven sites now call `parsed_date` in `databricks_src/silver/transforms/expressions.py`, which holds the parse and takes the format from the caller, since the format belongs to the source and there are five distinct ones across six transforms. Past the third caller the shared module is the convention anyway, and the practical gain is that the next dialect difference is one edit and not a hunt through five files.
+
+One option was available and worth naming because it is tempting. Registering a local function named `try_to_date` in the test fixture would have turned CI green in an hour without touching a transform. It would also mean every local run exercised an implementation the cluster never runs, which is worse than having no continuous integration at all.
+
+This decision would change if a source needed something Databricks provides and Apache Spark has no equivalent for. The honest response then is to mark that suite cluster-only and say so, rather than fake the function locally.
+
 ## Bugs found and fixed
 
 ### A verification query Spark could not plan
@@ -1576,9 +1616,9 @@ Everything the notebooks previously printed and discarded is now recorded: the f
    - Bronze → Silver transformations (clean, type, dedupe, Delta-format)
    - Data quality checks applied at ingestion time
    - Magic-byte validation as a direct follow-through from the Phase 1 bug
-   - Schema enforcement with Delta Lake's `mergeSchema`
+   - Schema enforcement against a declared source column set, asserted per source. The `mergeSchema` plan here was dropped in Decision 58
    - Excel sources read via the `dev.mauch:spark-excel_2.13:4.0.0_0.31.2` Spark plugin for Spark-native ingestion consistency
-   - Pure transformation functions live in `databricks_src/silver/transforms/` for unit-testability; notebooks import them
+   - Pure transformation functions live in `databricks_src/silver/transforms/` for unit-testability; notebooks import them. `expressions.py` holds the column expressions more than one source needs, starting with the date parse
 
 2. **Parameterised quality-rules framework**
    - `quality_rules.json` under `config/` defining per-source validation rules
@@ -1601,7 +1641,7 @@ Everything the notebooks previously printed and discarded is now recorded: the f
    - Per-source transform tests in `tests/test_silver_transforms/`. BoE is covered by 26 tests: the data-quality guard, an exact end-to-end SCD2 scenario, the multi-row invariants Delta CHECK constraints cannot express (exactly one current row, contiguous non-overlapping intervals), and edge cases including sixteenth-precision decimals and null-rate gaps. HPI is covered by 35 tests: the four integrity guards, the coverage floor at every nation and composite boundary, typing across both published decimal formats and the volume decimal-point case, null preservation, and an end-to-end projection. PPD is covered by 47 tests: the positional read contract, the code sets at every published value, the one-year-per-file rule the partition key rests on, key uniqueness across files, and the cases where a fault would change no row count and raise nothing, such as a reordered projection or a transfer date carrying a real time component. Doogal is covered by 53 tests: the column contract that proves every one of the 60 source columns is either mapped or explicitly dropped, the in-use equivalence checked on a column that does not survive the projection, the code sets at every published value, null geography admitted only in the BF postcode area, and the fabricated zero coordinate in both directions. ONS is covered by 45 tests: the marker positions in all three structural cases, the two-branch Northern Ireland test that either half alone fails, and the conversion guards. Police is covered by 103 tests, and its split is different from the others because most of the logic is not Spark: 12 cover the archive selection rule over member names alone, the rest cover the predicate registry, the coordinate box in both directions, and the duplicate measurement helpers. That is 309 across the six sources.
    - The audit writer is covered by a further 46 in `tests/test_quality_audit/`, and it is the only suite that needs no SparkSession: the metric registry, the generated DDL against the write schema, the routing of a value to its column, the freshness verdict, and the failure path. 366 tests in total, all passing on DBR 17.3.
    - Quality framework tests in `tests/test_quality_framework/`
-   - Runs locally with `pytest` against the versions pinned in `requirements-dev.txt`, and on the cluster through `tests/run_tests.py`. CI integration deferred to Phase 4.
+   - Runs locally with `pytest` against the versions pinned in `requirements-dev.txt`, on the cluster through the eight runner notebooks, and on every push and pull request through `.github/workflows/tests.yml`, which discovers the suite directories and runs each on its own runner.
    - Test-only dependencies stay notebook-scoped or local, never on the cluster spec (see Decision 13)
 
 6. **Initial Silver → Gold design**, settled in Phase 3.1, and the sketch held
@@ -1639,4 +1679,4 @@ Coverage is uneven, and the gaps stay visible instead of being filled in. 316 di
 
 ---
 
-*Design document status: Phase 2 complete, Phase 3 complete. All six Silver tables built, unit-tested, and confirmed on the cluster, with the pipeline audit tables recording every run. The Gold star is finished: thirteen tables declared and created, all four dimensions loaded at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. Decisions 30 to 32 were queued on 08-08-2026 and rewritten before entry, against measurements taken in Phase 3.1 that contradicted parts of the queued text; 33 to 36 came out of loading the dimensions, 37 to 42 out of building the first two facts, 43 to 51 out of the transaction facts, 52 to 55 out of the crime facts, and 56 and 57 out of verifying the result against a source the pipeline does not produce. Every row count in phases 3.4 and 3.5 was predicted from a probe before the load and matched on the cluster. Last updated 20-08-2026.*
+*Design document status: Phase 2 complete, Phase 3 complete. All six Silver tables built, unit-tested, and confirmed on the cluster, with the pipeline audit tables recording every run. The Gold star is finished: thirteen tables declared and created, all four dimensions loaded at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. Decisions 30 to 32 were queued on 08-08-2026 and rewritten before entry, against measurements taken in Phase 3.1 that contradicted parts of the queued text; 33 to 36 came out of loading the dimensions, 37 to 42 out of building the first two facts, 43 to 51 out of the transaction facts, 52 to 55 out of the crime facts, 56 and 57 out of verifying the result against a source the pipeline does not produce, 58 out of dropping the schema evolution roadmap item at the opening of Phase 4, and 59 and 60 out of building continuous integration and the dialect problem its first run exposed. Every row count in phases 3.4 and 3.5 was predicted from a probe before the load and matched on the cluster. Phase 4 is in progress, opening on CI. Last updated 23-08-2026.*
