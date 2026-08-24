@@ -3,7 +3,7 @@ Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
 An Azure data platform built around HM Land Registry's 31.4M residential transactions since 1995, joined with five more official UK datasets covering house prices, private rents, postcodes, the Bank of England base rate and street-level crime. The pipelines run off a single JSON config file, so adding a source means editing config, not writing code. Loads are incremental from a per-source watermark. Every file is validated against its expected format before parsing, because a pipeline reporting success only proves bytes moved, and all data access is governed through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
 
-> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is in progress: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,119,680 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998.
+> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,119,680 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is in progress, opening on continuous integration.
 
 **Highlights**
 
@@ -583,6 +583,60 @@ yield is computable for 316 districts at a median of 3.97%, which is the populat
 Decision 31 predicted before any fact was loaded.
 
 
+### 39. Schema changes stop the load and get a human decision
+
+The roadmap carried a Delta schema evolution demonstration from Phase 1 to Phase 4. Six
+Silver transforms produced the opposite behaviour. Each declares its source column set and
+asserts it, so a column appearing or disappearing stops the load, and the column is mapped
+or dropped by a decision that reaches the constant and the tests. Doogal's suite proves
+each of its 60 published columns is either mapped or explicitly dropped. `mergeSchema`
+would accept the column silently, which is the quiet partial load Decision 22 rules out.
+
+A value-set change is a different thing and is already modelled. Police.uk's crime type
+list moved through three vocabularies, and `dim_crime_type` carries all 16 types with each
+one's first and last published month and what it was split out of. No Delta column moved
+either time.
+
+`mergeSchema` fits an append-only landing table taking whatever a publisher sends, and
+Decision 10 removed that table when Bronze stayed as Volumes over the raw files. The item
+is dropped; a demonstration would have run against invented data.
+
+### 40. Continuous integration runs the layer that does not need a cluster
+
+Two jobs on every push and pull request: ruff, and the test suites. Runner versions track
+DBR 17.3 LTS, since a suite passing on a different Spark says nothing about the cluster.
+Suite directories are discovered, not listed, so each runs on its own runner and
+wall-clock time is the largest one instead of the sum.
+
+Ruff's F rules flag `spark` and `dbutils` as undefined in every notebook, because
+Databricks injects them at runtime, so `ruff.toml` declares them as builtins and still
+catches a real undefined name. The test step pipes pytest through `tee`, which without
+`pipefail` reports a failing suite as green, so `set -o pipefail` is written into the step
+and does not depend on how the runner resolves its shell.
+
+A green check covers the transform layer on Apache Spark. It reaches no Delta, no Unity
+Catalog, no write path and no data at volume, so the rule that nothing counts as done
+until it has run on the cluster is untouched by it.
+
+### 41. Transforms are portable across storage, and were not across SQL dialect
+
+Transform modules take a DataFrame and return one and touch no Delta, Unity Catalog or
+ADLS, which is what made them testable off the cluster. The first CI run failed several
+hundred tests on one cause: purity had been defined against storage and never against
+dialect.
+
+`try_to_date` is a Databricks function, and Apache Spark 4.0 registers 21 `try_*`
+functions without it. Seven call sites across five transforms used it, each correct on the
+cluster and none runnable anywhere else. `F.expr` builds a string that whichever engine
+evaluates it resolves, so the module boundary catches nothing here.
+
+The replacement is `CAST(try_to_timestamp(x, fmt) AS DATE)`, checked against the nine
+format shapes these sources publish: same dates, a null and no exception on malformed
+input, and stable across session timezones. The seven sites now call
+`parsed_date` in `databricks_src/silver/transforms/expressions.py`. Faking `try_to_date`
+locally would have been quicker and would have meant every local run exercising an
+implementation the cluster never runs.
+
 ## Bugs found and fixed
 
 ### A verification query Spark could not plan
@@ -714,6 +768,10 @@ Both ADF and Databricks work against the same Git branches as local development,
 ```
 uk-property-intelligence-platform/
 ├── README.md
+├── .github/
+│   └── workflows/
+│       └── tests.yml                    # lint + discovered suite matrix, on push and PR
+├── ruff.toml                            # rules, and the Databricks runtime builtins
 ├── adf/
 │   └── pipelines/                       # JSON definitions, synced via ADF Git integration
 │       ├── PL_Master_Orchestrator.json
@@ -747,7 +805,8 @@ uk-property-intelligence-platform/
 │   │       ├── ppd.py                   # pure PPD transform + typing, code-set, and key guards
 │   │       ├── doogal.py                # pure Doogal transform + code sets, BFPO and grid guards
 │   │       ├── ons.py                   # pure ONS transform + marker position guards
-│   │       └── police.py                # archive selection + single-pass rule registry
+│   │       ├── police.py                # archive selection + single-pass rule registry
+│   │       └── expressions.py           # column expressions shared across sources (date parse)
 │   ├── gold/
 │   │   ├── notebooks/                   # table DDL, dimension load, fact loads
 │   │   ├── transforms/                  # one module per table, plus shared conformance checks
@@ -775,7 +834,8 @@ uk-property-intelligence-platform/
 │   │   ├── test_ppd.py                  # PPD transform, partition key, code sets
 │   │   ├── test_doogal.py               # Doogal transform, column contract, BFPO, coordinates
 │   │   ├── test_ons.py                  # ONS transform, marker positions, cover-sheet date parser
-│   │   └── test_police.py               # archive selection, rule registry, coordinate box
+│   │   ├── test_police.py               # archive selection, rule registry, coordinate box
+│   │   └── test_expressions.py          # shared date parse: formats, null handling, timezone
 │   ├── test_gold_transforms/
 │   │   ├── test_dim_date.py             # calendar expansion, rate interval chain
 │   │   ├── test_dim_area.py             # levels, ancestry, name precedence, derived codes
@@ -874,7 +934,7 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 - [x] Freshness value recorded per Silver source, with a per-source bound that aborts the load
 - [x] pytest + chispa harness (SparkSession fixture, cluster runner), all six transform suites plus the audit writer, 366 tests
 
-### Phase 3 — Gold layer
+### Phase 3 — Gold layer ✅
 
 - [x] Dimensional model design: grain, keys and dimension structure settled against measurement before any transform was written
 - [x] Declared DDL for thirteen tables, four dimensions and nine facts, created on the cluster with informational keys and enforced check constraints
@@ -894,8 +954,8 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 - [ ] PPD reconcile: annual full pass and an on-demand pass over named years, diffing against Silver and healing with `replaceWhere`
 - [ ] Quarantine table for rejected records, only if the population justifies it
 - [ ] Statistical anomaly detection (3-sigma rolling window on price changes)
-- [ ] Delta Lake schema evolution demonstration
-- [ ] GitHub Actions CI/CD (JSON schema validation for ADF pipelines and config)
+- [x] GitHub Actions CI/CD: ruff and the full test suite on every push and pull request, suite directories discovered rather than listed
+- [ ] JSON schema validation for the watermark and the ADF pipeline definitions, as a third CI job
 
 ### Phase 5 — Consumption
 
@@ -907,4 +967,4 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 
 ---
 
-*Project status: Phase 2 complete, Phase 3 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested and confirmed on the cluster. The Gold star is finished: thirteen tables created, all four dimensions loaded and verified at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; and the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998 across 123,375 cells. Phase 4 covers CI/CD, the testing framework and the quality layer. Last updated 20-08-2026.*
+*Project status: Phase 2 complete, Phase 3 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested and confirmed on the cluster. The Gold star is finished: thirteen tables created, all four dimensions loaded and verified at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; and the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998 across 123,375 cells. Phase 4 covers CI/CD, the testing framework and the quality layer, and is in progress: continuous integration is running and the quality framework is next. Last updated 23-08-2026.*
