@@ -91,7 +91,11 @@ def run(target: str, *args: str) -> None:
 # MAGIC %md
 # MAGIC ## 3. Silver Expressions
 # MAGIC
-# MAGIC The `parsed_date` column expression that is shared across the Silver transforms.
+# MAGIC The date parse the Silver transforms share. Five sources publish five different
+# MAGIC formats and every value arrives as a string, so a change here moves dates in five
+# MAGIC Silver tables at once. It exists because Apache Spark registers no `try_to_date`:
+# MAGIC the parse routes through `try_to_timestamp`, and a call site reverting would run on
+# MAGIC the cluster and fail in CI.
 # MAGIC
 # MAGIC Asserts against synthetic frames through the `spark` fixture. No Delta table is
 # MAGIC touched.
