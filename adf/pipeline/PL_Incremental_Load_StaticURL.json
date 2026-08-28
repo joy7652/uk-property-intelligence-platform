@@ -10,7 +10,7 @@
 				"userProperties": [],
 				"typeProperties": {
 					"expression": {
-						"value": "@not(equals(pipeline().parameters.p_last_refreshed, utcNow('yyyy-MM-DD')))",
+						"value": "@not(equals(pipeline().parameters.p_last_refreshed, utcNow()))",
 						"type": "Expression"
 					},
 					"ifFalseActivities": [
