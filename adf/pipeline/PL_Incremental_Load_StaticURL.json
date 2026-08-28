@@ -10,7 +10,7 @@
 				"userProperties": [],
 				"typeProperties": {
 					"expression": {
-						"value": "@not(equals(\n  formatDateTime(pipeline().parameters.p_last_refreshed, 'yyyy-MM'),\n  formatDateTime(utcNow(), 'yyyy-MM')\n))",
+						"value": "@not(equals(\n  formatDateTime(pipeline().parameters.p_last_refreshed, 'yyyy-MM-DD'),\n  formatDateTime(utcNow(), 'yyyy-MM-DD')\n))",
 						"type": "Expression"
 					},
 					"ifFalseActivities": [
@@ -26,7 +26,7 @@
 							"typeProperties": {
 								"variableName": "v_skip_message",
 								"value": {
-									"value": "@concat(pipeline().parameters.p_source_name, 'Already ingested this month — skipping')",
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping')",
 									"type": "Expression"
 								}
 							}
