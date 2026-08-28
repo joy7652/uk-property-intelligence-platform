@@ -26,7 +26,7 @@
 							"typeProperties": {
 								"variableName": "v_skip_message",
 								"value": {
-									"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', utcNow(), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', formatDateTime(pipeline().parameters.p_last_refreshed, 'yyyy-MM-DD'), ' Last Refreshed: ', formatDateTime(pipeline().parameters.p_last_refreshed, 'yyyy-MM-DD'))",
 									"type": "Expression"
 								}
 							}
