@@ -26,7 +26,7 @@
 							"typeProperties": {
 								"variableName": "v_skip_message",
 								"value": {
-									"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', pipeline().parameters.p_last_refreshed, ' Last Refreshed: ', utcNow('yyyy-MM-DD'))",
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', utcNow(), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
 									"type": "Expression"
 								}
 							}
@@ -130,7 +130,7 @@
 							"typeProperties": {
 								"variableName": "v_success_message",
 								"value": {
-									"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', pipeline().parameters.p_last_refreshed, ' Last Refreshed: ', utcNow('yyyy-MM-DD'))",
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', utcNow(), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
 									"type": "Expression"
 								}
 							}
