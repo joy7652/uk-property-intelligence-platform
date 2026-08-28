@@ -110,6 +110,30 @@
 									}
 								}
 							]
+						},
+						{
+							"name": "True Message",
+							"type": "SetVariable",
+							"dependsOn": [
+								{
+									"activity": "Copy incremental file",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "v_success_message",
+								"value": {
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', formatDateTime(pipeline().parameters.p_last_refreshed, 'yyyy-MM-DD'), ' Last Refreshed: ', formatDateTime(pipeline().parameters.p_last_refreshed, 'yyyy-MM-DD'))",
+									"type": "Expression"
+								}
+							}
 						}
 					]
 				}
@@ -147,6 +171,9 @@
 		},
 		"variables": {
 			"v_skip_message": {
+				"type": "String"
+			},
+			"v_success_message": {
 				"type": "String"
 			}
 		},
