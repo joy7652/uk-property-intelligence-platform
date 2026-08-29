@@ -1,0 +1,77 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "uk-property-market-intelligence-platform-adf"
+		},
+		"LS_ADLS_Bronze_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "https://ukpropertyintelligencedl.dfs.core.windows.net/"
+		},
+		"LS_HTTP_Accept_Header_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_Anonymous_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_LandRegistry_HPI_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_User_Agent_Header_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "@{linkedService().baseURL}"
+		},
+		"containerUri": {
+			"type": "string",
+			"metadata": "URI to storage account containing linked ARM templates"
+		},
+		"containerSasToken": {
+			"type": "string",
+			"metadata": "Sas token to storage account containing linked ARM templates"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "uk-property-market-intelligence-platform-adf_ArmTemplate_0",
+			"type": "Microsoft.Resources/deployments",
+			"apiVersion": "2024-03-01",
+			"properties": {
+				"mode": "incremental",
+				"templateLink": {
+					"uri": "[concat(parameters('containerUri'), '/ArmTemplate_0.json', parameters('containerSasToken'))]",
+					"contentVersion": "1.0.0.0"
+				},
+				"parameters": {
+					"factoryName": {
+						"value": "[parameters('factoryName')]"
+					},
+					"LS_HTTP_Accept_Header_properties_typeProperties_url": {
+						"value": "[parameters('LS_HTTP_Accept_Header_properties_typeProperties_url')]"
+					},
+					"LS_HTTP_Anonymous_properties_typeProperties_url": {
+						"value": "[parameters('LS_HTTP_Anonymous_properties_typeProperties_url')]"
+					},
+					"LS_HTTP_LandRegistry_HPI_properties_typeProperties_url": {
+						"value": "[parameters('LS_HTTP_LandRegistry_HPI_properties_typeProperties_url')]"
+					},
+					"LS_HTTP_User_Agent_Header_properties_typeProperties_url": {
+						"value": "[parameters('LS_HTTP_User_Agent_Header_properties_typeProperties_url')]"
+					},
+					"LS_ADLS_Bronze_properties_typeProperties_url": {
+						"value": "[parameters('LS_ADLS_Bronze_properties_typeProperties_url')]"
+					}
+				}
+			},
+			"dependsOn": []
+		}
+	]
+}
