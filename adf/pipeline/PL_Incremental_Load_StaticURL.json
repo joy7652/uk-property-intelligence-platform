@@ -10,7 +10,7 @@
 				"userProperties": [],
 				"typeProperties": {
 					"expression": {
-						"value": "@not(equals(\n  formatDateTime(pipeline().parameters.p_last_refreshed, 'yyyy-MM'),\n  formatDateTime(utcNow(), 'yyyy-MM')\n))",
+						"value": "@greater(convertFromUtc(utcNow(), 'GMT Standard Time', 'yyyy-MM-dd'), pipeline().parameters.p_last_refreshed)",
 						"type": "Expression"
 					},
 					"ifFalseActivities": [
@@ -26,7 +26,7 @@
 							"typeProperties": {
 								"variableName": "v_skip_message",
 								"value": {
-									"value": "@concat(pipeline().parameters.p_source_name, 'Already ingested this month — skipping')",
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', convertFromUtc(utcNow(), 'GMT Standard Time', 'yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
 									"type": "Expression"
 								}
 							}
@@ -110,6 +110,30 @@
 									}
 								}
 							]
+						},
+						{
+							"name": "True Message",
+							"type": "SetVariable",
+							"dependsOn": [
+								{
+									"activity": "Copy incremental file",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"variableName": "v_success_message",
+								"value": {
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', convertFromUtc(utcNow(), 'GMT Standard Time', 'yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
+									"type": "Expression"
+								}
+							}
 						}
 					]
 				}
@@ -147,6 +171,9 @@
 		},
 		"variables": {
 			"v_skip_message": {
+				"type": "String"
+			},
+			"v_success_message": {
 				"type": "String"
 			}
 		},

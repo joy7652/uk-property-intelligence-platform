@@ -9,7 +9,7 @@
 				"userProperties": [],
 				"typeProperties": {
 					"expression": {
-						"value": "@equals(pipeline().parameters.p_full_load_complete, false)",
+						"value": "@or(equals(pipeline().parameters.p_full_load_complete, false), equals(pipeline().parameters.p_full_load_yearly_refresh_month, int(utcNow('MM'))))",
 						"type": "Expression"
 					},
 					"ifFalseActivities": [
@@ -177,6 +177,9 @@
 				"type": "string"
 			},
 			"p_snapshot_month": {
+				"type": "string"
+			},
+			"p_full_load_yearly_refresh_month": {
 				"type": "string"
 			}
 		},
