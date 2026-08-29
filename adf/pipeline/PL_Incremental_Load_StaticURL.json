@@ -10,7 +10,7 @@
 				"userProperties": [],
 				"typeProperties": {
 					"expression": {
-						"value": "@greater(convertFromUtc(utcNow(), 'GMT Standard Time', 'yyyy-MM-dd'), pipeline().parameters.p_last_refreshed)",
+						"value": "@greater(utcNow('yyyy-MM-dd'), pipeline().parameters.p_last_refreshed)",
 						"type": "Expression"
 					},
 					"ifFalseActivities": [
