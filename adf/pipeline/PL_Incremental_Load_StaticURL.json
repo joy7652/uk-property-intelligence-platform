@@ -26,7 +26,7 @@
 							"typeProperties": {
 								"variableName": "v_skip_message",
 								"value": {
-									"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', convertFromUtc(utcNow(), 'GMT Standard Time', 'yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', utcNow('yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
 									"type": "Expression"
 								}
 							}
@@ -130,7 +130,7 @@
 							"typeProperties": {
 								"variableName": "v_success_message",
 								"value": {
-									"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', convertFromUtc(utcNow(), 'GMT Standard Time', 'yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
+									"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', utcNow('yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
 									"type": "Expression"
 								}
 							}
