@@ -1,0 +1,2020 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "uk-property-market-intelligence-platform-adf"
+		},
+		"LS_ADLS_Bronze_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "https://ukpropertyintelligencedl.dfs.core.windows.net/"
+		},
+		"LS_HTTP_Accept_Header_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_Anonymous_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_LandRegistry_HPI_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_User_Agent_Header_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "@{linkedService().baseURL}"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_Full_Load_Yearly_Stepped')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Pipeline for Yearly Full Load of Primary Data Source.",
+				"activities": [
+					{
+						"name": "Set v_year_list",
+						"description": "Generate years dynamically.",
+						"type": "SetVariable",
+						"dependsOn": [],
+						"policy": {
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"variableName": "v_year_list",
+							"value": {
+								"value": "@range(\r\n  0,\r\n  add(\r\n    div(\r\n      sub(pipeline().parameters.p_end_year, pipeline().parameters.p_start_year),\r\n      pipeline().parameters.p_step_years\r\n    ),\r\n    1\r\n  )\r\n)",
+								"type": "Expression"
+							}
+						}
+					},
+					{
+						"name": "ForEach Loop Over Years",
+						"type": "ForEach",
+						"dependsOn": [
+							{
+								"activity": "Set v_year_list",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@variables('v_year_list')",
+								"type": "Expression"
+							},
+							"batchCount": 4,
+							"activities": [
+								{
+									"name": "Copy Yearly File",
+									"description": "Copy each year's file.",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "DelimitedTextSource",
+											"storeSettings": {
+												"type": "HttpReadSettings",
+												"requestMethod": "GET"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextReadSettings"
+											}
+										},
+										"sink": {
+											"type": "DelimitedTextSink",
+											"storeSettings": {
+												"type": "AzureBlobFSWriteSettings",
+												"copyBehavior": "PreserveHierarchy"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextWriteSettings",
+												"quoteAllText": true,
+												"fileExtension": ".txt"
+											}
+										},
+										"enableStaging": false,
+										"enableSkipIncompatibleRow": true,
+										"logSettings": {
+											"enableCopyActivityLog": true,
+											"copyActivityLogSettings": {
+												"logLevel": "Warning",
+												"enableReliableLogging": false
+											},
+											"logLocationSettings": {
+												"linkedServiceName": {
+													"referenceName": "LS_ADLS_Bronze",
+													"type": "LinkedServiceReference"
+												},
+												"path": ""
+											}
+										},
+										"translator": {
+											"type": "TabularTranslator",
+											"typeConversion": true,
+											"typeConversionSettings": {
+												"allowDataTruncation": true,
+												"treatBooleanAsNumber": false
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_HTTP_Anonymous_Source",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_relative_url": {
+													"value": "@concat(\r\n  pipeline().parameters.p_relative_url_prefix,\r\n  string(add(\r\n    pipeline().parameters.p_start_year,\r\n    mul(item(), pipeline().parameters.p_step_years)\r\n  )),\r\n  if(\r\n    empty(pipeline().parameters.p_snapshot_month),\r\n    '',\r\n    concat('-', pipeline().parameters.p_snapshot_month)\r\n  ),\r\n  pipeline().parameters.p_file_name_extension\r\n)",
+													"type": "Expression"
+												},
+												"p_base_url": "@pipeline().parameters.p_base_url"
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_ADLS_Bronze_CSV",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_folder_path": {
+													"value": "@concat(pipeline().parameters.p_sink_folder_path, string(add(pipeline().parameters.p_start_year, mul(item(), pipeline().parameters.p_step_years))))",
+													"type": "Expression"
+												},
+												"p_file_name": {
+													"value": "@concat(\n  pipeline().parameters.p_file_name_prefix,\n  string(add(\n    pipeline().parameters.p_start_year,\n    mul(item(), pipeline().parameters.p_step_years)\n  )),\n  if(\n    empty(pipeline().parameters.p_snapshot_month),\n    '',\n    concat('-', pipeline().parameters.p_snapshot_month)\n  ),\n  pipeline().parameters.p_file_name_extension\n)",
+													"type": "Expression"
+												}
+											}
+										}
+									]
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"p_start_year": {
+						"type": "int",
+						"defaultValue": 1995
+					},
+					"p_end_year": {
+						"type": "int",
+						"defaultValue": 1997
+					},
+					"p_base_url": {
+						"type": "string",
+						"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+					},
+					"p_relative_url_prefix": {
+						"type": "string",
+						"defaultValue": "/pp-"
+					},
+					"p_sink_folder_path": {
+						"type": "string",
+						"defaultValue": "land_registry/ppd/yearly/"
+					},
+					"p_file_name_prefix": {
+						"type": "string",
+						"defaultValue": "pp-"
+					},
+					"p_file_name_extension": {
+						"type": "string",
+						"defaultValue": ".csv"
+					},
+					"p_step_years": {
+						"type": "int",
+						"defaultValue": 1
+					},
+					"p_snapshot_month": {
+						"type": "string"
+					}
+				},
+				"variables": {
+					"v_year_list": {
+						"type": "Array"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-04-22T01:14:10Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Anonymous_Source')]",
+				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]",
+				"[concat(variables('factoryId'), '/linkedServices/LS_ADLS_Bronze')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_Incremental_Load_StaticURL')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Pipeline for Monthly Incremental Load of Each Data Sources with Static URL pattern.",
+				"activities": [
+					{
+						"name": "Check if already ingested this month",
+						"type": "IfCondition",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@greater(utcNow('yyyy-MM-dd'), pipeline().parameters.p_last_refreshed)",
+								"type": "Expression"
+							},
+							"ifFalseActivities": [
+								{
+									"name": "False Message",
+									"type": "SetVariable",
+									"dependsOn": [],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "v_skip_message",
+										"value": {
+											"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', utcNow('yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
+											"type": "Expression"
+										}
+									}
+								}
+							],
+							"ifTrueActivities": [
+								{
+									"name": "Copy incremental file",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "DelimitedTextSource",
+											"storeSettings": {
+												"type": "HttpReadSettings",
+												"requestMethod": "GET"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextReadSettings"
+											}
+										},
+										"sink": {
+											"type": "DelimitedTextSink",
+											"storeSettings": {
+												"type": "AzureBlobFSWriteSettings",
+												"copyBehavior": "PreserveHierarchy"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextWriteSettings",
+												"quoteAllText": true,
+												"fileExtension": ".txt"
+											}
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"typeConversion": true,
+											"typeConversionSettings": {
+												"allowDataTruncation": true,
+												"treatBooleanAsNumber": false
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_HTTP_Anonymous_Source",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_relative_url": {
+													"value": "@pipeline().parameters.p_incremental_relative_url",
+													"type": "Expression"
+												},
+												"p_base_url": {
+													"value": "@pipeline().parameters.p_base_url",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_ADLS_Bronze_CSV",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_folder_path": {
+													"value": "@concat(pipeline().parameters.p_incremental_folder_name, formatDateTime(utcNow(), 'yyyy'), '-', formatDateTime(utcNow(), 'MM'))",
+													"type": "Expression"
+												},
+												"p_file_name": {
+													"value": "@concat(pipeline().parameters.p_incremental_file_name_prefix, formatDateTime(utcNow(), 'yyyy-MM'), pipeline().parameters.p_file_extension)",
+													"type": "Expression"
+												}
+											}
+										}
+									]
+								},
+								{
+									"name": "True Message",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Copy incremental file",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "v_success_message",
+										"value": {
+											"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', utcNow('yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
+											"type": "Expression"
+										}
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"p_source_name": {
+						"type": "string",
+						"defaultValue": "land_registry_ppd"
+					},
+					"p_base_url": {
+						"type": "string",
+						"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+					},
+					"p_incremental_relative_url": {
+						"type": "string",
+						"defaultValue": "/pp-monthly-update.txt"
+					},
+					"p_incremental_folder_name": {
+						"type": "string",
+						"defaultValue": "land_registry/ppd/monthly/"
+					},
+					"p_incremental_file_name_prefix": {
+						"type": "string",
+						"defaultValue": "pp-monthly-update-"
+					},
+					"p_last_refreshed": {
+						"type": "string",
+						"defaultValue": "1900-01-01"
+					},
+					"p_file_extension": {
+						"type": "string",
+						"defaultValue": ".csv"
+					}
+				},
+				"variables": {
+					"v_skip_message": {
+						"type": "String"
+					},
+					"v_success_message": {
+						"type": "String"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-04-22T00:37:01Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Anonymous_Source')]",
+				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_Incremental_Load_TemplatedLatest')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Pipeline for Monthly Incremental Load of Each Data Sources with Templated Dynamic URL pattern.",
+				"activities": [
+					{
+						"name": "Check if already ingested this month",
+						"type": "IfCondition",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@greater(utcNow('yyyy-MM-dd'), pipeline().parameters.p_last_refreshed)",
+								"type": "Expression"
+							},
+							"ifFalseActivities": [
+								{
+									"name": "False Message",
+									"type": "SetVariable",
+									"dependsOn": [],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "v_skip_message",
+										"value": {
+											"value": "@concat(pipeline().parameters.p_source_name, ' - Already ingested this month — skipping. Time: ', utcNow('yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
+											"type": "Expression"
+										}
+									}
+								}
+							],
+							"ifTrueActivities": [
+								{
+									"name": "Copy incremental Snapshot File",
+									"type": "Copy",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "DelimitedTextSource",
+											"storeSettings": {
+												"type": "HttpReadSettings",
+												"requestMethod": "GET"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextReadSettings"
+											}
+										},
+										"sink": {
+											"type": "DelimitedTextSink",
+											"storeSettings": {
+												"type": "AzureBlobFSWriteSettings",
+												"copyBehavior": "PreserveHierarchy"
+											},
+											"formatSettings": {
+												"type": "DelimitedTextWriteSettings",
+												"quoteAllText": true,
+												"fileExtension": ".txt"
+											}
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"typeConversion": true,
+											"typeConversionSettings": {
+												"allowDataTruncation": true,
+												"treatBooleanAsNumber": false
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_HTTP_Anonymous_Source",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_relative_url": {
+													"value": "@concat(pipeline().parameters.p_incremental_relative_url_prefix, pipeline().parameters.p_incremental_latest_snapshot, pipeline().parameters.p_file_extension)",
+													"type": "Expression"
+												},
+												"p_base_url": {
+													"value": "@pipeline().parameters.p_base_url",
+													"type": "Expression"
+												}
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_ADLS_Bronze_CSV",
+											"type": "DatasetReference",
+											"parameters": {
+												"p_folder_path": {
+													"value": "@concat(pipeline().parameters.p_incremental_folder_name, pipeline().parameters.p_incremental_latest_snapshot)",
+													"type": "Expression"
+												},
+												"p_file_name": {
+													"value": "@concat(pipeline().parameters.p_incremental_file_name_prefix, pipeline().parameters.p_incremental_latest_snapshot, pipeline().parameters.p_file_extension)",
+													"type": "Expression"
+												}
+											}
+										}
+									]
+								},
+								{
+									"name": "Success Message",
+									"type": "SetVariable",
+									"dependsOn": [
+										{
+											"activity": "Copy incremental Snapshot File",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "v_success_message",
+										"value": {
+											"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', utcNow('yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
+											"type": "Expression"
+										}
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"p_source_name": {
+						"type": "string",
+						"defaultValue": "police_uk_street_crime"
+					},
+					"p_base_url": {
+						"type": "string",
+						"defaultValue": "https://data.police.uk"
+					},
+					"p_incremental_relative_url_prefix": {
+						"type": "string",
+						"defaultValue": "/data/archive/"
+					},
+					"p_incremental_folder_name": {
+						"type": "string",
+						"defaultValue": "police/crime/monthly/"
+					},
+					"p_incremental_file_name_prefix": {
+						"type": "string",
+						"defaultValue": "police-crime-latest-"
+					},
+					"p_last_refreshed": {
+						"type": "string",
+						"defaultValue": "1900-01-01"
+					},
+					"p_incremental_latest_snapshot": {
+						"type": "string",
+						"defaultValue": "2026-02"
+					},
+					"p_file_extension": {
+						"type": "string",
+						"defaultValue": ".zip"
+					}
+				},
+				"variables": {
+					"v_skip_message": {
+						"type": "String"
+					},
+					"v_success_message": {
+						"type": "String"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-04-22T01:32:09Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Anonymous_Source')]",
+				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_Master_Orchestrator')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "Read watermark",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.12:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "JsonSource",
+								"storeSettings": {
+									"type": "AzureBlobFSReadSettings",
+									"recursive": true,
+									"enablePartitionDiscovery": false
+								},
+								"formatSettings": {
+									"type": "JsonReadSettings"
+								}
+							},
+							"dataset": {
+								"referenceName": "DS_ADLS_Watermark",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "Loop over sources",
+						"type": "ForEach",
+						"dependsOn": [
+							{
+								"activity": "Filter Active Sources",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@activity('Filter Active Sources').output.value",
+								"type": "Expression"
+							},
+							"batchCount": 1,
+							"activities": [
+								{
+									"name": "Switch on Load Pattern",
+									"type": "Switch",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"on": {
+											"value": "@item().load_pattern",
+											"type": "Expression"
+										},
+										"cases": [
+											{
+												"value": "yearly_stepped",
+												"activities": [
+													{
+														"name": "Execute PL_Route_Yearly_Stepped",
+														"type": "ExecutePipeline",
+														"dependsOn": [],
+														"policy": {
+															"secureInput": false
+														},
+														"userProperties": [],
+														"typeProperties": {
+															"pipeline": {
+																"referenceName": "PL_Route_Yearly_Stepped",
+																"type": "PipelineReference"
+															},
+															"waitOnCompletion": true,
+															"parameters": {
+																"p_source_name": {
+																	"value": "@item().source_name",
+																	"type": "Expression"
+																},
+																"p_base_url": {
+																	"value": "@item().base_url",
+																	"type": "Expression"
+																},
+																"p_relative_url_prefix": {
+																	"value": "@item().relative_url_prefix",
+																	"type": "Expression"
+																},
+																"p_file_extension": {
+																	"value": "@item().file_extension",
+																	"type": "Expression"
+																},
+																"p_folder_name": {
+																	"value": "@item().folder_name",
+																	"type": "Expression"
+																},
+																"p_file_name_prefix": {
+																	"value": "@item().file_name_prefix",
+																	"type": "Expression"
+																},
+																"p_start_year": {
+																	"value": "@item().start_year",
+																	"type": "Expression"
+																},
+																"p_last_year_ingested": {
+																	"value": "@item().last_year_ingested",
+																	"type": "Expression"
+																},
+																"p_full_load_complete": {
+																	"value": "@item().full_load_complete",
+																	"type": "Expression"
+																},
+																"p_incremental_relative_url_prefix": {
+																	"value": "@item().incremental_relative_url_prefix",
+																	"type": "Expression"
+																},
+																"p_incremental_latest_snapshot": {
+																	"value": "@item().incremental_latest_snapshot",
+																	"type": "Expression"
+																},
+																"p_incremental_folder_name": {
+																	"value": "@item().incremental_folder_name",
+																	"type": "Expression"
+																},
+																"p_incremental_file_name_prefix": {
+																	"value": "@item().incremental_file_name_prefix",
+																	"type": "Expression"
+																},
+																"p_last_refreshed": {
+																	"value": "@item().last_refreshed",
+																	"type": "Expression"
+																},
+																"p_incremental_type": {
+																	"value": "@item().incremental_type",
+																	"type": "Expression"
+																},
+																"p_step_years": {
+																	"value": "@item().step_years",
+																	"type": "Expression"
+																},
+																"p_snapshot_month": {
+																	"value": "@item().snapshot_month",
+																	"type": "Expression"
+																},
+																"p_full_load_yearly_refresh_month": {
+																	"value": "@item().full_load_yearly_refresh_month",
+																	"type": "Expression"
+																}
+															}
+														}
+													}
+												]
+											},
+											{
+												"value": "single_file",
+												"activities": [
+													{
+														"name": "Execute Pipeline FullLoad_SingleFile",
+														"type": "ExecutePipeline",
+														"dependsOn": [],
+														"policy": {
+															"secureInput": false
+														},
+														"userProperties": [],
+														"typeProperties": {
+															"pipeline": {
+																"referenceName": "PL_Single_File_Full_Load",
+																"type": "PipelineReference"
+															},
+															"waitOnCompletion": true,
+															"parameters": {
+																"p_source_name": {
+																	"value": "@item().source_name",
+																	"type": "Expression"
+																},
+																"p_base_url": {
+																	"value": "@item().base_url",
+																	"type": "Expression"
+																},
+																"p_relative_url": {
+																	"value": "@item().relative_url",
+																	"type": "Expression"
+																},
+																"p_folder_name": {
+																	"value": "@item().folder_name",
+																	"type": "Expression"
+																},
+																"p_file_name": {
+																	"value": "@item().file_name",
+																	"type": "Expression"
+																},
+																"p_linked_service_type": {
+																	"value": "@item().linked_service_type",
+																	"type": "Expression"
+																}
+															}
+														}
+													}
+												]
+											}
+										],
+										"defaultActivities": [
+											{
+												"name": "Set Message",
+												"type": "SetVariable",
+												"dependsOn": [],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_message",
+													"value": "Invalid Load Pattern."
+												}
+											}
+										]
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "Filter Active Sources",
+						"type": "Filter",
+						"dependsOn": [
+							{
+								"activity": "Read watermark",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@activity('Read watermark').output.value",
+								"type": "Expression"
+							},
+							"condition": {
+								"value": "@or(equals(item().active, null), equals(item().active, true))",
+								"type": "Expression"
+							}
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"variables": {
+					"v_message": {
+						"type": "String"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-04-22T01:30:54Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Watermark')]",
+				"[concat(variables('factoryId'), '/pipelines/PL_Route_Yearly_Stepped')]",
+				"[concat(variables('factoryId'), '/pipelines/PL_Single_File_Full_Load')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_Route_Incremental_Load')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Route pipeline for Incremental Load leaf pipelines.",
+				"activities": [
+					{
+						"name": "Switch on Incremental Type",
+						"type": "Switch",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"on": {
+								"value": "@pipeline().parameters.p_incremental_type",
+								"type": "Expression"
+							},
+							"cases": [
+								{
+									"value": "static_url",
+									"activities": [
+										{
+											"name": "Execute PL_Incremental_Load_StaticURL",
+											"type": "ExecutePipeline",
+											"dependsOn": [],
+											"policy": {
+												"secureInput": false
+											},
+											"userProperties": [],
+											"typeProperties": {
+												"pipeline": {
+													"referenceName": "PL_Incremental_Load_StaticURL",
+													"type": "PipelineReference"
+												},
+												"waitOnCompletion": true,
+												"parameters": {
+													"p_source_name": {
+														"value": "@pipeline().parameters.p_source_name",
+														"type": "Expression"
+													},
+													"p_base_url": {
+														"value": "@pipeline().parameters.p_base_url",
+														"type": "Expression"
+													},
+													"p_incremental_relative_url": {
+														"value": "@pipeline().parameters.p_incremental_relative_url_prefix",
+														"type": "Expression"
+													},
+													"p_incremental_folder_name": {
+														"value": "@pipeline().parameters.p_incremental_folder_name",
+														"type": "Expression"
+													},
+													"p_incremental_file_name_prefix": {
+														"value": "@pipeline().parameters.p_incremental_file_name_prefix",
+														"type": "Expression"
+													},
+													"p_last_refreshed": {
+														"value": "@pipeline().parameters.p_last_refreshed",
+														"type": "Expression"
+													},
+													"p_file_extension": {
+														"value": "@pipeline().parameters.p_file_extension",
+														"type": "Expression"
+													}
+												}
+											}
+										}
+									]
+								},
+								{
+									"value": "templated_latest",
+									"activities": [
+										{
+											"name": "Execute PL_Incremental_Load_TemplatedLatest",
+											"type": "ExecutePipeline",
+											"dependsOn": [],
+											"policy": {
+												"secureInput": false
+											},
+											"userProperties": [],
+											"typeProperties": {
+												"pipeline": {
+													"referenceName": "PL_Incremental_Load_TemplatedLatest",
+													"type": "PipelineReference"
+												},
+												"waitOnCompletion": true,
+												"parameters": {
+													"p_source_name": {
+														"value": "@pipeline().parameters.p_source_name",
+														"type": "Expression"
+													},
+													"p_base_url": {
+														"value": "@pipeline().parameters.p_base_url",
+														"type": "Expression"
+													},
+													"p_incremental_relative_url_prefix": {
+														"value": "@pipeline().parameters.p_incremental_relative_url_prefix",
+														"type": "Expression"
+													},
+													"p_incremental_folder_name": {
+														"value": "@pipeline().parameters.p_incremental_folder_name",
+														"type": "Expression"
+													},
+													"p_incremental_file_name_prefix": {
+														"value": "@pipeline().parameters.p_incremental_file_name_prefix",
+														"type": "Expression"
+													},
+													"p_last_refreshed": {
+														"value": "@pipeline().parameters.p_last_refreshed",
+														"type": "Expression"
+													},
+													"p_incremental_latest_snapshot": {
+														"value": "@pipeline().parameters.p_incremental_latest_snapshot",
+														"type": "Expression"
+													},
+													"p_file_extension": {
+														"value": "@pipeline().parameters.p_file_extension",
+														"type": "Expression"
+													}
+												}
+											}
+										}
+									]
+								}
+							],
+							"defaultActivities": [
+								{
+									"name": "Set Message",
+									"type": "SetVariable",
+									"dependsOn": [],
+									"policy": {
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"variableName": "v_message",
+										"value": "invalid Incremental Load Route."
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"p_source_name": {
+						"type": "string"
+					},
+					"p_incremental_type": {
+						"type": "string"
+					},
+					"p_base_url": {
+						"type": "string"
+					},
+					"p_incremental_relative_url_prefix": {
+						"type": "string"
+					},
+					"p_incremental_latest_snapshot": {
+						"type": "string"
+					},
+					"p_incremental_folder_name": {
+						"type": "string"
+					},
+					"p_incremental_file_name_prefix": {
+						"type": "string"
+					},
+					"p_file_extension": {
+						"type": "string"
+					},
+					"p_last_refreshed": {
+						"type": "string"
+					}
+				},
+				"variables": {
+					"v_message": {
+						"type": "String"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-04-22T01:14:10Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/pipelines/PL_Incremental_Load_StaticURL')]",
+				"[concat(variables('factoryId'), '/pipelines/PL_Incremental_Load_TemplatedLatest')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_Route_Yearly_Stepped')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "Full load or incremental",
+						"type": "IfCondition",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@or(equals(pipeline().parameters.p_full_load_complete, false), equals(pipeline().parameters.p_full_load_yearly_refresh_month, int(utcNow('MM'))))",
+								"type": "Expression"
+							},
+							"ifFalseActivities": [
+								{
+									"name": "Execute PL_Route_Incremental_Load",
+									"type": "ExecutePipeline",
+									"dependsOn": [],
+									"policy": {
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"pipeline": {
+											"referenceName": "PL_Route_Incremental_Load",
+											"type": "PipelineReference"
+										},
+										"waitOnCompletion": true,
+										"parameters": {
+											"p_source_name": {
+												"value": "@pipeline().parameters.p_source_name",
+												"type": "Expression"
+											},
+											"p_incremental_type": {
+												"value": "@pipeline().parameters.p_incremental_type",
+												"type": "Expression"
+											},
+											"p_base_url": {
+												"value": "@pipeline().parameters.p_base_url",
+												"type": "Expression"
+											},
+											"p_incremental_relative_url_prefix": {
+												"value": "@pipeline().parameters.p_incremental_relative_url_prefix",
+												"type": "Expression"
+											},
+											"p_incremental_latest_snapshot": {
+												"value": "@pipeline().parameters.p_incremental_latest_snapshot",
+												"type": "Expression"
+											},
+											"p_incremental_folder_name": {
+												"value": "@pipeline().parameters.p_incremental_folder_name",
+												"type": "Expression"
+											},
+											"p_incremental_file_name_prefix": {
+												"value": "@pipeline().parameters.p_incremental_file_name_prefix",
+												"type": "Expression"
+											},
+											"p_file_extension": {
+												"value": "@pipeline().parameters.p_file_extension",
+												"type": "Expression"
+											},
+											"p_last_refreshed": {
+												"value": "@pipeline().parameters.p_last_refreshed",
+												"type": "Expression"
+											}
+										}
+									}
+								}
+							],
+							"ifTrueActivities": [
+								{
+									"name": "Execute PL_Full_Load_Yearly_Stepped",
+									"type": "ExecutePipeline",
+									"dependsOn": [],
+									"policy": {
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"pipeline": {
+											"referenceName": "PL_Full_Load_Yearly_Stepped",
+											"type": "PipelineReference"
+										},
+										"waitOnCompletion": true,
+										"parameters": {
+											"p_start_year": {
+												"value": "@if(greater(int(pipeline().parameters.p_last_year_ingested), int(pipeline().parameters.p_start_year)), add(int(pipeline().parameters.p_last_year_ingested), 1), int(pipeline().parameters.p_start_year))",
+												"type": "Expression"
+											},
+											"p_end_year": {
+												"value": "@int(formatDateTime(utcNow(), 'yyyy'))",
+												"type": "Expression"
+											},
+											"p_base_url": {
+												"value": "@pipeline().parameters.p_base_url",
+												"type": "Expression"
+											},
+											"p_relative_url_prefix": {
+												"value": "@pipeline().parameters.p_relative_url_prefix",
+												"type": "Expression"
+											},
+											"p_sink_folder_path": {
+												"value": "@pipeline().parameters.p_folder_name",
+												"type": "Expression"
+											},
+											"p_file_name_prefix": {
+												"value": "@pipeline().parameters.p_file_name_prefix",
+												"type": "Expression"
+											},
+											"p_file_name_extension": {
+												"value": "@pipeline().parameters.p_file_extension",
+												"type": "Expression"
+											},
+											"p_step_years": {
+												"value": "@pipeline().parameters.p_step_years",
+												"type": "Expression"
+											},
+											"p_snapshot_month": {
+												"value": "@pipeline().parameters.p_snapshot_month",
+												"type": "Expression"
+											}
+										}
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"p_source_name": {
+						"type": "string"
+					},
+					"p_base_url": {
+						"type": "string"
+					},
+					"p_relative_url_prefix": {
+						"type": "string"
+					},
+					"p_file_extension": {
+						"type": "string"
+					},
+					"p_folder_name": {
+						"type": "string"
+					},
+					"p_file_name_prefix": {
+						"type": "string"
+					},
+					"p_start_year": {
+						"type": "string"
+					},
+					"p_last_year_ingested": {
+						"type": "string"
+					},
+					"p_full_load_complete": {
+						"type": "string"
+					},
+					"p_incremental_relative_url_prefix": {
+						"type": "string"
+					},
+					"p_incremental_latest_snapshot": {
+						"type": "string"
+					},
+					"p_incremental_folder_name": {
+						"type": "string"
+					},
+					"p_incremental_file_name_prefix": {
+						"type": "string"
+					},
+					"p_last_refreshed": {
+						"type": "string"
+					},
+					"p_incremental_type": {
+						"type": "string"
+					},
+					"p_step_years": {
+						"type": "string"
+					},
+					"p_snapshot_month": {
+						"type": "string"
+					},
+					"p_full_load_yearly_refresh_month": {
+						"type": "string"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-04-22T01:30:53Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/pipelines/PL_Route_Incremental_Load')]",
+				"[concat(variables('factoryId'), '/pipelines/PL_Full_Load_Yearly_Stepped')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/PL_Single_File_Full_Load')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Pipeline for Single File Full Load of Each Data Sources.",
+				"activities": [
+					{
+						"name": "Switch Linked Service Type",
+						"type": "Switch",
+						"dependsOn": [],
+						"userProperties": [],
+						"typeProperties": {
+							"on": {
+								"value": "@pipeline().parameters.p_linked_service_type",
+								"type": "Expression"
+							},
+							"cases": [
+								{
+									"value": "landregistry_hpi",
+									"activities": [
+										{
+											"name": "Fetch File LandRegistry HPI",
+											"type": "Copy",
+											"dependsOn": [],
+											"policy": {
+												"timeout": "0.12:00:00",
+												"retry": 0,
+												"retryIntervalInSeconds": 30,
+												"secureOutput": false,
+												"secureInput": false
+											},
+											"userProperties": [],
+											"typeProperties": {
+												"source": {
+													"type": "DelimitedTextSource",
+													"storeSettings": {
+														"type": "HttpReadSettings",
+														"requestMethod": "GET"
+													},
+													"formatSettings": {
+														"type": "DelimitedTextReadSettings"
+													}
+												},
+												"sink": {
+													"type": "DelimitedTextSink",
+													"storeSettings": {
+														"type": "AzureBlobFSWriteSettings"
+													},
+													"formatSettings": {
+														"type": "DelimitedTextWriteSettings",
+														"quoteAllText": true,
+														"fileExtension": ".txt"
+													}
+												},
+												"enableStaging": false,
+												"translator": {
+													"type": "TabularTranslator",
+													"typeConversion": true,
+													"typeConversionSettings": {
+														"allowDataTruncation": true,
+														"treatBooleanAsNumber": false
+													}
+												}
+											},
+											"inputs": [
+												{
+													"referenceName": "DS_HTTP_LandRegistry_HPI_Source",
+													"type": "DatasetReference",
+													"parameters": {
+														"p_relative_url": {
+															"value": "@pipeline().parameters.p_relative_url",
+															"type": "Expression"
+														},
+														"p_base_url": {
+															"value": "@pipeline().parameters.p_base_url",
+															"type": "Expression"
+														}
+													}
+												}
+											],
+											"outputs": [
+												{
+													"referenceName": "DS_ADLS_Bronze_CSV",
+													"type": "DatasetReference",
+													"parameters": {
+														"p_folder_path": {
+															"value": "@pipeline().parameters.p_folder_name",
+															"type": "Expression"
+														},
+														"p_file_name": "@pipeline().parameters.p_file_name"
+													}
+												}
+											]
+										}
+									]
+								},
+								{
+									"value": "user_agent",
+									"activities": [
+										{
+											"name": "Fetch File User Agent",
+											"type": "Copy",
+											"dependsOn": [],
+											"policy": {
+												"timeout": "0.12:00:00",
+												"retry": 0,
+												"retryIntervalInSeconds": 30,
+												"secureOutput": false,
+												"secureInput": false
+											},
+											"userProperties": [],
+											"typeProperties": {
+												"source": {
+													"type": "DelimitedTextSource",
+													"storeSettings": {
+														"type": "HttpReadSettings",
+														"requestMethod": "GET"
+													},
+													"formatSettings": {
+														"type": "DelimitedTextReadSettings"
+													}
+												},
+												"sink": {
+													"type": "DelimitedTextSink",
+													"storeSettings": {
+														"type": "AzureBlobFSWriteSettings"
+													},
+													"formatSettings": {
+														"type": "DelimitedTextWriteSettings",
+														"quoteAllText": true,
+														"fileExtension": ".txt"
+													}
+												},
+												"enableStaging": false,
+												"translator": {
+													"type": "TabularTranslator",
+													"typeConversion": true,
+													"typeConversionSettings": {
+														"allowDataTruncation": true,
+														"treatBooleanAsNumber": false
+													}
+												}
+											},
+											"inputs": [
+												{
+													"referenceName": "DS_HTTP_User_Agent_Source",
+													"type": "DatasetReference",
+													"parameters": {
+														"p_relative_url": {
+															"value": "@pipeline().parameters.p_relative_url",
+															"type": "Expression"
+														},
+														"p_base_url": {
+															"value": "@pipeline().parameters.p_base_url",
+															"type": "Expression"
+														}
+													}
+												}
+											],
+											"outputs": [
+												{
+													"referenceName": "DS_ADLS_Bronze_CSV",
+													"type": "DatasetReference",
+													"parameters": {
+														"p_folder_path": {
+															"value": "@pipeline().parameters.p_folder_name",
+															"type": "Expression"
+														},
+														"p_file_name": "@pipeline().parameters.p_file_name"
+													}
+												}
+											]
+										}
+									]
+								},
+								{
+									"value": "accept_header",
+									"activities": [
+										{
+											"name": "Fetch File Accept Header",
+											"type": "Copy",
+											"dependsOn": [],
+											"policy": {
+												"timeout": "0.12:00:00",
+												"retry": 0,
+												"retryIntervalInSeconds": 30,
+												"secureOutput": false,
+												"secureInput": false
+											},
+											"userProperties": [],
+											"typeProperties": {
+												"source": {
+													"type": "DelimitedTextSource",
+													"storeSettings": {
+														"type": "HttpReadSettings",
+														"requestMethod": "GET"
+													},
+													"formatSettings": {
+														"type": "DelimitedTextReadSettings"
+													}
+												},
+												"sink": {
+													"type": "DelimitedTextSink",
+													"storeSettings": {
+														"type": "AzureBlobFSWriteSettings"
+													},
+													"formatSettings": {
+														"type": "DelimitedTextWriteSettings",
+														"quoteAllText": true,
+														"fileExtension": ".txt"
+													}
+												},
+												"enableStaging": false,
+												"translator": {
+													"type": "TabularTranslator",
+													"typeConversion": true,
+													"typeConversionSettings": {
+														"allowDataTruncation": true,
+														"treatBooleanAsNumber": false
+													}
+												}
+											},
+											"inputs": [
+												{
+													"referenceName": "DS_HTTP_Accept_Header_Source",
+													"type": "DatasetReference",
+													"parameters": {
+														"p_relative_url": {
+															"value": "@pipeline().parameters.p_relative_url",
+															"type": "Expression"
+														},
+														"p_base_url": {
+															"value": "@pipeline().parameters.p_base_url",
+															"type": "Expression"
+														}
+													}
+												}
+											],
+											"outputs": [
+												{
+													"referenceName": "DS_ADLS_Bronze_CSV",
+													"type": "DatasetReference",
+													"parameters": {
+														"p_folder_path": {
+															"value": "@pipeline().parameters.p_folder_name",
+															"type": "Expression"
+														},
+														"p_file_name": "@pipeline().parameters.p_file_name"
+													}
+												}
+											]
+										}
+									]
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"p_source_name": {
+						"type": "string",
+						"defaultValue": "HM Land Registry — UK House Price Index (HPI)"
+					},
+					"p_base_url": {
+						"type": "string",
+						"defaultValue": "https://publicdata.landregistry.gov.uk\""
+					},
+					"p_relative_url": {
+						"type": "string",
+						"defaultValue": "/market-trend-data/house-price-index-data/UK-HPI-full-file-2025-10.csv"
+					},
+					"p_folder_name": {
+						"type": "string",
+						"defaultValue": "uk_hpi/"
+					},
+					"p_file_name": {
+						"type": "string",
+						"defaultValue": "uk-hpi-full-file-2025-10.csv"
+					},
+					"p_linked_service_type": {
+						"type": "string",
+						"defaultValue": "landregistry_hpi"
+					}
+				},
+				"annotations": [],
+				"lastPublishTime": "2026-04-22T01:11:22Z"
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/datasets/DS_HTTP_LandRegistry_HPI_Source')]",
+				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]",
+				"[concat(variables('factoryId'), '/datasets/DS_HTTP_User_Agent_Source')]",
+				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Accept_Header_Source')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_ADLS_Bronze_CSV')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Dataset for ADLS Gen2 Sink (Bronze).",
+				"linkedServiceName": {
+					"referenceName": "LS_ADLS_Bronze",
+					"type": "LinkedServiceReference"
+				},
+				"parameters": {
+					"p_folder_path": {
+						"type": "string"
+					},
+					"p_file_name": {
+						"type": "string"
+					}
+				},
+				"annotations": [],
+				"type": "DelimitedText",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"fileName": {
+							"value": "@dataset().p_file_name",
+							"type": "Expression"
+						},
+						"folderPath": {
+							"value": "@dataset().p_folder_path",
+							"type": "Expression"
+						},
+						"fileSystem": "bronze"
+					},
+					"columnDelimiter": ",",
+					"escapeChar": "\\",
+					"firstRowAsHeader": false,
+					"quoteChar": "\""
+				},
+				"schema": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_ADLS_Bronze')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_ADLS_Watermark')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "LS_ADLS_Bronze",
+					"type": "LinkedServiceReference"
+				},
+				"annotations": [],
+				"type": "Json",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"fileName": "watermark.json",
+						"fileSystem": "configs"
+					}
+				},
+				"schema": {
+					"type": "object",
+					"properties": {
+						"source_name": {
+							"type": "string"
+						},
+						"base_url": {
+							"type": "string"
+						},
+						"relative_url_prefix": {
+							"type": "string"
+						},
+						"folder_name": {
+							"type": "string"
+						},
+						"file_name_prefix": {
+							"type": "string"
+						},
+						"file_extension": {
+							"type": "string"
+						},
+						"start_year": {
+							"type": "integer"
+						},
+						"last_year_ingested": {
+							"type": "integer"
+						},
+						"full_load_complete": {
+							"type": "boolean"
+						},
+						"incremental_relative_url": {
+							"type": "string"
+						},
+						"incremental_folder_name": {
+							"type": "string"
+						},
+						"incremental_file_name_prefix": {
+							"type": "string"
+						},
+						"last_monthly_update": {
+							"type": "string"
+						}
+					}
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_ADLS_Bronze')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_HTTP_Accept_Header_Source')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "For Linked Service with User Agent and Accept Header. Works for Bank of England and ONS — Housing & Affordability Statistics data set.",
+				"linkedServiceName": {
+					"referenceName": "LS_HTTP_Accept_Header",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"baseURL": {
+							"value": "@dataset().p_base_url",
+							"type": "Expression"
+						}
+					}
+				},
+				"parameters": {
+					"p_relative_url": {
+						"type": "string"
+					},
+					"p_base_url": {
+						"type": "string",
+						"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+					}
+				},
+				"annotations": [],
+				"type": "DelimitedText",
+				"typeProperties": {
+					"location": {
+						"type": "HttpServerLocation",
+						"relativeUrl": {
+							"value": "@dataset().p_relative_url",
+							"type": "Expression"
+						}
+					},
+					"columnDelimiter": ",",
+					"escapeChar": "\\",
+					"firstRowAsHeader": false,
+					"quoteChar": "\""
+				},
+				"schema": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_HTTP_Accept_Header')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_HTTP_Anonymous_Source')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "For linked service without any headers. Works for HM Land Registry — Price Paid Data data set only.",
+				"linkedServiceName": {
+					"referenceName": "LS_HTTP_Anonymous",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"baseURL": {
+							"value": "@dataset().p_base_url",
+							"type": "Expression"
+						}
+					}
+				},
+				"parameters": {
+					"p_relative_url": {
+						"type": "string"
+					},
+					"p_base_url": {
+						"type": "string",
+						"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+					}
+				},
+				"annotations": [],
+				"type": "DelimitedText",
+				"typeProperties": {
+					"location": {
+						"type": "HttpServerLocation",
+						"relativeUrl": {
+							"value": "@dataset().p_relative_url",
+							"type": "Expression"
+						}
+					},
+					"columnDelimiter": ",",
+					"escapeChar": "\\",
+					"firstRowAsHeader": false,
+					"quoteChar": "\""
+				},
+				"schema": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_HTTP_Anonymous')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_HTTP_LandRegistry_HPI_Source')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "For Linked Service with User Agent and Accept Header and Accept-Language. Works for HM Land Registry — UK House Price Index (HPI) data set only.",
+				"linkedServiceName": {
+					"referenceName": "LS_HTTP_LandRegistry_HPI",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"baseURL": {
+							"value": "@dataset().p_base_url",
+							"type": "Expression"
+						}
+					}
+				},
+				"parameters": {
+					"p_relative_url": {
+						"type": "string"
+					},
+					"p_base_url": {
+						"type": "string",
+						"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+					}
+				},
+				"annotations": [],
+				"type": "DelimitedText",
+				"typeProperties": {
+					"location": {
+						"type": "HttpServerLocation",
+						"relativeUrl": {
+							"value": "@dataset().p_relative_url",
+							"type": "Expression"
+						}
+					},
+					"columnDelimiter": ",",
+					"escapeChar": "\\",
+					"firstRowAsHeader": false,
+					"quoteChar": "\""
+				},
+				"schema": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_HTTP_LandRegistry_HPI')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/DS_HTTP_User_Agent_Source')]",
+			"type": "Microsoft.DataFactory/factories/datasets",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "For Linked Service with User Agent Header. Works for Doogal.co.uk - UK Postcode Lookup data set only.",
+				"linkedServiceName": {
+					"referenceName": "LS_HTTP_User_Agent_Header",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"baseURL": {
+							"value": "@dataset().p_base_url",
+							"type": "Expression"
+						}
+					}
+				},
+				"parameters": {
+					"p_relative_url": {
+						"type": "string"
+					},
+					"p_base_url": {
+						"type": "string",
+						"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+					}
+				},
+				"annotations": [],
+				"type": "DelimitedText",
+				"typeProperties": {
+					"location": {
+						"type": "HttpServerLocation",
+						"relativeUrl": {
+							"value": "@dataset().p_relative_url",
+							"type": "Expression"
+						}
+					},
+					"columnDelimiter": ",",
+					"escapeChar": "\\",
+					"firstRowAsHeader": false,
+					"quoteChar": "\""
+				},
+				"schema": []
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/linkedServices/LS_HTTP_User_Agent_Header')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/LS_ADLS_Bronze')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Linked service to copy the data from HTTP source to the ADLS Gen 2 sink (Bronze).",
+				"annotations": [],
+				"type": "AzureBlobFS",
+				"typeProperties": {
+					"url": "[parameters('LS_ADLS_Bronze_properties_typeProperties_url')]",
+					"credential": {
+						"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+						"type": "CredentialReference"
+					}
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/credentials/UK-Property-Market-Intelligence-Platform-Credential')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/LS_HTTP_Accept_Header')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Linked service for data set requiring accept headers.",
+				"parameters": {
+					"baseURL": {
+						"type": "string",
+						"defaultValue": "https://www.bankofengland.co.uk"
+					}
+				},
+				"annotations": [],
+				"type": "HttpServer",
+				"typeProperties": {
+					"url": "[parameters('LS_HTTP_Accept_Header_properties_typeProperties_url')]",
+					"enableServerCertificateValidation": true,
+					"authenticationType": "Anonymous",
+					"authHeaders": {
+						"User-Agent": {
+							"type": "SecureString",
+							"value": "**********"
+						},
+						"Accept": {
+							"type": "SecureString",
+							"value": "**********"
+						}
+					}
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/LS_HTTP_Anonymous')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Linked Service to pull data directly from A Source Anonymously Without Headers.",
+				"parameters": {
+					"baseURL": {
+						"type": "string",
+						"defaultValue": "http://prod.publicdata.landregistry.gov.uk.s3-website-eu-west-1.amazonaws.com"
+					}
+				},
+				"annotations": [],
+				"type": "HttpServer",
+				"typeProperties": {
+					"url": "[parameters('LS_HTTP_Anonymous_properties_typeProperties_url')]",
+					"enableServerCertificateValidation": true,
+					"authenticationType": "Anonymous"
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/LS_HTTP_LandRegistry_HPI')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"parameters": {
+					"baseURL": {
+						"type": "string",
+						"defaultValue": "https://publicdata.landregistry.gov.uk"
+					}
+				},
+				"annotations": [],
+				"type": "HttpServer",
+				"typeProperties": {
+					"url": "[parameters('LS_HTTP_LandRegistry_HPI_properties_typeProperties_url')]",
+					"enableServerCertificateValidation": true,
+					"authenticationType": "Anonymous",
+					"authHeaders": {
+						"User-Agent": {
+							"type": "SecureString",
+							"value": "**********"
+						},
+						"Accept": {
+							"type": "SecureString",
+							"value": "**********"
+						},
+						"Accept-Language": {
+							"type": "SecureString",
+							"value": "**********"
+						}
+					}
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/LS_HTTP_User_Agent_Header')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Linked Service for fetching data from sources with user agent header only.",
+				"parameters": {
+					"baseURL": {
+						"type": "string",
+						"defaultValue": "https://www.doogal.co.uk"
+					}
+				},
+				"annotations": [],
+				"type": "HttpServer",
+				"typeProperties": {
+					"url": "[parameters('LS_HTTP_User_Agent_Header_properties_typeProperties_url')]",
+					"enableServerCertificateValidation": true,
+					"authenticationType": "Anonymous",
+					"authHeaders": {
+						"User-Agent": {
+							"type": "SecureString",
+							"value": "**********"
+						}
+					}
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/UK-Property-Market-Intelligence-Platform-Credential')]",
+			"type": "Microsoft.DataFactory/factories/credentials",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"description": "Credential for UK-Property-Market-Intelligence-Platform.",
+				"type": "ManagedIdentity",
+				"typeProperties": {
+					"resourceId": "/subscriptions/fee256c9-8eb0-45d0-bfd6-b3fff9c1f02f/resourcegroups/uk-property-market-intelligence-platform-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/UK-Property-Market-Intelligence-Platform-MI"
+				}
+			},
+			"dependsOn": []
+		}
+	]
+}

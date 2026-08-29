@@ -1,0 +1,8 @@
+# Databricks injects these into a notebook's namespace at runtime, so a notebook
+# referencing them resolves on the cluster and F821 here is a false positive.
+builtins = ["spark", "dbutils", "display", "displayHTML"]
+
+target-version = "py312"
+
+[lint]
+select = ["F", "E9"]

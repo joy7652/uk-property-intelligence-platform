@@ -1,0 +1,30 @@
+{
+	"$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentParameters.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"value": "uk-property-market-intelligence-platform-adf"
+		},
+		"LS_ADLS_Bronze_properties_typeProperties_url": {
+			"value": "https://ukpropertyintelligencedl.dfs.core.windows.net/"
+		},
+		"LS_HTTP_Accept_Header_properties_typeProperties_url": {
+			"value": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_Anonymous_properties_typeProperties_url": {
+			"value": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_LandRegistry_HPI_properties_typeProperties_url": {
+			"value": "@{linkedService().baseURL}"
+		},
+		"LS_HTTP_User_Agent_Header_properties_typeProperties_url": {
+			"value": "@{linkedService().baseURL}"
+		},
+		"containerUri": {
+			"value": ""
+		},
+		"containerSasToken": {
+			"value": ""
+		}
+	}
+}
