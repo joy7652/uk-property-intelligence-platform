@@ -249,8 +249,57 @@
 						"type": "Expression"
 					}
 				}
+			},
+			{
+				"name": "Trigger Silver and Gold job",
+				"type": "WebActivity",
+				"dependsOn": [
+					{
+						"activity": "Loop over sources",
+						"dependencyConditions": [
+							"Completed"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:10:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"method": "POST",
+					"headers": {
+						"Content-Type": "application/json"
+					},
+					"url": {
+						"value": "@concat('https://', pipeline().parameters.databricksHost, '/api/2.1/jobs/run-now')",
+						"type": "Expression"
+					},
+					"body": "@json(concat('{\"job_id\": ', pipeline().parameters.databricksJobId, '}'))",
+					"authentication": {
+						"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+						"credential": {
+							"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+							"type": "CredentialReference"
+						},
+						"type": "UserAssignedManagedIdentity"
+					}
+				}
 			}
 		],
+		"parameters": {
+			"databricksHost": {
+				"type": "string",
+				"defaultValue": "adb-7405616127577226.6.azuredatabricks.net"
+			},
+			"databricksJobId": {
+				"type": "string",
+				"defaultValue": "771390529510129"
+			}
+		},
 		"variables": {
 			"v_message": {
 				"type": "String"
