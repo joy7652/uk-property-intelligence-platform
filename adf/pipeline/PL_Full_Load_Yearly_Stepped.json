@@ -130,6 +130,48 @@
 									}
 								}
 							]
+						},
+						{
+							"name": "Record copy failure - Write Marker Yearly File",
+							"type": "WebActivity",
+							"dependsOn": [
+								{
+									"activity": "Copy Yearly File",
+									"dependencyConditions": [
+										"Failed"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.00:10:00",
+								"retry": 2,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"method": "PUT",
+								"headers": {
+									"Content-Type": "application/json"
+								},
+								"url": {
+									"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+									"type": "Expression"
+								},
+								"body": {
+									"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy Yearly File').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+									"type": "Expression"
+								},
+								"authentication": {
+									"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+									"credential": {
+										"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+										"type": "CredentialReference"
+									},
+									"type": "UserAssignedManagedIdentity"
+								}
+							}
 						}
 					]
 				}
@@ -170,6 +212,10 @@
 			},
 			"p_snapshot_month": {
 				"type": "string"
+			},
+			"p_source_name": {
+				"type": "string",
+				"defaultValue": "land_registry_ppd"
 			}
 		},
 		"variables": {
