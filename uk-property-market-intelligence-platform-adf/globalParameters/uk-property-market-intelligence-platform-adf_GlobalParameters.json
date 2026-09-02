@@ -1,1 +1,6 @@
-{}
+{
+	"databricksHost": {
+		"type": "string",
+		"value": "adb-7405616127577226.6.azuredatabricks.net"
+	}
+}

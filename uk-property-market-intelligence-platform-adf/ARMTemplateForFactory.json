@@ -166,6 +166,48 @@
 											}
 										}
 									]
+								},
+								{
+									"name": "Record copy failure - Write Marker Yearly File",
+									"type": "WebActivity",
+									"dependsOn": [
+										{
+											"activity": "Copy Yearly File",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.00:10:00",
+										"retry": 2,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"method": "PUT",
+										"headers": {
+											"Content-Type": "application/json"
+										},
+										"url": {
+											"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+											"type": "Expression"
+										},
+										"body": {
+											"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy Yearly File').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+											"type": "Expression"
+										},
+										"authentication": {
+											"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+											"credential": {
+												"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+												"type": "CredentialReference"
+											},
+											"type": "UserAssignedManagedIdentity"
+										}
+									}
 								}
 							]
 						}
@@ -209,6 +251,10 @@
 					},
 					"p_snapshot_month": {
 						"type": "string"
+					},
+					"p_source_name": {
+						"type": "string",
+						"defaultValue": "land_registry_ppd"
 					}
 				},
 				"variables": {
@@ -222,7 +268,8 @@
 			"dependsOn": [
 				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Anonymous_Source')]",
 				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]",
-				"[concat(variables('factoryId'), '/linkedServices/LS_ADLS_Bronze')]"
+				"[concat(variables('factoryId'), '/linkedServices/LS_ADLS_Bronze')]",
+				"[concat(variables('factoryId'), '/credentials/UK-Property-Market-Intelligence-Platform-Credential')]"
 			]
 		},
 		{
@@ -263,7 +310,7 @@
 							],
 							"ifTrueActivities": [
 								{
-									"name": "Copy incremental file",
+									"name": "Copy Incremental File",
 									"type": "Copy",
 									"dependsOn": [],
 									"policy": {
@@ -345,7 +392,7 @@
 									"type": "SetVariable",
 									"dependsOn": [
 										{
-											"activity": "Copy incremental file",
+											"activity": "Copy Incremental File",
 											"dependencyConditions": [
 												"Succeeded"
 											]
@@ -361,6 +408,48 @@
 										"value": {
 											"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful... Time: ', utcNow('yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
 											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "Record copy failure - Write Marker Incremental File",
+									"type": "WebActivity",
+									"dependsOn": [
+										{
+											"activity": "Copy Incremental File",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.00:10:00",
+										"retry": 2,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"method": "PUT",
+										"headers": {
+											"Content-Type": "application/json"
+										},
+										"url": {
+											"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+											"type": "Expression"
+										},
+										"body": {
+											"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy Incremental File').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+											"type": "Expression"
+										},
+										"authentication": {
+											"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+											"credential": {
+												"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+												"type": "CredentialReference"
+											},
+											"type": "UserAssignedManagedIdentity"
 										}
 									}
 								}
@@ -414,7 +503,8 @@
 			},
 			"dependsOn": [
 				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Anonymous_Source')]",
-				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]"
+				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]",
+				"[concat(variables('factoryId'), '/credentials/UK-Property-Market-Intelligence-Platform-Credential')]"
 			]
 		},
 		{
@@ -455,7 +545,7 @@
 							],
 							"ifTrueActivities": [
 								{
-									"name": "Copy incremental Snapshot File",
+									"name": "Copy Incremental Snapshot File",
 									"type": "Copy",
 									"dependsOn": [],
 									"policy": {
@@ -537,7 +627,7 @@
 									"type": "SetVariable",
 									"dependsOn": [
 										{
-											"activity": "Copy incremental Snapshot File",
+											"activity": "Copy Incremental Snapshot File",
 											"dependencyConditions": [
 												"Succeeded"
 											]
@@ -553,6 +643,48 @@
 										"value": {
 											"value": "@concat(pipeline().parameters.p_source_name, ' - Ingestion Successful. Time: ', utcNow('yyyy-MM-dd'), ' Last Refreshed: ', pipeline().parameters.p_last_refreshed)",
 											"type": "Expression"
+										}
+									}
+								},
+								{
+									"name": "Record copy failure - Write Marker Snapshot File",
+									"type": "WebActivity",
+									"dependsOn": [
+										{
+											"activity": "Copy Incremental Snapshot File",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.00:10:00",
+										"retry": 2,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"method": "PUT",
+										"headers": {
+											"Content-Type": "application/json"
+										},
+										"url": {
+											"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+											"type": "Expression"
+										},
+										"body": {
+											"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy Incremental Snapshot File').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+											"type": "Expression"
+										},
+										"authentication": {
+											"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+											"credential": {
+												"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+												"type": "CredentialReference"
+											},
+											"type": "UserAssignedManagedIdentity"
 										}
 									}
 								}
@@ -610,7 +742,8 @@
 			},
 			"dependsOn": [
 				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Anonymous_Source')]",
-				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]"
+				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]",
+				"[concat(variables('factoryId'), '/credentials/UK-Property-Market-Intelligence-Platform-Credential')]"
 			]
 		},
 		{
@@ -1253,6 +1386,10 @@
 											"p_snapshot_month": {
 												"value": "@pipeline().parameters.p_snapshot_month",
 												"type": "Expression"
+											},
+											"p_source_name": {
+												"value": "@pipeline().parameters.p_source_name",
+												"type": "Expression"
 											}
 										}
 									}
@@ -1350,7 +1487,7 @@
 									"value": "landregistry_hpi",
 									"activities": [
 										{
-											"name": "Fetch File LandRegistry HPI",
+											"name": "Copy File LandRegistry HPI",
 											"type": "Copy",
 											"dependsOn": [],
 											"policy": {
@@ -1422,6 +1559,48 @@
 													}
 												}
 											]
+										},
+										{
+											"name": "Record copy failure - Write Marker HPI",
+											"type": "WebActivity",
+											"dependsOn": [
+												{
+													"activity": "Copy File LandRegistry HPI",
+													"dependencyConditions": [
+														"Failed"
+													]
+												}
+											],
+											"policy": {
+												"timeout": "0.00:10:00",
+												"retry": 2,
+												"retryIntervalInSeconds": 30,
+												"secureOutput": false,
+												"secureInput": false
+											},
+											"userProperties": [],
+											"typeProperties": {
+												"method": "PUT",
+												"headers": {
+													"Content-Type": "application/json"
+												},
+												"url": {
+													"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+													"type": "Expression"
+												},
+												"body": {
+													"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy File LandRegistry HPI').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+													"type": "Expression"
+												},
+												"authentication": {
+													"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+													"credential": {
+														"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+														"type": "CredentialReference"
+													},
+													"type": "UserAssignedManagedIdentity"
+												}
+											}
 										}
 									]
 								},
@@ -1429,7 +1608,7 @@
 									"value": "user_agent",
 									"activities": [
 										{
-											"name": "Fetch File User Agent",
+											"name": "Copy File User Agent",
 											"type": "Copy",
 											"dependsOn": [],
 											"policy": {
@@ -1501,6 +1680,48 @@
 													}
 												}
 											]
+										},
+										{
+											"name": "Record copy failure - Write Marker User Agent",
+											"type": "WebActivity",
+											"dependsOn": [
+												{
+													"activity": "Copy File User Agent",
+													"dependencyConditions": [
+														"Failed"
+													]
+												}
+											],
+											"policy": {
+												"timeout": "0.00:10:00",
+												"retry": 2,
+												"retryIntervalInSeconds": 30,
+												"secureOutput": false,
+												"secureInput": false
+											},
+											"userProperties": [],
+											"typeProperties": {
+												"method": "PUT",
+												"headers": {
+													"Content-Type": "application/json"
+												},
+												"url": {
+													"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+													"type": "Expression"
+												},
+												"body": {
+													"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy File User Agent').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+													"type": "Expression"
+												},
+												"authentication": {
+													"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+													"credential": {
+														"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+														"type": "CredentialReference"
+													},
+													"type": "UserAssignedManagedIdentity"
+												}
+											}
 										}
 									]
 								},
@@ -1508,7 +1729,7 @@
 									"value": "accept_header",
 									"activities": [
 										{
-											"name": "Fetch File Accept Header",
+											"name": "Copy File Accept Header",
 											"type": "Copy",
 											"dependsOn": [],
 											"policy": {
@@ -1580,6 +1801,48 @@
 													}
 												}
 											]
+										},
+										{
+											"name": "Record copy failure - Write Marker Accept Header",
+											"type": "WebActivity",
+											"dependsOn": [
+												{
+													"activity": "Copy File Accept Header",
+													"dependencyConditions": [
+														"Failed"
+													]
+												}
+											],
+											"policy": {
+												"timeout": "0.00:10:00",
+												"retry": 2,
+												"retryIntervalInSeconds": 30,
+												"secureOutput": false,
+												"secureInput": false
+											},
+											"userProperties": [],
+											"typeProperties": {
+												"method": "PUT",
+												"headers": {
+													"Content-Type": "application/json"
+												},
+												"url": {
+													"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+													"type": "Expression"
+												},
+												"body": {
+													"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy File Accept Header').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+													"type": "Expression"
+												},
+												"authentication": {
+													"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+													"credential": {
+														"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+														"type": "CredentialReference"
+													},
+													"type": "UserAssignedManagedIdentity"
+												}
+											}
 										}
 									]
 								}
@@ -1593,7 +1856,7 @@
 				"parameters": {
 					"p_source_name": {
 						"type": "string",
-						"defaultValue": "HM Land Registry — UK House Price Index (HPI)"
+						"defaultValue": "land_registry_ppd"
 					},
 					"p_base_url": {
 						"type": "string",
@@ -1623,7 +1886,8 @@
 				"[concat(variables('factoryId'), '/datasets/DS_HTTP_LandRegistry_HPI_Source')]",
 				"[concat(variables('factoryId'), '/datasets/DS_ADLS_Bronze_CSV')]",
 				"[concat(variables('factoryId'), '/datasets/DS_HTTP_User_Agent_Source')]",
-				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Accept_Header_Source')]"
+				"[concat(variables('factoryId'), '/datasets/DS_HTTP_Accept_Header_Source')]",
+				"[concat(variables('factoryId'), '/credentials/UK-Property-Market-Intelligence-Platform-Credential')]"
 			]
 		},
 		{
@@ -1942,6 +2206,33 @@
 			]
 		},
 		{
+			"name": "[concat(parameters('factoryName'), '/LS_Databricks_Compute')]",
+			"type": "Microsoft.DataFactory/factories/linkedServices",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"annotations": [],
+				"type": "AzureDatabricks",
+				"typeProperties": {
+					"domain": "https://adb-7405616127577226.6.azuredatabricks.net",
+					"authentication": "MSI",
+					"workspaceResourceId": "/subscriptions/fee256c9-8eb0-45d0-bfd6-b3fff9c1f02f/resourceGroups/uk-property-market-intelligence-platform-rg/providers/Microsoft.Databricks/workspaces/uk-property-market-intelligence-platform-ws",
+					"credential": {
+						"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+						"type": "CredentialReference"
+					},
+					"newClusterNodeType": "Standard_D4pds_v6",
+					"newClusterNumOfWorker": "1",
+					"newClusterVersion": "17.3.x-scala2.13",
+					"clusterOption": "Fixed",
+					"newClusterInitScripts": [],
+					"dataSecurityMode": "SINGLE_USER"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('factoryId'), '/credentials/UK-Property-Market-Intelligence-Platform-Credential')]"
+			]
+		},
+		{
 			"name": "[concat(parameters('factoryName'), '/LS_HTTP_Accept_Header')]",
 			"type": "Microsoft.DataFactory/factories/linkedServices",
 			"apiVersion": "2018-06-01",
@@ -2070,33 +2361,6 @@
 				}
 			},
 			"dependsOn": []
-		},
-		{
-			"name": "[concat(parameters('factoryName'), '/LS_Databricks_Compute')]",
-			"type": "Microsoft.DataFactory/factories/linkedServices",
-			"apiVersion": "2018-06-01",
-			"properties": {
-				"annotations": [],
-				"type": "AzureDatabricks",
-				"typeProperties": {
-					"domain": "https://adb-7405616127577226.6.azuredatabricks.net",
-					"authentication": "MSI",
-					"workspaceResourceId": "/subscriptions/fee256c9-8eb0-45d0-bfd6-b3fff9c1f02f/resourceGroups/uk-property-market-intelligence-platform-rg/providers/Microsoft.Databricks/workspaces/uk-property-market-intelligence-platform-ws",
-					"credential": {
-						"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
-						"type": "CredentialReference"
-					},
-					"newClusterNodeType": "Standard_D4pds_v6",
-					"newClusterNumOfWorker": "1",
-					"newClusterVersion": "17.3.x-scala2.13",
-					"clusterOption": "Fixed",
-					"newClusterInitScripts": [],
-					"dataSecurityMode": "SINGLE_USER"
-				}
-			},
-			"dependsOn": [
-				"[concat(variables('factoryId'), '/credentials/UK-Property-Market-Intelligence-Platform-Credential')]"
-			]
 		}
 	]
 }
