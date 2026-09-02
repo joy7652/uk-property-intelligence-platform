@@ -305,6 +305,16 @@
 				}
 			}
 		],
+		"parameters": {
+			"databricksHost": {
+				"type": "string",
+				"defaultValue": "adb-7405616127577226.6.azuredatabricks.net"
+			},
+			"databricksJobId": {
+				"type": "string",
+				"defaultValue": "771390529510129"
+			}
+		},
 		"variables": {
 			"v_message": {
 				"type": "String"
