@@ -5,7 +5,14 @@
 			{
 				"name": "Read watermark",
 				"type": "Lookup",
-				"dependsOn": [],
+				"dependsOn": [
+					{
+						"activity": "Resolve source URLs",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
 				"policy": {
 					"timeout": "0.12:00:00",
 					"retry": 0,
@@ -251,8 +258,28 @@
 				}
 			},
 			{
-				"name": "Trigger Silver and Gold job",
-				"type": "WebActivity",
+				"name": "Resolve source URLs",
+				"type": "DatabricksJob",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.00:45:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"jobId": "119831314033960"
+				},
+				"linkedServiceName": {
+					"referenceName": "LS_Databricks_Compute",
+					"type": "LinkedServiceReference"
+				}
+			},
+			{
+				"name": "Run Silver and Gold job",
+				"type": "DatabricksJob",
 				"dependsOn": [
 					{
 						"activity": "Loop over sources",
@@ -262,7 +289,7 @@
 					}
 				],
 				"policy": {
-					"timeout": "0.00:10:00",
+					"timeout": "0.05:00:00",
 					"retry": 0,
 					"retryIntervalInSeconds": 30,
 					"secureOutput": false,
@@ -270,36 +297,14 @@
 				},
 				"userProperties": [],
 				"typeProperties": {
-					"method": "POST",
-					"headers": {
-						"Content-Type": "application/json"
-					},
-					"url": {
-						"value": "@concat('https://', pipeline().parameters.databricksHost, '/api/2.1/jobs/run-now')",
-						"type": "Expression"
-					},
-					"body": "@json(concat('{\"job_id\": ', pipeline().parameters.databricksJobId, '}'))",
-					"authentication": {
-						"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
-						"credential": {
-							"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
-							"type": "CredentialReference"
-						},
-						"type": "UserAssignedManagedIdentity"
-					}
+					"jobId": "771390529510129"
+				},
+				"linkedServiceName": {
+					"referenceName": "LS_Databricks_Compute",
+					"type": "LinkedServiceReference"
 				}
 			}
 		],
-		"parameters": {
-			"databricksHost": {
-				"type": "string",
-				"defaultValue": "adb-7405616127577226.6.azuredatabricks.net"
-			},
-			"databricksJobId": {
-				"type": "string",
-				"defaultValue": "771390529510129"
-			}
-		},
 		"variables": {
 			"v_message": {
 				"type": "String"
