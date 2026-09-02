@@ -9,7 +9,7 @@
 				"userProperties": [],
 				"typeProperties": {
 					"expression": {
-						"value": "@equals(pipeline().parameters.p_full_load_complete, false)",
+						"value": "@or(equals(pipeline().parameters.p_full_load_complete, false), equals(pipeline().parameters.p_full_load_yearly_refresh_month, int(utcNow('MM'))))",
 						"type": "Expression"
 					},
 					"ifFalseActivities": [
@@ -119,6 +119,10 @@
 									"p_snapshot_month": {
 										"value": "@pipeline().parameters.p_snapshot_month",
 										"type": "Expression"
+									},
+									"p_source_name": {
+										"value": "@pipeline().parameters.p_source_name",
+										"type": "Expression"
 									}
 								}
 							}
@@ -177,6 +181,9 @@
 				"type": "string"
 			},
 			"p_snapshot_month": {
+				"type": "string"
+			},
+			"p_full_load_yearly_refresh_month": {
 				"type": "string"
 			}
 		},

@@ -1,5 +1,13 @@
 {
 	"name": "uk-property-market-intelligence-platform-adf",
+	"properties": {
+		"globalParameters": {
+			"databricksHost": {
+				"type": "string",
+				"value": "adb-7405616127577226.6.azuredatabricks.net"
+			}
+		}
+	},
 	"location": "uksouth",
 	"identity": {
 		"type": "SystemAssigned,UserAssigned",

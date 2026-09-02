@@ -18,7 +18,7 @@
 							"value": "landregistry_hpi",
 							"activities": [
 								{
-									"name": "Fetch File LandRegistry HPI",
+									"name": "Copy File LandRegistry HPI",
 									"type": "Copy",
 									"dependsOn": [],
 									"policy": {
@@ -90,6 +90,48 @@
 											}
 										}
 									]
+								},
+								{
+									"name": "Record copy failure - Write Marker HPI",
+									"type": "WebActivity",
+									"dependsOn": [
+										{
+											"activity": "Copy File LandRegistry HPI",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.00:10:00",
+										"retry": 2,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"method": "PUT",
+										"headers": {
+											"Content-Type": "application/json"
+										},
+										"url": {
+											"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+											"type": "Expression"
+										},
+										"body": {
+											"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy File LandRegistry HPI').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+											"type": "Expression"
+										},
+										"authentication": {
+											"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+											"credential": {
+												"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+												"type": "CredentialReference"
+											},
+											"type": "UserAssignedManagedIdentity"
+										}
+									}
 								}
 							]
 						},
@@ -97,7 +139,7 @@
 							"value": "user_agent",
 							"activities": [
 								{
-									"name": "Fetch File User Agent",
+									"name": "Copy File User Agent",
 									"type": "Copy",
 									"dependsOn": [],
 									"policy": {
@@ -169,6 +211,48 @@
 											}
 										}
 									]
+								},
+								{
+									"name": "Record copy failure - Write Marker User Agent",
+									"type": "WebActivity",
+									"dependsOn": [
+										{
+											"activity": "Copy File User Agent",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.00:10:00",
+										"retry": 2,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"method": "PUT",
+										"headers": {
+											"Content-Type": "application/json"
+										},
+										"url": {
+											"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+											"type": "Expression"
+										},
+										"body": {
+											"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy File User Agent').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+											"type": "Expression"
+										},
+										"authentication": {
+											"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+											"credential": {
+												"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+												"type": "CredentialReference"
+											},
+											"type": "UserAssignedManagedIdentity"
+										}
+									}
 								}
 							]
 						},
@@ -176,7 +260,7 @@
 							"value": "accept_header",
 							"activities": [
 								{
-									"name": "Fetch File Accept Header",
+									"name": "Copy File Accept Header",
 									"type": "Copy",
 									"dependsOn": [],
 									"policy": {
@@ -248,6 +332,48 @@
 											}
 										}
 									]
+								},
+								{
+									"name": "Record copy failure - Write Marker Accept Header",
+									"type": "WebActivity",
+									"dependsOn": [
+										{
+											"activity": "Copy File Accept Header",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.00:10:00",
+										"retry": 2,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"method": "PUT",
+										"headers": {
+											"Content-Type": "application/json"
+										},
+										"url": {
+											"value": "@concat('https://', pipeline().globalParameters.databricksHost, '/api/2.0/fs/files/Volumes/uk_property_intel/configs/watermark/log/', pipeline().parameters.p_source_name, '__', guid(), '.json?overwrite=true')",
+											"type": "Expression"
+										},
+										"body": {
+											"value": "{\n    \"source_name\": \"@{pipeline().parameters.p_source_name}\",\n    \"failed_at\": \"@{utcNow()}\",\n    \"target\": \"@{pipeline().parameters.p_source_name}\",\n    \"error\": \"@{replace(replace(activity('Copy File Accept Header').Error.Message, '\\', '/'), '\"', '')}\"\n}",
+											"type": "Expression"
+										},
+										"authentication": {
+											"resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+											"credential": {
+												"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+												"type": "CredentialReference"
+											},
+											"type": "UserAssignedManagedIdentity"
+										}
+									}
 								}
 							]
 						}
@@ -258,7 +384,7 @@
 		"parameters": {
 			"p_source_name": {
 				"type": "string",
-				"defaultValue": "HM Land Registry — UK House Price Index (HPI)"
+				"defaultValue": "land_registry_ppd"
 			},
 			"p_base_url": {
 				"type": "string",

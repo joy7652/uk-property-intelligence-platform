@@ -1,0 +1,22 @@
+{
+	"name": "LS_Databricks_Compute",
+	"properties": {
+		"annotations": [],
+		"type": "AzureDatabricks",
+		"typeProperties": {
+			"domain": "https://adb-7405616127577226.6.azuredatabricks.net",
+			"authentication": "MSI",
+			"workspaceResourceId": "/subscriptions/fee256c9-8eb0-45d0-bfd6-b3fff9c1f02f/resourceGroups/uk-property-market-intelligence-platform-rg/providers/Microsoft.Databricks/workspaces/uk-property-market-intelligence-platform-ws",
+			"credential": {
+				"referenceName": "UK-Property-Market-Intelligence-Platform-Credential",
+				"type": "CredentialReference"
+			},
+			"newClusterNodeType": "Standard_D4pds_v6",
+			"newClusterNumOfWorker": "1",
+			"newClusterVersion": "17.3.x-scala2.13",
+			"clusterOption": "Fixed",
+			"newClusterInitScripts": [],
+			"dataSecurityMode": "SINGLE_USER"
+		}
+	}
+}
