@@ -8,6 +8,17 @@ The run row is inserted at start with status 'started' and updated at the end. A
 killed outright leaves its row at 'started', so a detached notebook or a terminated
 cluster stays visible rather than raising the observed success rate by disappearing.
 
+A stage the plan skipped closes as 'skipped' and names what it waits on. That is a
+third outcome and not a soft failure: nothing ran and the cause is upstream. It is
+recorded rather than recomputed later, because the skip set is a function of the
+failures and of the dependency chain in force at the time, and the chain changes when
+a table is added.
+
+A skipped row cannot say that a stage was never reached at all, since a task the job
+never starts runs no code. 02_post_run_record_state therefore records the plan it
+computed as planned_stage metrics under its own run, so a stage planned to run and
+carrying no run row is distinguishable from one that ran and waited.
+
 Metrics buffer in the run object and flush once, on succeed or fail. A commit per
 metric would cost a Delta transaction for every printed count.
 
@@ -38,6 +49,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -60,8 +72,13 @@ METRIC_TABLE = f"{CATALOG}.{SCHEMA}.pipeline_metric"
 STARTED = "started"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
+SKIPPED = "skipped"
 
-STATUSES: tuple[str, ...] = (STARTED, SUCCEEDED, FAILED)
+STATUSES: tuple[str, ...] = (STARTED, SUCCEEDED, FAILED, SKIPPED)
+
+# What a skipped run carries in error_type. The column is the taxonomy of why a run
+# produced no data, and an upstream failure is one of the reasons it can hold.
+CASCADE = "failure_cascade"
 
 # Source names, matching the Bronze volume namespace rather than the Silver table
 # names, so a run row names where the data came from.
@@ -87,16 +104,34 @@ GOLD_TABLES: tuple[str, ...] = (
     "fact_lsoa_year_price",
 )
 
-LAYERS: tuple[str, ...] = ("silver", "gold")
+# Checks read tables and build none, so they name what they verify. A verification
+# that reported under a table's name would be indistinguishable from that table's
+# load, and both write metrics.
+CHECKS: tuple[str, ...] = ("cross_source_verification",)
 
-RUN_NAMES: tuple[str, ...] = SOURCES + GOLD_TABLES
+# The orchestration step itself, which names no source and builds no table. It records
+# what the run is about to do, so a stage the job never reached can be told apart from
+# one that ran and waited. Without it the plan would live only in a printed cell.
+ORCHESTRATION: tuple[str, ...] = ("pipeline_plan",)
+
+LAYERS: tuple[str, ...] = ("bronze", "silver", "gold")
+
+RUN_NAMES: tuple[str, ...] = SOURCES + GOLD_TABLES + CHECKS + ORCHESTRATION
 
 # Which layer each run name belongs to. The pairing is total: a Bronze source name is
 # only ever loaded to Silver and a Gold table name is only ever produced by Gold, so a
 # run naming one with the other's layer is a typo rather than a case to allow.
-LAYER_OF: dict[str, str] = {
-    **{name: "silver" for name in SOURCES},
-    **{name: "gold" for name in GOLD_TABLES},
+# A source is recorded twice per pipeline run: once when ADF lands its file, once when
+# Silver reads it. Those are separate runs with separate outcomes, so a name maps to
+# the layers it may appear at rather than to one.
+LAYERS_OF: dict[str, tuple[str, ...]] = {
+    **{name: ("bronze", "silver") for name in SOURCES},
+    **{name: ("gold",) for name in GOLD_TABLES},
+    # A check names the layer it reads. Nothing here builds a table, so the layer says
+    # where the run acted rather than what it produced.
+    **{name: ("gold",) for name in CHECKS},
+    # The plan is computed once Bronze has closed and before any Silver task opens.
+    **{name: ("bronze",) for name in ORCHESTRATION},
 }
 
 # Police error text carries row samples and the transform reports every failing rule
@@ -114,6 +149,10 @@ RUN_COLUMNS: tuple[str, ...] = (
     "ingestion_ts",
     "error_type",
     "error_message",
+    # The Databricks job run every task of one pipeline execution shares. Null for a
+    # notebook run by hand, which is what makes a stage's skip list this run's
+    # failures rather than every failure ever recorded.
+    "job_run_id",
 )
 
 METRIC_COLUMNS: tuple[str, ...] = (
@@ -179,6 +218,10 @@ KINDS: dict[str, str] = {
     "share": "a count carrying a denominator",
     "vocabulary": "a bounded set of observed values",
     "date": "a recorded date that is not a freshness signal",
+    "disposition": (
+        "what a run decided about something, recorded so the decision survives a "
+        "change to the rules that produced it"
+    ),
 }
 
 # Recorded by every source.
@@ -373,9 +416,23 @@ _GOLD = (
     ),
 )
 
+# Recorded once per stage by the orchestration run, naming the stage in scope. The
+# plan is computed at Bronze close, so comparing it against what the stages recorded
+# also shows where a run degraded after that point: planned run against an actual skip
+# is a Silver stage that failed mid-run.
+_ORCHESTRATION = (
+    Metric(
+        "planned_stage",
+        "disposition",
+        "what the plan computed at Bronze close says about the stage named in scope, "
+        "run or skip. A stage planned to run and carrying no run row is one the job "
+        "never reached, which no run row of its own could report",
+    ),
+)
+
 _ALL: tuple[Metric, ...] = (
     _COMMON + _RELEASE_PANEL + _BOE + _HPI + _PPD + _DOOGAL + _ONS + _POLICE
-    + _COVERAGE + _GOLD
+    + _COVERAGE + _GOLD + _ORCHESTRATION
 )
 
 METRICS: dict[str, Metric] = {metric.name: metric for metric in _ALL}
@@ -419,19 +476,45 @@ def assert_registry_consistent() -> None:
         for name in RUN_NAMES:
             counted[name] = counted.get(name, 0) + 1
         raise ValueError(
-            "audit: a run name is defined in both SOURCES and GOLD_TABLES, so its "
-            "layer would be decided by declaration order: "
+            "audit: a run name is defined in more than one of SOURCES, GOLD_TABLES "
+            "and CHECKS and ORCHESTRATION, so its layer would be decided by "
+            "declaration order: "
             f"{sorted(name for name, n in counted.items() if n > 1)}"
         )
 
-    unpaired = sorted(set(RUN_NAMES) - set(LAYER_OF))
+    unpaired = sorted(set(RUN_NAMES) - set(LAYERS_OF))
     if unpaired:
         raise ValueError(f"audit: run names with no layer paired to them: {unpaired}")
 
-    stray = sorted({name for name, layer in LAYER_OF.items() if layer not in LAYERS})
+    stray = sorted(
+        {
+            name
+            for name, layers in LAYERS_OF.items()
+            for layer in layers
+            if layer not in LAYERS
+        }
+    )
     if stray:
         raise ValueError(
             f"audit: run names paired to a layer outside {list(LAYERS)}: {stray}"
+        )
+
+    # A source dropped from bronze would stop being recorded there with nothing to
+    # show it, and the skip cascade would read every Bronze fetch as having succeeded.
+    misplaced = sorted(
+        name for name in SOURCES if LAYERS_OF[name] != ("bronze", "silver")
+    )
+    if misplaced:
+        raise ValueError(
+            f"audit: every source records at both bronze and silver, and these do "
+            f"not: {misplaced}"
+        )
+
+    layerless = sorted(name for name, layers in LAYERS_OF.items() if not layers)
+    if layerless:
+        raise ValueError(
+            f"audit: run names paired to no layer, so no run could open under them: "
+            f"{layerless}"
         )
 
 
@@ -663,19 +746,21 @@ class AuditRun:
         layer: str,
         ingestion_ts: dt.datetime,
         started_ts: dt.datetime | None = None,
+        job_run_id: str | None = None,
     ) -> None:
         if source not in RUN_NAMES:
             raise ValueError(
-                f"audit: source {source!r} is neither a Bronze source {list(SOURCES)} "
-                f"nor a Gold table {list(GOLD_TABLES)}."
+                f"audit: source {source!r} is not a Bronze source {list(SOURCES)}, a "
+                f"Gold table {list(GOLD_TABLES)}, a check {list(CHECKS)}, or an "
+                f"orchestration step {list(ORCHESTRATION)}."
             )
         if layer not in LAYERS:
             raise ValueError(f"audit: layer {layer!r} is not one of {list(LAYERS)}.")
-        if LAYER_OF[source] != layer:
+        if layer not in LAYERS_OF[source]:
             raise ValueError(
-                f"audit: {source!r} belongs to the {LAYER_OF[source]} layer, not "
-                f"{layer!r}. A Silver run names its Bronze source and a Gold run names "
-                "the table it builds."
+                f"audit: {source!r} runs at {list(LAYERS_OF[source])}, not {layer!r}. "
+                "A Bronze run names the source ADF landed, a Silver run names the "
+                "source it read, and a Gold run names the table it builds."
             )
         self.run_id = str(uuid.uuid4())
         self.source = source
@@ -684,6 +769,7 @@ class AuditRun:
         # Defaults to the ingestion timestamp so the audit row and the Silver rows it
         # describes agree on when the run happened.
         self.started_ts = started_ts or ingestion_ts
+        self.job_run_id = job_run_id
         self.buffered: list[Recorded] = []
         self.closed = False
 
@@ -747,7 +833,8 @@ class AuditRun:
                 cast(NULL AS BIGINT),
                 cast(:ingestion_ts AS TIMESTAMP),
                 cast(NULL AS STRING),
-                cast(NULL AS STRING)
+                cast(NULL AS STRING),
+                cast(:job_run_id AS STRING)
             )
             """,
             args={
@@ -756,6 +843,7 @@ class AuditRun:
                 "layer": self.layer,
                 "started_ts": self.started_ts,
                 "ingestion_ts": self.ingestion_ts,
+                "job_run_id": self.job_run_id,
             },
         )
         return self.run_id
@@ -774,6 +862,30 @@ class AuditRun:
             FAILED,
             error_type=type(error).__name__,
             error_message=str(error)[:MESSAGE_LIMIT],
+        )
+
+    def skip(self, blocked_by: Iterable[str]) -> None:
+        """Close the run as skipped, naming the failures it waits on.
+
+        Not a failure and not a success. Nothing ran and the cause is upstream, so
+        rows_written stays null and the reason goes where every other reason for
+        producing no data goes.
+
+        Raises:
+            ValueError: where nothing is named. A stage skips because something else
+                failed, so an empty cause means the plan and the caller disagree
+                about why this stage is not running.
+        """
+        waiting = sorted(blocked_by)
+        if not waiting:
+            raise ValueError(
+                f"audit: {self.source!r} was skipped with nothing named as the cause. "
+                "A skip is always downstream of a recorded failure."
+            )
+        self._close(
+            SKIPPED,
+            error_type=CASCADE,
+            error_message=f"waiting on {', '.join(waiting)}"[:MESSAGE_LIMIT],
         )
 
     def _close(
@@ -858,3 +970,60 @@ def _session() -> SparkSession:
             "from a notebook, not from a local test."
         )
     return session
+
+def failed_in_run(job_run_id: str | None) -> set[str]:
+    """Names recorded as failed under one job run.
+
+    Every stage calls this before planning what to write. The filter is exactly
+    `status = 'failed'`: a skipped stage already sits downstream of a failure, and
+    reading it as one would cascade that same failure a second time.
+
+    A null job run id returns nothing rather than every failure ever recorded. A
+    notebook run by hand belongs to no pipeline execution, so it plans a full run,
+    which is the reading `02_post_run_record_state` already gives an empty widget.
+    """
+    if not job_run_id:
+        return set()
+    rows = _session().sql(
+        f"""
+        SELECT DISTINCT source
+          FROM {RUN_TABLE}
+         WHERE job_run_id = :job_run_id
+           AND status = '{FAILED}'
+        """,
+        args={"job_run_id": job_run_id},
+    ).collect()
+    return {row["source"] for row in rows}
+
+def succeeded_in_run(job_run_id: str | None) -> set[tuple[str, str]] | None:
+    """Name and layer pairs recorded as succeeded under one job run.
+
+    Evidence, where `failed_in_run` is absence. A stage plans from what failed and
+    writes only where everything it reads rebuilt in the same job, because a
+    dependency that failed, one that skipped, and one the job never reached are three
+    different events that all mean the table in front of it is last month's.
+
+    The layer is returned beside the name rather than inferred from it. A source
+    records twice, at bronze when ADF lands the file and at silver when the notebook
+    reads it, so a bronze success is not a Silver rebuild and nothing about the name
+    says which one this is.
+
+    Returns:
+        None where there is no job run, meaning no evidence exists to read. That is
+        distinct from an empty set, which means a job run that has recorded no
+        success yet. A notebook run by hand is in the first case and gates on
+        nothing, since gating on absent evidence would make every notebook
+        unrunnable outside the job.
+    """
+    if not job_run_id:
+        return None
+    rows = _session().sql(
+        f"""
+        SELECT DISTINCT source, layer
+          FROM {RUN_TABLE}
+         WHERE job_run_id = :job_run_id
+           AND status = '{SUCCEEDED}'
+        """,
+        args={"job_run_id": job_run_id},
+    ).collect()
+    return {(row["source"], row["layer"]) for row in rows}

@@ -23,6 +23,9 @@
 # MAGIC CREATE SCHEMA IF NOT EXISTS uk_property_intel.quality
 # MAGIC   MANAGED LOCATION 'abfss://quality@ukpropertyintelligencedl.dfs.core.windows.net/'
 # MAGIC   COMMENT 'Data quality framework outputs: quarantine tables for rejected records, rule run history, DQ metrics.';
+# MAGIC   
+# MAGIC CREATE SCHEMA IF NOT EXISTS uk_property_intel.configs
+# MAGIC   COMMENT 'Orchestration state read and written outside the medallion layers. Holds the watermark ADF reads before any compute exists, and the failure markers each Bronze copy writes. External Volume over the configs container so the files ADF depends on carry the same governance and lineage as the data. No managed location by design.';
 
 # COMMAND ----------
 
@@ -54,3 +57,8 @@
 
 # MAGIC %sql
 # MAGIC DESCRIBE SCHEMA EXTENDED uk_property_intel.quality;
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC DESCRIBE SCHEMA EXTENDED uk_property_intel.configs;

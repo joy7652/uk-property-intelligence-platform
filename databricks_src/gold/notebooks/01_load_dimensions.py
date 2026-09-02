@@ -17,6 +17,11 @@
 # MAGIC Four `AuditRun` instances all the same, one per table. `rows_written` is then a
 # MAGIC real number rather than a total across whatever this notebook happened to write,
 # MAGIC and the existing dashboard query works unchanged with `source = 'dim_lsoa'`.
+# MAGIC #
+# MAGIC Each of the four is gated on its own rather than the notebook exiting as a whole.
+# MAGIC Fourteen of the sixteen subsets are reachable, so a run writing some of them is the
+# MAGIC ordinary case rather than the exception, and a table that waits records why instead
+# MAGIC of leaving no row.
 # MAGIC
 # MAGIC No DDL here. The Gold contract is declared once in `00_create_gold_tables.py`, and
 # MAGIC the column order every write depends on is read back off the created table rather
@@ -50,7 +55,7 @@ from databricks_src.gold.transforms.dim_lsoa import (
     measure_small_areas,
     transform_dim_lsoa,
 )
-from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.orchestration import stage
 from databricks_src.utils.gold_write import overwrite
 
 CATALOG = "uk_property_intel"
@@ -81,6 +86,27 @@ CALENDAR_END = date(INGESTION_TS.year, 12, 31)
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## The stage plan
+# MAGIC
+# MAGIC Read once, then each table asks it separately. A single decision for the notebook
+# MAGIC would either write tables that should have waited or skip tables nothing was wrong
+# MAGIC with, since a failure rarely reaches all four.
+# MAGIC
+# MAGIC Each run opens immediately before its own work rather than here, so its recorded
+# MAGIC interval covers what it did, and a failure leaves no sibling row standing open
+# MAGIC behind it.
+
+# COMMAND ----------
+
+plan = stage.read_plan(dbutils)  # noqa: F821
+
+for _dimension in ("dim_date", "dim_area", "dim_crime_type", "dim_lsoa"):
+    _waiting = plan.waiting_on(_dimension)
+    print(f"{_dimension:15}: {'waiting on ' + ', '.join(_waiting) if _waiting else 'runs'}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## 1. dim_date
 # MAGIC
 # MAGIC The rate intervals expanded to their days. Independent of everything else here and
@@ -88,20 +114,19 @@ CALENDAR_END = date(INGESTION_TS.year, 12, 31)
 
 # COMMAND ----------
 
-date_run = AuditRun(source="dim_date", layer="gold", ingestion_ts=INGESTION_TS)
-date_run.start()
-print(f"dim_date run {date_run.run_id}")
+date_run = stage.open_stage("dim_date", "gold", INGESTION_TS, plan)
 
-with date_run.step():
-    calendar = transform_dim_date(
-        base_rate_df=spark.table(BOE),  # noqa: F821
-        end_date=CALENDAR_END,
-    )
-    written = overwrite(calendar, DIM_DATE)
-    date_run.measure("gold_rows", written)
+if date_run is not None:
+    with date_run.step():
+        calendar = transform_dim_date(
+            base_rate_df=spark.table(BOE),  # noqa: F821
+            end_date=CALENDAR_END,
+        )
+        written = overwrite(calendar, DIM_DATE)
+        date_run.measure("gold_rows", written)
 
-date_run.succeed(rows_written=written)
-print(f"{written:,} days written to {DIM_DATE}, through {CALENDAR_END}")
+    date_run.succeed(rows_written=written)
+    print(f"{written:,} days written to {DIM_DATE}, through {CALENDAR_END}")
 
 # COMMAND ----------
 
@@ -120,47 +145,47 @@ print(f"{written:,} days written to {DIM_DATE}, through {CALENDAR_END}")
 
 # COMMAND ----------
 
-area_run = AuditRun(source="dim_area", layer="gold", ingestion_ts=INGESTION_TS)
-area_run.start()
-print(f"dim_area run {area_run.run_id}")
+area_run = stage.open_stage("dim_area", "gold", INGESTION_TS, plan)
 
-with area_run.step():
-    measured_areas = measure_published_areas(
-        hpi_df=spark.table(HPI),  # noqa: F821
-        ons_df=spark.table(ONS),  # noqa: F821
-        doogal_df=spark.table(DOOGAL),  # noqa: F821
-    )
-    measured_areas.persist(StorageLevel.DISK_ONLY)
+if area_run is not None:
+    with area_run.step():
+        measured_areas = measure_published_areas(
+            hpi_df=spark.table(HPI),  # noqa: F821
+            ons_df=spark.table(ONS),  # noqa: F821
+            doogal_df=spark.table(DOOGAL),  # noqa: F821
+        )
+        measured_areas.persist(StorageLevel.DISK_ONLY)
 
-    areas = transform_dim_area(measured_areas)
-    written = overwrite(areas, DIM_AREA)
-    area_run.measure("gold_rows", written)
+        areas = transform_dim_area(measured_areas)
+        written = overwrite(areas, DIM_AREA)
+        area_run.measure("gold_rows", written)
 
 # COMMAND ----------
 
-with area_run.step():
-    # One pass over 432 rows for both breakdowns.
-    profile = (
-        spark.table(DIM_AREA)  # noqa: F821
-        .groupBy("area_level")
-        .agg(
-            F.count(F.lit(1)).alias("rows"),
-            F.count_if(F.col("code_source") == F.lit("derived")).alias("derived"),
+if area_run is not None:
+    with area_run.step():
+        # One pass over 432 rows for both breakdowns.
+        profile = (
+            spark.table(DIM_AREA)  # noqa: F821
+            .groupBy("area_level")
+            .agg(
+                F.count(F.lit(1)).alias("rows"),
+                F.count_if(F.col("code_source") == F.lit("derived")).alias("derived"),
+            )
+            .collect()
         )
-        .collect()
-    )
-    for row in profile:
-        area_run.measure("gold_rows", row["rows"], scope=row["area_level"])
+        for row in profile:
+            area_run.measure("gold_rows", row["rows"], scope=row["area_level"])
 
-    derived = sum(row["derived"] for row in profile)
-    area_run.measure("derived_area_codes", derived)
+        derived = sum(row["derived"] for row in profile)
+        area_run.measure("derived_area_codes", derived)
 
-_ = measured_areas.unpersist()
-area_run.succeed(rows_written=written)
-print(f"{written:,} areas written to {DIM_AREA}")
-print(f"{derived} carry a code this project assigned")
-for row in sorted(profile, key=lambda item: item["area_level"]):
-    print(f"  {row['area_level']:<20}{row['rows']:>5}")
+    _ = measured_areas.unpersist()
+    area_run.succeed(rows_written=written)
+    print(f"{written:,} areas written to {DIM_AREA}")
+    print(f"{derived} carry a code this project assigned")
+    for row in sorted(profile, key=lambda item: item["area_level"]):
+        print(f"  {row['area_level']:<20}{row['rows']:>5}")
 
 # COMMAND ----------
 
@@ -171,22 +196,38 @@ for row in sorted(profile, key=lambda item: item["area_level"]):
 # MAGIC type grain and `dim_lsoa` distincts its codes, so without this the 96 million rows
 # MAGIC are scanned twice for two questions one pass answers.
 # MAGIC
-# MAGIC The read sits inside `dim_crime_type`'s run because it is the first consumer. A
-# MAGIC failure here records against that table and stops the notebook, so `dim_lsoa`'s run
-# MAGIC never opens and no row is left dangling.
+# MAGIC The read is attributed to whichever consumer is being written rather than to a
+# MAGIC fixed one. `dim_crime_type` owns it where that table is planned, since it reads
+# MAGIC first. `dim_lsoa` owns it otherwise, which is why its run opens here in that case
+# MAGIC instead of at section 5. Charging the work to a run that is being skipped would
+# MAGIC record a cost against a table nothing wrote.
+# MAGIC
+# MAGIC The frame is built only where at least one consumer needs it, so a run planning
+# MAGIC neither never touches the 96 million rows.
 
 # COMMAND ----------
 
-crime_run = AuditRun(source="dim_crime_type", layer="gold", ingestion_ts=INGESTION_TS)
-crime_run.start()
-print(f"dim_crime_type run {crime_run.run_id}")
+crime_run = stage.open_stage("dim_crime_type", "gold", INGESTION_TS, plan)
 
-with crime_run.step():
-    crime = spark.table(POLICE).select("lsoa_code", "crime_type", "crime_month")  # noqa: F821
-    crime.persist(StorageLevel.DISK_ONLY)
-    crime_rows = crime.count()
+# dim_lsoa's run opens here only where it has to own the projection below. It opens at
+# section 5 otherwise, so its interval covers its own work. One flag, set once and read
+# once, so the run can never be opened twice and write two rows.
+LSOA_OWNS_PROJECTION = crime_run is None
+lsoa_run = (
+    stage.open_stage("dim_lsoa", "gold", INGESTION_TS, plan)
+    if LSOA_OWNS_PROJECTION
+    else None
+)
 
-print(f"{crime_rows:,} crime rows projected to three columns")
+projection_run = crime_run if crime_run is not None else lsoa_run
+
+if projection_run is not None:
+    with projection_run.step():
+        crime = spark.table(POLICE).select("lsoa_code", "crime_type", "crime_month")  # noqa: F821
+        crime.persist(StorageLevel.DISK_ONLY)
+        crime_rows = crime.count()
+
+    print(f"{crime_rows:,} crime rows projected to three columns")
 
 # COMMAND ----------
 
@@ -199,17 +240,18 @@ print(f"{crime_rows:,} crime rows projected to three columns")
 
 # COMMAND ----------
 
-with crime_run.step():
-    measured_types = measure_publication_window(crime)
-    measured_types.persist(StorageLevel.DISK_ONLY)
+if crime_run is not None:
+    with crime_run.step():
+        measured_types = measure_publication_window(crime)
+        measured_types.persist(StorageLevel.DISK_ONLY)
 
-    crime_types = transform_dim_crime_type(measured_types)
-    written = overwrite(crime_types, DIM_CRIME_TYPE)
-    crime_run.measure("gold_rows", written)
+        crime_types = transform_dim_crime_type(measured_types)
+        written = overwrite(crime_types, DIM_CRIME_TYPE)
+        crime_run.measure("gold_rows", written)
 
-_ = measured_types.unpersist()
-crime_run.succeed(rows_written=written)
-print(f"{written} crime types written to {DIM_CRIME_TYPE}")
+    _ = measured_types.unpersist()
+    crime_run.succeed(rows_written=written)
+    print(f"{written} crime types written to {DIM_CRIME_TYPE}")
 
 # COMMAND ----------
 
@@ -231,34 +273,46 @@ print(f"{written} crime types written to {DIM_CRIME_TYPE}")
 # MAGIC Conformance runs after the write, against the loaded `dim_area`. The foreign key is
 # MAGIC informational, so an area naming a district with no row would reach Delta and drop
 # MAGIC out of every rollup silently.
+# MAGIC
+# MAGIC An HPI or ONS failure skips `dim_area` and keeps this table, so the check then
+# MAGIC compares a fresh `dim_lsoa` against the previous load of `dim_area`. That is the
+# MAGIC intended reading rather than an oversight: the facts will key against that same
+# MAGIC older table, so a district present in one and not the other is a real mismatch and
+# MAGIC fails here loudly instead of disappearing from a rollup later.
 
 # COMMAND ----------
 
-lsoa_run = AuditRun(source="dim_lsoa", layer="gold", ingestion_ts=INGESTION_TS)
-lsoa_run.start()
-print(f"dim_lsoa run {lsoa_run.run_id}")
+if not LSOA_OWNS_PROJECTION:
+    lsoa_run = stage.open_stage("dim_lsoa", "gold", INGESTION_TS, plan)
 
-with lsoa_run.step():
-    measured_areas_small = measure_small_areas(
-        doogal_df=spark.table(DOOGAL),  # noqa: F821
-        police_df=crime,
-        ppd_df=spark.table(PPD),  # noqa: F821
-    )
-    measured_areas_small.persist(StorageLevel.DISK_ONLY)
+if lsoa_run is not None:
+    with lsoa_run.step():
+        measured_areas_small = measure_small_areas(
+            doogal_df=spark.table(DOOGAL),  # noqa: F821
+            police_df=crime,
+            ppd_df=spark.table(PPD),  # noqa: F821
+        )
+        measured_areas_small.persist(StorageLevel.DISK_ONLY)
 
-    small_areas = transform_dim_lsoa(measured_areas_small)
-    written = overwrite(small_areas, DIM_LSOA)
-    lsoa_run.measure("gold_rows", written)
+        small_areas = transform_dim_lsoa(measured_areas_small)
+        written = overwrite(small_areas, DIM_LSOA)
+        lsoa_run.measure("gold_rows", written)
 
-_ = crime.unpersist()
-_ = measured_areas_small.unpersist()
-print(f"{written:,} small areas written to {DIM_LSOA}")
+    _ = measured_areas_small.unpersist()
+    print(f"{written:,} small areas written to {DIM_LSOA}")
+
+# Released here rather than inside either block, because the two consumers are gated
+# apart: dim_crime_type may have built it for a dim_lsoa that then ran, and dim_lsoa may
+# be waiting after dim_crime_type built it.
+if projection_run is not None:
+    _ = crime.unpersist()
 
 # COMMAND ----------
 
-with lsoa_run.step():
-    assert_districts_conform(spark.table(DIM_LSOA), spark.table(DIM_AREA))  # noqa: F821
-print(f"every district in {DIM_LSOA} resolves in {DIM_AREA}")
+if lsoa_run is not None:
+    with lsoa_run.step():
+        assert_districts_conform(spark.table(DIM_LSOA), spark.table(DIM_AREA))  # noqa: F821
+    print(f"every district in {DIM_LSOA} resolves in {DIM_AREA}")
 
 # COMMAND ----------
 
@@ -271,37 +325,38 @@ print(f"every district in {DIM_LSOA} resolves in {DIM_AREA}")
 
 # COMMAND ----------
 
-with lsoa_run.step():
-    # One pass for every figure below.
-    totals = (
-        spark.table(DIM_LSOA)  # noqa: F821
-        .agg(
-            F.count(F.lit(1)).alias("rows"),
-            F.count_if(F.col("district_assignment") == F.lit("majority")).alias("majority"),
-            F.count_if(F.col("has_crime")).alias("with_crime"),
-            F.count_if(F.col("has_price")).alias("with_price"),
+if lsoa_run is not None:
+    with lsoa_run.step():
+        # One pass for every figure below.
+        totals = (
+            spark.table(DIM_LSOA)  # noqa: F821
+            .agg(
+                F.count(F.lit(1)).alias("rows"),
+                F.count_if(F.col("district_assignment") == F.lit("majority")).alias("majority"),
+                F.count_if(F.col("has_crime")).alias("with_crime"),
+                F.count_if(F.col("has_price")).alias("with_price"),
+            )
+            .collect()[0]
         )
-        .collect()[0]
-    )
-    by_vintage = (
-        spark.table(DIM_LSOA)  # noqa: F821
-        .groupBy("boundary_vintage")
-        .agg(F.count(F.lit(1)).alias("rows"))
-        .collect()
-    )
+        by_vintage = (
+            spark.table(DIM_LSOA)  # noqa: F821
+            .groupBy("boundary_vintage")
+            .agg(F.count(F.lit(1)).alias("rows"))
+            .collect()
+        )
 
-    total = totals["rows"]
-    lsoa_run.measure("majority_assigned_small_areas", totals["majority"], denominator=total)
-    lsoa_run.measure("small_areas_with_crime", totals["with_crime"], denominator=total)
-    lsoa_run.measure("small_areas_with_price", totals["with_price"], denominator=total)
-    for row in by_vintage:
-        lsoa_run.measure("gold_rows", row["rows"], scope=row["boundary_vintage"])
+        total = totals["rows"]
+        lsoa_run.measure("majority_assigned_small_areas", totals["majority"], denominator=total)
+        lsoa_run.measure("small_areas_with_crime", totals["with_crime"], denominator=total)
+        lsoa_run.measure("small_areas_with_price", totals["with_price"], denominator=total)
+        for row in by_vintage:
+            lsoa_run.measure("gold_rows", row["rows"], scope=row["boundary_vintage"])
 
-lsoa_run.succeed(rows_written=written)
-print(f"{totals['majority']:,} of {total:,} areas straddle two districts")
-print(f"{totals['with_crime']:,} carry crime, {totals['with_price']:,} carry a price")
-for row in sorted(by_vintage, key=lambda item: item["boundary_vintage"]):
-    print(f"  {row['boundary_vintage']:<12}{row['rows']:>8,}")
+    lsoa_run.succeed(rows_written=written)
+    print(f"{totals['majority']:,} of {total:,} areas straddle two districts")
+    print(f"{totals['with_crime']:,} carry crime, {totals['with_price']:,} carry a price")
+    for row in sorted(by_vintage, key=lambda item: item["boundary_vintage"]):
+        print(f"  {row['boundary_vintage']:<12}{row['rows']:>8,}")
 
 # COMMAND ----------
 

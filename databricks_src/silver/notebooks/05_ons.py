@@ -35,7 +35,7 @@ from openpyxl import load_workbook
 from pyspark.sql import functions as F
 from pyspark.storagelevel import StorageLevel
 
-from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.orchestration import stage
 from databricks_src.silver.transforms.ons import (
     COLUMN_MAP,
     MEASURE_COLUMNS,
@@ -48,6 +48,10 @@ from databricks_src.silver.transforms.ons import (
 
 VOLUME_PATH = "/Volumes/uk_property_intel/bronze/ons/private_rent_index"
 TARGET_TABLE = "uk_property_intel.silver.ons_private_rents"
+
+# The name this source carries in the audit registry and in the dependency chain.
+# The only line the two gate cells below differ by across the six Silver notebooks.
+SOURCE = "ons"
 
 STAGE_PATH = "/local_disk0/ons_table1.csv"
 
@@ -79,9 +83,28 @@ SKIP_FRESHNESS = False
 
 # COMMAND ----------
 
-run = AuditRun(source="ons", layer="silver", ingestion_ts=INGESTION_TS)
-run.start()
-print(f"run {run.run_id}")
+# MAGIC %md
+# MAGIC ## The stage plan
+# MAGIC
+# MAGIC `job_run_id` comes from the job as `{{job.run_id}}` and is empty when this is
+# MAGIC run by hand, which plans a full run: it belonged to no pipeline execution, so
+# MAGIC there is nothing for it to wait on.
+# MAGIC
+# MAGIC The plan is recomputed here rather than passed in, so a task run on its own
+# MAGIC reaches the same answer as one run in sequence. `orchestration/stage.py` holds
+# MAGIC why what failed and what rebuilt are asked as two questions.
+# MAGIC
+# MAGIC The exit stays here rather than in the module, and outside any `run.step()`
+# MAGIC block, since it raises for the notebook runner and `step` would record that as
+# MAGIC a failure.
+
+# COMMAND ----------
+
+plan = stage.read_plan(dbutils)  # noqa: F821
+run = stage.open_stage(SOURCE, "silver", INGESTION_TS, plan)
+
+if run is None:
+    dbutils.notebook.exit(f"skipped: {SOURCE}")  # noqa: F821
 
 # COMMAND ----------
 

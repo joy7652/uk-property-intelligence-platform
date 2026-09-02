@@ -114,15 +114,11 @@ run("tests/test_silver_transforms/test_police.py")
 
 # COMMAND ----------
 
-run("tests/test_gold_transforms/test_dim_crime_type.py")
-
-# COMMAND ----------
-
 run("tests/test_gold_transforms/test_dim_lsoa.py")
 
 # COMMAND ----------
 
-run("tests/test_gold_transforms/test_crime.py")
+run("tests/test_gold_transforms/test_dim_crime_type.py")
 
 # COMMAND ----------
 
@@ -139,3 +135,7 @@ run("tests/test_gold_transforms/test_fact_lsoa_month_crime.py")
 # COMMAND ----------
 
 run("tests/test_gold_transforms/test_fact_lsoa_month_crime_total.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_crime.py")

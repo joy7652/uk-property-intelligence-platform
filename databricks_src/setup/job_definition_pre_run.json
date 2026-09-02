@@ -1,0 +1,51 @@
+{
+  "_description": "Source-of-truth definition for the pre-run job. One task, run by ADF before its ForEach opens, because the copy gate reads what this notebook writes. Applied the same way as job_definition.json.",
+
+  "_why_a_job_rather_than_a_notebook_activity": "ADF's Databricks Notebook activity runs the notebook as ADF's own managed identity, which would then need Unity Catalog grants on the configs volume and read access to the repo folder under the owner's workspace home. A job runs as its owner, so this notebook runs as the same principal as every other notebook in the pipeline and needs no separate grants. ADF triggers it with a Databricks Job activity, which waits for completion.",
+
+  "_why_it_cannot_join_the_main_job": "It has to finish before ADF's copies start, and the copies have to finish before 02_post_run_record_state reads their markers. The two jobs sit either side of the ForEach.",
+
+  "name": "ukpropertyintel-pre-run",
+  "max_concurrent_runs": 1,
+  "timeout_seconds": 1800,
+
+  "tags": {
+    "project": "uk-property-market-intelligence-platform",
+    "phase": "4"
+  },
+
+  "job_clusters": [
+    {
+      "job_cluster_key": "pre_run",
+      "new_cluster": {
+        "spark_version": "17.3.x-scala2.13",
+        "node_type_id": "Standard_D4pds_v6",
+        "num_workers": 0,
+        "data_security_mode": "SINGLE_USER",
+        "single_user_name": "kiitkkat@gmail.com",
+        "runtime_engine": "STANDARD",
+        "spark_conf": {
+          "spark.databricks.cluster.profile": "singleNode",
+          "spark.master": "local[*]"
+        },
+        "custom_tags": {
+          "ResourceClass": "SingleNode",
+          "project": "uk-property-market-intelligence-platform",
+          "phase": "4"
+        }
+      }
+    }
+  ],
+
+  "tasks": [
+    {
+      "task_key": "resolve_urls",
+      "job_cluster_key": "pre_run",
+      "max_retries": 0,
+      "timeout_seconds": 1200,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/bronze/notebooks/01_pre_run_resolve_urls"
+      }
+    }
+  ]
+}

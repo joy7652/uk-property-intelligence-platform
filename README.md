@@ -3,7 +3,7 @@ Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
 An Azure data platform built around HM Land Registry's 31.4M residential transactions since 1995, joined with five more official UK datasets covering house prices, private rents, postcodes, the Bank of England base rate and street-level crime. The pipelines run off a single JSON config file, so adding a source means editing config, not writing code. Loads are incremental from a per-source watermark. Every file is validated against its expected format before parsing, because a pipeline reporting success only proves bytes moved, and all data access is governed through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
 
-> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is in progress: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,119,680 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998.
+> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,119,680 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is in progress: continuous integration runs lint and the full test suite on every push and pull request, and the reconciliation is asserted against registered thresholds instead of read off a screen. Every source now resolves its own URL and release date before a run, and one pipeline drives a pre-run job, six gated downloads and a twelve-task Databricks job, in which a source that fails at ingestion skips exactly the tables built on it.
 
 **Highlights**
 
@@ -555,8 +555,8 @@ which is exactly the number flagged as carrying any crime at all.
 
 ### 37. A transaction-derived price series reconciles against the published index
 
-The strongest check available, and the only one that does not come from the pipeline
-itself. `fact_area_month_price` is built from 29.6M transactions; `fact_area_month_hpi` is the publisher's own mix-adjusted index over the same areas and months. Two products of one
+The only check here that does not come from the pipeline being checked. It is sharp per
+year and coarse in aggregate, for reasons the reconciliation rules record. `fact_area_month_price` is built from 29.6M transactions; `fact_area_month_hpi` is the publisher's own mix-adjusted index over the same areas and months. Two products of one
 registry, built by different methods.
 
 The counts agree: the category A transaction count correlates with the publisher's sales volume at 0.9998 across 123,375 cells, with an aggregate ratio of 1.0036.
@@ -583,7 +583,203 @@ yield is computable for 316 districts at a median of 3.97%, which is the populat
 Decision 31 predicted before any fact was loaded.
 
 
+### 39. Schema changes stop the load and get a human decision
+
+The roadmap carried a Delta schema evolution demonstration from Phase 1 to Phase 4. Six
+Silver transforms produced the opposite behaviour. Each declares its source column set and
+asserts it, so a column appearing or disappearing stops the load, and the column is mapped
+or dropped by a decision that reaches the constant and the tests. Doogal's suite proves
+each of its 60 published columns is either mapped or explicitly dropped. `mergeSchema`
+would accept the column silently, which is the quiet partial load Decision 22 rules out.
+
+A value-set change is a different thing and is already modelled. Police.uk's crime type
+list moved through three vocabularies, and `dim_crime_type` carries all 16 types with each
+one's first and last published month and what it was split out of. No Delta column moved
+either time.
+
+`mergeSchema` fits an append-only landing table taking whatever a publisher sends, and
+Decision 10 removed that table when Bronze stayed as Volumes over the raw files. The item
+is dropped; a demonstration would have run against invented data.
+
+### 40. Continuous integration runs the layer that does not need a cluster
+
+Two jobs on every push and pull request: ruff, and the test suites. Runner versions track
+DBR 17.3 LTS, since a suite passing on a different Spark says nothing about the cluster.
+Suite directories are discovered, not listed, so each runs on its own runner and
+wall-clock time is the largest one instead of the sum.
+
+Ruff's F rules flag `spark` and `dbutils` as undefined in every notebook, because
+Databricks injects them at runtime, so `ruff.toml` declares them as builtins and still
+catches a real undefined name. The test step pipes pytest through `tee`, which without
+`pipefail` reports a failing suite as green, so `set -o pipefail` is written into the step
+and does not depend on how the runner resolves its shell.
+
+A green check covers the transform layer on Apache Spark. It reaches no Delta, no Unity
+Catalog, no write path and no data at volume, so the rule that nothing counts as done
+until it has run on the cluster is untouched by it.
+
+### 41. Transforms are portable across storage, and were not across SQL dialect
+
+Transform modules take a DataFrame and return one and touch no Delta, Unity Catalog or
+ADLS, which is what made them testable off the cluster. The first CI run failed several
+hundred tests on one cause: purity had been defined against storage and never against
+dialect.
+
+`try_to_date` is a Databricks function, and Apache Spark 4.0 registers 21 `try_*`
+functions without it. Seven call sites across five transforms used it, each correct on the
+cluster and none runnable anywhere else. `F.expr` builds a string that whichever engine
+evaluates it resolves, so the module boundary catches nothing here.
+
+The replacement is `CAST(try_to_timestamp(x, fmt) AS DATE)`, checked against the nine
+format shapes these sources publish: same dates, a null and no exception on malformed
+input, and stable across session timezones. The seven sites now call
+`parsed_date` in `databricks_src/silver/transforms/expressions.py`. Faking `try_to_date`
+locally would have been quicker and would have meant every local run exercising an
+implementation the cluster never runs.
+
+### 42. The quality framework is a threshold registry
+
+The roadmap carried a parameterised rules framework: `quality_rules.json`, a generic
+notebook reading it, rejected rows routed to quarantine. Counting what there was to
+configure found 32 guards across the six Silver transforms and four more in
+`conformance.py`, and none of the 36 carries a tolerance. The numbers in them are
+published facts, a UK bounding box and two sentinel values, and loosening those would
+admit wrong rows, not marginal ones.
+
+The real threshold population is small: six freshness bounds, still unset by design, and
+a cross-source reconciliation that computed several ratios and asserted none of them. So
+`databricks_src/quality/rules/evaluator.py` holds a threshold registry, and
+`quality.rule_result` takes one row per rule per run with the bounds in force written
+into the row, since widening a bound later must not reinterpret an old result.
+
+Four things defend a result. Bounds live on the rule, so a caller cannot pass the wrong
+one. The evaluator refuses NaN before comparing, because Spark orders NaN above every
+number and an unguarded one satisfies any floor. A CHECK ties the verdict to the numbers
+beside it. And the caller declares which rules it meant to evaluate, because no
+constraint fires on a row that was never written, and a rule that stops running looks
+exactly like one that keeps passing.
+
+### 43. Three reconciliation rules, with bounds read off thirty-two measured years
+
+A rule is registered only once its bound is known. `ppd_hpi_count_correlation` floors at
+0.99 against a measured 0.9998, and its note records that it is coarse: the cells span
+district to composite, and a simulation with districts wrong by up to 90% still returns
+0.99993. `ppd_hpi_count_ratio_by_year` bands at 0.95 to 1.08, where 1995 to 2026 runs
+0.9728 to 1.0641. `ppd_hpi_median_ratio_by_year` bands at 0.93 to 1.08.
+
+The count band is wider below than above, because a shortfall is the failure this
+pipeline can cause and a surplus is usually the publisher still reporting. A three-sigma
+band computes to 0.9443 to 1.0635 and rejects 2023, an ordinary year.
+
+The mean ratio is stable at 1.1821 and is not registered. Nothing downstream reads it,
+and a rule nobody acts on gets widened instead of investigated. The first run recorded
+65 results and none breached.
+
+### 44. The gate value is when a publisher released, not what the data is about
+
+Six public bodies publish the datasets behind this platform, and none of them agree on
+how to name a file. ONS puts the release date in the path. Land Registry and police.uk
+put the month the data covers in the filename, and that trails publication by about two
+months: the June 2026 house price index was published on 19 August, and the June 2026
+crime archive on 29 July.
+
+The pipeline decides whether to download by comparing the publisher's release date
+against the date it last succeeded. Take that release date off a filename carrying a
+data month and the comparison never comes out true, because the filename runs two months
+behind a value that advances to today on every run. The source is skipped forever, and
+because a skipped download and a completed download both look identical from the outside,
+the run reports success while ingesting nothing.
+
+So the release date is always read as a release date. Where the publisher puts it in the
+URL, it is parsed from there. Where the publisher does not, it comes from the
+`Last-Modified` header on the file itself, which all six send. The data month keeps a
+separate job: it builds the address and names the landed file, so the copy in storage
+says which release it is without being opened.
+
+The interesting part is that the failure would have been invisible. Nothing errors, no
+alert fires, and the audit trail records six successful runs. It was caught by tracing
+the arithmetic across three consecutive months, not by anything the pipeline itself
+could have reported.
+
+### 45. When one source fails, the rest of the pipeline still runs
+
+Six public bodies publish the datasets behind this platform and any of them can have a bad
+day. A run where the crime archive is unreachable should not cost the house price index,
+and it should not quietly load a crime table from last month's file either.
+
+Which tables a failure reaches is a fact about the model rather than a setting. The crime
+data feeds two dimensions and four facts; the postcode directory feeds two dimensions that
+between them sit under every fact in the star. Those relationships are written down once,
+with tests behind them, and each stage of the run works out for itself what it should do
+given what has already failed. Nothing is passed down the pipeline, so a task rerun on its
+own reaches the same answer as one running in sequence.
+
+The interesting part was working out what a stage should read to make that decision. The
+first version asked whether anything upstream had failed, which is the obvious question and
+the wrong one. Three different things stop a table being rebuilt: it failed, the notebook
+holding it died before reaching it, or the run never got that far. Only the first leaves a
+failure recorded anywhere. The other two leave nothing at all, and nothing is
+indistinguishable from success.
+
+So a stage asks the opposite question. Every table it reads must have a completed run of its
+own, in this pipeline execution, at the layer that produces it, that last part because a
+source is recorded twice, once when the file lands and once when it is loaded, and a landed
+file is not a loaded table. One question closes all three cases without having to model any
+of them.
+
+The result is that a failed crime download produces a run where the index, rents and
+transaction tables all refresh normally, the six crime and geography tables record that they
+waited and what they waited on, and the dashboard reads a mix of fresh and unchanged tables
+instead of a mix of fresh and wrong ones.
+
+### 46. The pipeline reports success when a download fails
+
+An orchestration run that goes green when one of its downloads failed sounds like a bug
+being papered over. Here it is deliberate, and the alternative is worse.
+
+The orchestrator owns exactly one thing: getting six files out of six government websites
+and into storage. Everything after that is owned by notebooks that record their own
+outcomes into an audit table. So when a download fails, the orchestrator's job is not to go
+red. It is to write down what happened somewhere the rest of the pipeline will read.
+
+Each download has a failure path that writes a small marker file naming the source, the
+target and the error. That path ends in a step that succeeds, which means the failed
+download is no longer the last thing in its branch, the loop moves on to the remaining five
+sources, and the orchestrator finishes green. The first task of the processing job then
+reads the markers, turns each into a recorded failure, and the cascade takes it from there.
+
+Two things follow that are easy to miss. The loop no longer needs configuring to continue
+past a failure, because there is no longer a failed step for it to stop on. And the marker
+write is the one step in the whole pipeline that retries, because if it fails the failure is
+never recorded, and the next stage loads against a file that was never downloaded. That is
+the single direction this design exists to prevent, so after its retries it is allowed to
+fail loudly.
+
+Where the run actually failed is a query against the audit table, not a colour in a
+monitoring pane. That is the right place for it: the audit table is the thing that gets
+built into a pipeline health dashboard, and a colour is not.
+
 ## Bugs found and fixed
+
+### A ratio inflated by its own denominator
+
+The cross-source verification reported a count ratio per transfer year: transactions
+counted here against the sales the publisher reported. Every year from 1995 to 2025 sat within a few percent
+of one. 2026 read 1.5716.
+
+The year-by-year cell divided by `sum(coalesce(sales_volume, 0))`. Two months of 2026
+carried a published price and no published volume, so their transactions entered the
+numerator with nothing opposite them: five months counted here over three published, at a
+true ratio near 0.99, gives about 1.57. The aggregate cell above it was already correct,
+filtering on a populated volume, which is why the two disagreed without either looking
+obviously wrong.
+
+Restricting both sides to cells carrying both counts moves 2026 to 0.991 and leaves every
+settled year untouched, since all 31 carried a volume in every cell. `cells_with_both_counts`
+now sits beside `cells` in the output and reads 987 against 1,645 for 2026, which says
+the two populations differ before any ratio is computed.
+
+Found by trying to set a threshold on the number.
 
 ### A verification query Spark could not plan
 
@@ -679,6 +875,57 @@ A smaller finding from the same run: the landed object is lower-cased (`uk-hpi-f
 
 **Lesson:** this is the same rule the Silver transforms already follow with `try_cast` over `cast`, applied somewhere I had not thought to apply it. Under ANSI, prefer the form that yields null so a guard can name what went wrong, over the form that raises with an error naming nothing. The pattern generalises past casting, and the failure mode is specifically that a guard's own exception gets pre-empted by an engine error, which makes it look as though the guard is wrong rather than unreachable.
 
+### An incremental gate that always evaluated true
+
+The condition deciding whether to re-download a source was written as
+`last_refreshed != utcnow()`. It read correctly and it never blocked anything.
+
+`last_refreshed` is a date, `2026-08-27`. Raw `utcnow()` is a full timestamp,
+`2026-08-28T23:54:50.3498894Z`. The two strings can never be equal, so the condition was
+true on every evaluation, including twice on the same day. An earlier variant compared
+against `utcnow('YYYY-MM')`, which produced `2026-08` and was equally never equal.
+
+**Fix:** make both sides the same shape, `utcnow('yyyy-MM-dd')`, and compare with `>`
+instead of inequality. Format specifiers in that expression language are case-sensitive,
+which is what produced the mismatched shapes: `yyyy` is a year, `dd` is a day, and `DD` is
+not a specifier at all so it passes through as the literal text `DD`.
+
+**Lesson:** this is about how the defect presented. It was reported as "this works but
+isn't right", because downloads were happening. A gate that always passes and a gate that
+is working correctly produce the same observable behaviour whenever there is genuinely
+something to fetch, and they only diverge on the run where the gate should have said no.
+
+### A resume that skipped work by asking the wrong question
+
+The crime data arrives as seven compressed archives that together expand to nineteen
+gigabytes, well past what a single machine holds, so they are unpacked one at a time into a
+staging table and promoted in one write. To let a failed run pick up where it stopped, the
+loop skips any archive already staged.
+
+Keeping that staging table between monthly runs looks obviously right. Six of the seven
+archives cover closed periods that no later release touches, and re-unpacking seventy-eight
+million rows of settled history every month buys nothing. The archives themselves never
+change once published.
+
+What changes is which archive is authoritative. Each monthly release is a rolling
+three-year window, so consecutive releases overlap almost entirely, and the load resolves
+every month to whichever archive supplies it most recently. A resume that skips on "is this
+archive already staged" would leave the previous release in place, unpack the new one in
+full, and promote both: the same crimes twice, under two publication vintages. The load
+already had a verification query for exactly that condition, checking that every month
+comes from exactly one archive, and it would have started returning rows.
+
+**Fix:** change the question the resume asks. Not "is this archive present" but "do the
+months this archive holds still match the months it is authoritative for". Equal means
+skip, different means restage it for whatever it has left, and nothing means remove it.
+Each archive is written under a predicate scoped to itself, so restaging replaces its rows
+instead of adding a second copy.
+
+**Lesson:** what made this findable was a query rather than an argument. Grouping the
+staging table by publication vintage showed the seven archives covering 187 consecutive
+months with no overlap at all, which was the reason keeping them looked safe, and also the
+thing that was about to stop being true.
+
 ---
 
 ## Tech stack
@@ -694,7 +941,7 @@ A smaller finding from the same run: the landed object is lower-cased (`uk-hpi-f
 | Visualisation (planned) | Microsoft Fabric / Power BI |
 | Source control | GitHub (trunk-based, branch-protected main) |
 | Testing | pytest + chispa for PySpark transforms |
-| CI/CD (planned) | GitHub Actions |
+| CI/CD | GitHub Actions (lint and the test suite on every push and pull request) |
 
 ---
 
@@ -714,6 +961,10 @@ Both ADF and Databricks work against the same Git branches as local development,
 ```
 uk-property-intelligence-platform/
 ├── README.md
+├── .github/
+│   └── workflows/
+│       └── tests.yml                    # lint + discovered suite matrix, on push and PR
+├── ruff.toml                            # rules, and the Databricks runtime builtins
 ├── adf/
 │   └── pipelines/                       # JSON definitions, synced via ADF Git integration
 │       ├── PL_Master_Orchestrator.json
@@ -725,14 +976,27 @@ uk-property-intelligence-platform/
 │       └── PL_Incremental_Load_TemplatedLatest.json
 ├── config/
 │   ├── watermark.json                   # per-source state, URL parameters, load patterns
-│   └── quality_rules.json               # (planned) per-source validation rules for Silver
 ├── databricks_src/
 │   ├── setup/
 │   │   ├── README.md                    # bootstrap runbook
 │   │   ├── cluster_definition.json      # cluster + library spec
+│   │   ├── job_definition.json          # the twelve-task Silver and Gold job
+│   │   ├── job_definition_pre_run.json  # one-task URL resolver, run before the downloads
+│   │   ├── apply_job_definition.py      # creates or resets a job from either file, idempotent
 │   │   ├── 01_create_schemas.py         # Unity Catalog schema definitions (SQL via %sql cells)
 │   │   ├── 02_create_bronze_volumes.py  # External Volumes per Bronze source
-│   │   └── 03_create_quality_tables.py  # pipeline_run and pipeline_metric, DDL generated from the writer
+│   │   └── 03_create_quality_tables.py  # pipeline_run, pipeline_metric and rule_result, DDL generated from the writers
+│   ├── bronze/
+│   │   ├── notebooks/
+│   │   │   ├── 01_pre_run_resolve_urls.py    # resolves every source's URL and release date
+│   │   │   └── 02_post_run_record_state.py   # reads the download markers, records state, computes the plan
+│   │   └── watermark_library/
+│   │       ├── ons.py                   # reads the dataset page, since the file suffix follows no rule
+│   │       ├── hpi.py                   # constructs candidate addresses, confirms by HEAD
+│   │       ├── police.py                # crime-last-updated endpoint, archive confirmed by HEAD
+│   │       ├── resolution.py            # shared failure type and the Last-Modified parse
+│   │       ├── registry.py              # watermark lookup and field merge
+│   │       └── source_dependency.py     # the dependency chain and the skip planner
 │   ├── silver/
 │   │   ├── notebooks/                   # one notebook per source
 │   │   │   ├── 01_boe_base_rate.py      # BoE base rate → Silver (event-grain SCD2)
@@ -747,7 +1011,8 @@ uk-property-intelligence-platform/
 │   │       ├── ppd.py                   # pure PPD transform + typing, code-set, and key guards
 │   │       ├── doogal.py                # pure Doogal transform + code sets, BFPO and grid guards
 │   │       ├── ons.py                   # pure ONS transform + marker position guards
-│   │       └── police.py                # archive selection + single-pass rule registry
+│   │       ├── police.py                # archive selection + single-pass rule registry
+│   │       └── expressions.py           # column expressions shared across sources (date parse)
 │   ├── gold/
 │   │   ├── notebooks/                   # table DDL, dimension load, fact loads
 │   │   ├── transforms/                  # one module per table, plus shared conformance checks
@@ -755,8 +1020,10 @@ uk-property-intelligence-platform/
 │   ├── quality/
 │   │   ├── audit/
 │   │   │   └── writer.py                # run and metric writer, metric name registry, freshness bounds
-│   │   ├── rules/                       # (planned) JSON rule definitions per source
-│   │   └── framework/                   # (planned) rule-application engine
+│   │   └── rules/
+│   │       └── evaluator.py             # threshold registry, evaluator, rule_result
+│   ├── orchestration/
+│   │   └── stage.py                     # the gate every Silver and Gold notebook opens with
 │   └── utils/                           # shared constants (paths), Spark helpers, logging
 ├── requirements-dev.txt                 # local + CI test stack (pyspark, pytest, chispa)
 ├── tests/
@@ -769,25 +1036,36 @@ uk-property-intelligence-platform/
 │   ├── run_tests_police.py
 │   ├── run_tests_audit.py               # the audit writer
 │   ├── run_tests_shared.py              # suites belonging to no single source
+│   ├── run_tests_watermark.py           # resolvers, registry, dependency chain
+│   ├── run_tests_orchestration.py       # the stage gate
 │   ├── test_silver_transforms/
 │   │   ├── test_boe_base_rate.py        # BoE transform + DQ guard
 │   │   ├── test_hpi.py                  # HPI transform, coverage floor, typing
 │   │   ├── test_ppd.py                  # PPD transform, partition key, code sets
 │   │   ├── test_doogal.py               # Doogal transform, column contract, BFPO, coordinates
 │   │   ├── test_ons.py                  # ONS transform, marker positions, cover-sheet date parser
-│   │   └── test_police.py               # archive selection, rule registry, coordinate box
+│   │   ├── test_police.py               # archive selection, rule registry, coordinate box
+│   │   └── test_expressions.py          # shared date parse: formats, null handling, timezone
 │   ├── test_gold_transforms/
 │   │   ├── test_dim_date.py             # calendar expansion, rate interval chain
 │   │   ├── test_dim_area.py             # levels, ancestry, name precedence, derived codes
 │   │   ├── test_dim_lsoa.py             # district assignment, boundary vintage, conformance
 │   │   ├── test_dim_crime_type.py       # vocabulary map, publication window
 │   │   └── test_conformance.py          # shared key and grain checks
+│   ├── test_bronze_watermark/
+│   │   ├── test_registry.py             # watermark lookup, field merge
+│   │   ├── test_source_dependency.py    # dependency chain, skip planner, check inputs
+│   │   ├── test_resolution.py           # failure type, Last-Modified parse
+│   │   ├── test_ons.py                  # dataset page read
+│   │   ├── test_hpi.py                  # candidate address walk
+│   │   └── test_police.py               # endpoint read, archive confirmation
+│   ├── test_orchestration/
+│   │   └── test_stage.py                # plan read, both gate questions, the skip branch
 │   ├── test_quality_audit/
 │   │   └── test_writer.py               # metric registry, generated DDL, value routing, freshness verdict
-│   └── test_quality_framework/          # (planned)
+│   └── test_quality_rules/
+│       └── test_evaluator.py           # registry, refused values, DDL, verdict constraint
 ├── synapse/                             # (planned) external table definitions
-├── .github/
-│   └── workflows/                       # (planned) CI/CD
 └── docs/
     ├── source_discovery_notes.md        # notes on each source's quirks, auth patterns
     ├── DESIGN.md                        # design document of the entire project
@@ -826,15 +1104,13 @@ uk-property-intelligence-platform/
 
 For sources with `full_load_complete: true` and a valid `last_year_ingested` or `last_refreshed` date, later runs of the master pipeline fetch only new data.
 
-### Monthly manual updates
+### Monthly runs
 
-Three sources have fully-dynamic URLs that change with each release and need a watermark update:
+Nothing in the watermark is edited by hand between runs. A pre-run job resolves every source's current URL and release date before the first download, and each source is asked the way its publisher addresses things: ONS reads the dataset page, because its filename carries a suffix that follows no rule; HPI builds candidate addresses newest first and confirms one with a HEAD; Police reads the crime-last-updated endpoint and confirms the archive; and the three sources published at a fixed address are asked only when they last changed.
 
-- **HPI** — update `relative_url` with the new monthly filename.
-- **ONS Private Rents** — copy `relative_url` from the dataset page. The release-date folder follows the publication calendar, but the filename carries an arbitrary suffix that does not, so the URL cannot be constructed from the previous month's.
-- **Police.uk** — update `relative_url` with the latest monthly archive, then delete the one it supersedes. Each archive is a full 36-month snapshot, so only the newest is needed and keeping them all adds 1.6 GB a month for nothing.
+The download gate then compares that release date against the date the source last succeeded, so a run fetches only what has been republished since. Three sources used to need a hand-edited URL every month, and a missed edit was silent: the pipeline re-fetched the previous release and reported success. That is the failure the gate exists to remove.
 
-A missed update fails silently: the pipeline re-fetches the previous release and reports success. Confirm freshness from the ingested data rather than from the run status. A Databricks notebook to automate these URL updates is planned. HPI and Police.uk are pattern-matchable; ONS is not, and needs the dataset page read for the current link.
+After the downloads, a twelve-task Databricks job runs the six Silver notebooks, the four Gold load notebooks and the cross-source check. A source that failed to download skips exactly the tables built on it, and each skipped stage records what it was waiting on.
 
 ---
 
@@ -872,9 +1148,9 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 - [x] Magic-byte validation for binary inputs (postcode archive, ONS workbook, all seven crime archives)
 - [x] Pipeline audit tables for per-run quality metrics — `quality.pipeline_run` and `quality.pipeline_metric`, written by all six Silver notebooks
 - [x] Freshness value recorded per Silver source, with a per-source bound that aborts the load
-- [x] pytest + chispa harness (SparkSession fixture, cluster runner), all six transform suites plus the audit writer, 366 tests
+- [x] pytest + chispa harness (SparkSession fixture, cluster runner) across the Silver transforms, the Gold tables, the audit writer and the threshold rules
 
-### Phase 3 — Gold layer
+### Phase 3 — Gold layer ✅
 
 - [x] Dimensional model design: grain, keys and dimension structure settled against measurement before any transform was written
 - [x] Declared DDL for thirteen tables, four dimensions and nine facts, created on the cluster with informational keys and enforced check constraints
@@ -888,14 +1164,17 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 
 ### Phase 4 — Advanced features
 
-- [ ] Parameterised quality-rules framework (`quality_rules.json`), shaped so a rule can express join and reconciliation checks as well as row checks
-- [ ] Watermark automation from Databricks; whether the watermark moves to Delta or stays JSON written back from Databricks is undecided
+- [x] Threshold rule framework: `quality/rules/evaluator.py` and `quality.rule_result`, with three reconciliation rules whose bounds were read off thirty-two measured years. The planned JSON rule file was dropped after counting what there was to configure
+- [x] GitHub Actions CI/CD: ruff and the full test suite on every push and pull request, suite directories discovered rather than listed
+- [x] Watermark automation — every source resolves its own current URL and release date before the run, and the pipeline fetches only what has actually been republished
+- [x] Orchestration — one pipeline runs a pre-run job, gates and copies six sources, then runs a twelve-task Databricks job end to end
+- [x] Failure cascade — a source that fails at ingestion skips exactly the tables built on it, and every stage that waits records why
+- [ ] Freshness bounds set from the values the runs have recorded, replacing the six unset placeholders
+- [ ] Statistical anomaly detection as a further rule kind: a 3-sigma rolling window over the recorded history, not a single run
+- [x] PPD annual reconcile: a refresh month configured on the watermark and read by the yearly-stepped router, so August re-fetches every yearly file and both layers rebuild from it
 - [ ] PPD changelog-driven refresh: the orchestrator reads the distinct transfer years in the change-only file, re-downloads those yearly files, and discards it. Fetched only when the refresh is narrow, since a full or named-year reconcile already covers what it would name
-- [ ] PPD reconcile: annual full pass and an on-demand pass over named years, diffing against Silver and healing with `replaceWhere`
 - [ ] Quarantine table for rejected records, only if the population justifies it
-- [ ] Statistical anomaly detection (3-sigma rolling window on price changes)
-- [ ] Delta Lake schema evolution demonstration
-- [ ] GitHub Actions CI/CD (JSON schema validation for ADF pipelines and config)
+- [ ] JSON schema validation for the watermark and the ADF pipeline definitions, as a third CI job
 
 ### Phase 5 — Consumption
 
@@ -907,4 +1186,4 @@ A missed update fails silently: the pipeline re-fetches the previous release and
 
 ---
 
-*Project status: Phase 2 complete, Phase 3 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested and confirmed on the cluster. The Gold star is finished: thirteen tables created, all four dimensions loaded and verified at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; and the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998 across 123,375 cells. Phase 4 covers CI/CD, the testing framework and the quality layer. Last updated 20-08-2026.*
+*Project status: Phase 2 complete, Phase 3 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested and confirmed on the cluster. The Gold star is finished: thirteen tables created, all four dimensions loaded and verified at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; and the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998 across 123,375 cells. Phase 4 covers CI/CD, the testing framework, the quality layer and orchestration, and is in progress: continuous integration is running, the threshold rule framework is built with three reconciliation rules that recorded 65 results on their first run, every source resolves its own URL and release date before a run, and one pipeline now drives a pre-run job, six gated downloads and a twelve-task Databricks job, measured end to end at 1h 11m 27s. A source that fails at ingestion skips exactly the tables built on it, and every stage that waits records why. What remains in the phase is freshness bounds, anomaly detection and a third continuous integration job. Last updated 02-09-2026.*

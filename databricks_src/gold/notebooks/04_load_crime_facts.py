@@ -23,6 +23,14 @@
 # MAGIC Four `AuditRun` instances, one per table, so `rows_written` is a real number
 # MAGIC rather than a total across whatever this notebook wrote. All four names are
 # MAGIC already in `GOLD_TABLES`.
+# MAGIC #
+# MAGIC Each is gated on its own, and this is the notebook where that matters. The two
+# MAGIC small-area tables stand behind `dim_lsoa` and `dim_crime_type`; the two area
+# MAGIC tables stand behind `dim_area` as well, because the levels above a small area are
+# MAGIC read off it. A run where `dim_area` did not rebuild therefore writes the first two
+# MAGIC and not the second two. Skipping them saves nothing at runtime, since both
+# MAGIC aggregates are built for the small-area tables regardless: the gate is there for
+# MAGIC correctness, not for time.
 # MAGIC
 # MAGIC Anti-social behaviour never reaches the two type tables. It is dropped in the
 # MAGIC shared aggregate and refused by check constraint as well, so a row arriving there
@@ -68,7 +76,7 @@ from databricks_src.gold.transforms.fact_lsoa_month_crime import (
 from databricks_src.gold.transforms.fact_lsoa_month_crime_total import (
     transform_fact_lsoa_month_crime_total,
 )
-from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.orchestration import stage
 from databricks_src.utils.gold_write import overwrite
 
 CATALOG = "uk_property_intel"
@@ -190,6 +198,32 @@ def check_crime_types(audit_run, fact_table: str, fact_name: str) -> None:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## The stage plan
+# MAGIC
+# MAGIC The only Gold notebook whose four tables can answer differently. `dim_area`
+# MAGIC failing or never rebuilding takes the two area tables and leaves the two
+# MAGIC small-area ones, which is the one partial outcome reachable here.
+# MAGIC
+# MAGIC The resolve below sits inside the first run because the first table can never be
+# MAGIC the one that waits: everything the small-area tables stand behind, the area tables
+# MAGIC stand behind too.
+
+# COMMAND ----------
+
+plan = stage.read_plan(dbutils)  # noqa: F821
+
+for _fact in (
+    "fact_lsoa_month_crime",
+    "fact_lsoa_month_crime_total",
+    "fact_area_month_crime",
+    "fact_area_month_crime_total",
+):
+    _waiting = plan.waiting_on(_fact)
+    print(f"{_fact:30}: {'waiting on ' + ', '.join(_waiting) if _waiting else 'runs'}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Resolve once
 # MAGIC
 # MAGIC The join runs here and nowhere else. Crime already carries a small-area code, so
@@ -211,33 +245,30 @@ def check_crime_types(audit_run, fact_table: str, fact_name: str) -> None:
 
 # COMMAND ----------
 
-lsoa_crime_run = AuditRun(
-    source="fact_lsoa_month_crime", layer="gold", ingestion_ts=INGESTION_TS
-)
-lsoa_crime_run.start()
-print(f"fact_lsoa_month_crime run {lsoa_crime_run.run_id}")
+lsoa_crime_run = stage.open_stage("fact_lsoa_month_crime", "gold", INGESTION_TS, plan)
 
-with lsoa_crime_run.step():
-    labelled = resolve_crime(
-        spark.table(POLICE),  # noqa: F821
-        spark.table(DIM_LSOA),  # noqa: F821
-        spark.table(DIM_AREA),  # noqa: F821
-    )
-    labelled.persist(StorageLevel.DISK_ONLY)
+if lsoa_crime_run is not None:
+    with lsoa_crime_run.step():
+        labelled = resolve_crime(
+            spark.table(POLICE),  # noqa: F821
+            spark.table(DIM_LSOA),  # noqa: F821
+            spark.table(DIM_AREA),  # noqa: F821
+        )
+        labelled.persist(StorageLevel.DISK_ONLY)
 
-    population_counts = (
-        labelled.groupBy(POPULATION_COLUMN)
-        .agg(F.count(F.lit(1)).alias("records"))
-        .collect()
-    )
-    source_rows = sum(row["records"] for row in population_counts)
-    record_populations(lsoa_crime_run, population_counts)
+        population_counts = (
+            labelled.groupBy(POPULATION_COLUMN)
+            .agg(F.count(F.lit(1)).alias("records"))
+            .collect()
+        )
+        source_rows = sum(row["records"] for row in population_counts)
+        record_populations(lsoa_crime_run, population_counts)
 
-    resolved = labelled.filter(is_resolved())
+        resolved = labelled.filter(is_resolved())
 
-for row in sorted(population_counts, key=lambda item: -item["records"]):
-    print(f"{row['records']:>12,}  {row[POPULATION_COLUMN]}")
-print(f"{source_rows:>12,}  read")
+    for row in sorted(population_counts, key=lambda item: -item["records"]):
+        print(f"{row['records']:>12,}  {row[POPULATION_COLUMN]}")
+    print(f"{source_rows:>12,}  read")
 
 # COMMAND ----------
 
@@ -253,13 +284,14 @@ print(f"{source_rows:>12,}  read")
 
 # COMMAND ----------
 
-with lsoa_crime_run.step():
-    type_counts = small_area_type_counts(resolved)
-    type_counts.persist(StorageLevel.DISK_ONLY)
-    totals = small_area_totals(resolved)
-    totals.persist(StorageLevel.DISK_ONLY)
-    print(f"{type_counts.count():>12,}  small-area type counts")
-    print(f"{totals.count():>12,}  small-area totals")
+if lsoa_crime_run is not None:
+    with lsoa_crime_run.step():
+        type_counts = small_area_type_counts(resolved)
+        type_counts.persist(StorageLevel.DISK_ONLY)
+        totals = small_area_totals(resolved)
+        totals.persist(StorageLevel.DISK_ONLY)
+        print(f"{type_counts.count():>12,}  small-area type counts")
+        print(f"{totals.count():>12,}  small-area totals")
 
 # COMMAND ----------
 
@@ -272,27 +304,29 @@ with lsoa_crime_run.step():
 
 # COMMAND ----------
 
-with lsoa_crime_run.step():
-    facts = transform_fact_lsoa_month_crime(type_counts)
-    written = overwrite(facts, FACT_LSOA_CRIME)
-    lsoa_crime_run.measure("gold_rows", written)
+if lsoa_crime_run is not None:
+    with lsoa_crime_run.step():
+        facts = transform_fact_lsoa_month_crime(type_counts)
+        written = overwrite(facts, FACT_LSOA_CRIME)
+        lsoa_crime_run.measure("gold_rows", written)
 
-print(f"{written:,} rows written to {FACT_LSOA_CRIME}")
+    print(f"{written:,} rows written to {FACT_LSOA_CRIME}")
 
 # COMMAND ----------
 
-with lsoa_crime_run.step():
-    record_conformance(
-        lsoa_crime_run,
-        FACT_LSOA_CRIME,
-        "fact_lsoa_month_crime",
-        "lsoa_code",
-        DIM_LSOA,
-        "dim_lsoa",
-    )
-    check_crime_types(lsoa_crime_run, FACT_LSOA_CRIME, "fact_lsoa_month_crime")
+if lsoa_crime_run is not None:
+    with lsoa_crime_run.step():
+        record_conformance(
+            lsoa_crime_run,
+            FACT_LSOA_CRIME,
+            "fact_lsoa_month_crime",
+            "lsoa_code",
+            DIM_LSOA,
+            "dim_lsoa",
+        )
+        check_crime_types(lsoa_crime_run, FACT_LSOA_CRIME, "fact_lsoa_month_crime")
 
-lsoa_crime_run.succeed(rows_written=written)
+    lsoa_crime_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
@@ -305,33 +339,33 @@ lsoa_crime_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
-lsoa_total_run = AuditRun(
-    source="fact_lsoa_month_crime_total", layer="gold", ingestion_ts=INGESTION_TS
+lsoa_total_run = stage.open_stage(
+    "fact_lsoa_month_crime_total", "gold", INGESTION_TS, plan
 )
-lsoa_total_run.start()
-print(f"fact_lsoa_month_crime_total run {lsoa_total_run.run_id}")
 
-with lsoa_total_run.step():
-    record_populations(lsoa_total_run, population_counts)
-    facts = transform_fact_lsoa_month_crime_total(totals)
-    written = overwrite(facts, FACT_LSOA_TOTAL)
-    lsoa_total_run.measure("gold_rows", written)
+if lsoa_total_run is not None:
+    with lsoa_total_run.step():
+        record_populations(lsoa_total_run, population_counts)
+        facts = transform_fact_lsoa_month_crime_total(totals)
+        written = overwrite(facts, FACT_LSOA_TOTAL)
+        lsoa_total_run.measure("gold_rows", written)
 
-print(f"{written:,} rows written to {FACT_LSOA_TOTAL}")
+    print(f"{written:,} rows written to {FACT_LSOA_TOTAL}")
 
 # COMMAND ----------
 
-with lsoa_total_run.step():
-    record_conformance(
-        lsoa_total_run,
-        FACT_LSOA_TOTAL,
-        "fact_lsoa_month_crime_total",
-        "lsoa_code",
-        DIM_LSOA,
-        "dim_lsoa",
-    )
+if lsoa_total_run is not None:
+    with lsoa_total_run.step():
+        record_conformance(
+            lsoa_total_run,
+            FACT_LSOA_TOTAL,
+            "fact_lsoa_month_crime_total",
+            "lsoa_code",
+            DIM_LSOA,
+            "dim_lsoa",
+        )
 
-lsoa_total_run.succeed(rows_written=written)
+    lsoa_total_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
@@ -345,34 +379,32 @@ lsoa_total_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
-area_crime_run = AuditRun(
-    source="fact_area_month_crime", layer="gold", ingestion_ts=INGESTION_TS
-)
-area_crime_run.start()
-print(f"fact_area_month_crime run {area_crime_run.run_id}")
+area_crime_run = stage.open_stage("fact_area_month_crime", "gold", INGESTION_TS, plan)
 
-with area_crime_run.step():
-    record_populations(area_crime_run, population_counts)
-    facts = transform_fact_area_month_crime(type_counts)
-    written = overwrite(facts, FACT_AREA_CRIME)
-    area_crime_run.measure("gold_rows", written)
+if area_crime_run is not None:
+    with area_crime_run.step():
+        record_populations(area_crime_run, population_counts)
+        facts = transform_fact_area_month_crime(type_counts)
+        written = overwrite(facts, FACT_AREA_CRIME)
+        area_crime_run.measure("gold_rows", written)
 
-print(f"{written:,} rows written to {FACT_AREA_CRIME}")
+    print(f"{written:,} rows written to {FACT_AREA_CRIME}")
 
 # COMMAND ----------
 
-with area_crime_run.step():
-    record_conformance(
-        area_crime_run,
-        FACT_AREA_CRIME,
-        "fact_area_month_crime",
-        "area_code",
-        DIM_AREA,
-        "dim_area",
-    )
-    check_crime_types(area_crime_run, FACT_AREA_CRIME, "fact_area_month_crime")
+if area_crime_run is not None:
+    with area_crime_run.step():
+        record_conformance(
+            area_crime_run,
+            FACT_AREA_CRIME,
+            "fact_area_month_crime",
+            "area_code",
+            DIM_AREA,
+            "dim_area",
+        )
+        check_crime_types(area_crime_run, FACT_AREA_CRIME, "fact_area_month_crime")
 
-area_crime_run.succeed(rows_written=written)
+    area_crime_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
@@ -384,39 +416,41 @@ area_crime_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
-area_total_run = AuditRun(
-    source="fact_area_month_crime_total", layer="gold", ingestion_ts=INGESTION_TS
+area_total_run = stage.open_stage(
+    "fact_area_month_crime_total", "gold", INGESTION_TS, plan
 )
-area_total_run.start()
-print(f"fact_area_month_crime_total run {area_total_run.run_id}")
 
-with area_total_run.step():
-    record_populations(area_total_run, population_counts)
-    facts = transform_fact_area_month_crime_total(totals)
-    written = overwrite(facts, FACT_AREA_TOTAL)
-    area_total_run.measure("gold_rows", written)
+if area_total_run is not None:
+    with area_total_run.step():
+        record_populations(area_total_run, population_counts)
+        facts = transform_fact_area_month_crime_total(totals)
+        written = overwrite(facts, FACT_AREA_TOTAL)
+        area_total_run.measure("gold_rows", written)
 
-print(f"{written:,} rows written to {FACT_AREA_TOTAL}")
-
-# COMMAND ----------
-
-with area_total_run.step():
-    record_conformance(
-        area_total_run,
-        FACT_AREA_TOTAL,
-        "fact_area_month_crime_total",
-        "area_code",
-        DIM_AREA,
-        "dim_area",
-    )
-
-area_total_run.succeed(rows_written=written)
+    print(f"{written:,} rows written to {FACT_AREA_TOTAL}")
 
 # COMMAND ----------
 
-_ = totals.unpersist()
-_ = type_counts.unpersist()
-_ = labelled.unpersist()
+if area_total_run is not None:
+    with area_total_run.step():
+        record_conformance(
+            area_total_run,
+            FACT_AREA_TOTAL,
+            "fact_area_month_crime_total",
+            "area_code",
+            DIM_AREA,
+            "dim_area",
+        )
+
+    area_total_run.succeed(rows_written=written)
+
+# COMMAND ----------
+
+# All three were built inside the first run, so they exist exactly when it opened.
+if lsoa_crime_run is not None:
+    _ = totals.unpersist()
+    _ = type_counts.unpersist()
+    _ = labelled.unpersist()
 
 # COMMAND ----------
 

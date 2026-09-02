@@ -17,6 +17,12 @@
 # MAGIC
 # MAGIC Three `AuditRun` instances, one per table. `rows_written` is then a real number
 # MAGIC rather than a total across whatever this notebook happened to write.
+# MAGIC #
+# MAGIC Each is gated on its own. All three stand behind `dim_area` and `dim_lsoa` and
+# MAGIC behind nothing else, so they are planned together or not at all, which is what
+# MAGIC lets the join below sit inside the first run and be read by the other two. That
+# MAGIC is an invariant of the chain rather than of this notebook: were it to break, the
+# MAGIC later sections would raise on a name the first never bound, which is loud.
 # MAGIC
 # MAGIC The resolution is measured before it is filtered. Each run records the same six
 # MAGIC population counts under `source_rows`, scoped by population, so a run row says
@@ -68,7 +74,7 @@ from databricks_src.gold.transforms.transactions import (
     is_resolved,
     resolve_transactions,
 )
-from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.orchestration import stage
 from databricks_src.utils.gold_write import overwrite
 
 CATALOG = "uk_property_intel"
@@ -89,6 +95,28 @@ FACT_LSOA_PRICE = f"{GOLD}.fact_lsoa_year_price"
 # One timestamp for the whole notebook, carried on all three audit rows so a single load
 # reads as one event even though it is three runs.
 INGESTION_TS = datetime.now(timezone.utc)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## The stage plan
+# MAGIC
+# MAGIC All three answer the same way, since they stand behind the same two dimensions.
+# MAGIC `dim_date` is not among them: these facts conform against the calendar without
+# MAGIC being built from it, so a calendar a load behind still lets them run and
+# MAGIC `assert_keys_conform` is what catches it.
+
+# COMMAND ----------
+
+plan = stage.read_plan(dbutils)  # noqa: F821
+
+for _fact in (
+    "fact_area_month_price",
+    "fact_area_month_transaction_mix",
+    "fact_lsoa_year_price",
+):
+    _waiting = plan.waiting_on(_fact)
+    print(f"{_fact:32}: {'waiting on ' + ', '.join(_waiting) if _waiting else 'runs'}")
 
 # COMMAND ----------
 
@@ -176,38 +204,38 @@ def record_area_conformance(audit_run, fact_table: str, fact_name: str) -> None:
 
 # COMMAND ----------
 
-price_run = AuditRun(
-    source="fact_area_month_price", layer="gold", ingestion_ts=INGESTION_TS
-)
-price_run.start()
-print(f"fact_area_month_price run {price_run.run_id}")
+price_run = stage.open_stage("fact_area_month_price", "gold", INGESTION_TS, plan)
 
-with price_run.step():
-    labelled = resolve_transactions(
-        spark.table(PPD),  # noqa: F821
-        spark.table(DOOGAL),  # noqa: F821
-        spark.table(DIM_AREA),  # noqa: F821
-    )
-    labelled.persist(StorageLevel.DISK_ONLY)
+if price_run is not None:
+    with price_run.step():
+        labelled = resolve_transactions(
+            spark.table(PPD),  # noqa: F821
+            spark.table(DOOGAL),  # noqa: F821
+            spark.table(DIM_AREA),  # noqa: F821
+        )
+        labelled.persist(StorageLevel.DISK_ONLY)
 
-    # One pass for every population. The base is the denominator rather than a metric of
-    # its own: a Gold run reads Silver tables whose own runs recorded what they hold.
-    population_counts = (
-        labelled.groupBy(POPULATION_COLUMN)
-        .agg(F.count(F.lit(1)).alias("rows"))
-        .collect()
-    )
-    source_rows = sum(row["rows"] for row in population_counts)
-    resolved_rows = next(
-        row["rows"] for row in population_counts if row[POPULATION_COLUMN] == RESOLVED
-    )
-    record_populations(price_run, population_counts)
+        # One pass for every population. The base is the denominator rather than a
+        # metric of its own: a Gold run reads Silver tables whose own runs recorded
+        # what they hold.
+        population_counts = (
+            labelled.groupBy(POPULATION_COLUMN)
+            .agg(F.count(F.lit(1)).alias("rows"))
+            .collect()
+        )
+        source_rows = sum(row["rows"] for row in population_counts)
+        resolved_rows = next(
+            row["rows"]
+            for row in population_counts
+            if row[POPULATION_COLUMN] == RESOLVED
+        )
+        record_populations(price_run, population_counts)
 
-    resolved = labelled.filter(is_resolved())
+        resolved = labelled.filter(is_resolved())
 
-for row in sorted(population_counts, key=lambda item: -item["rows"]):
-    print(f"{row['rows']:>12,}  {row[POPULATION_COLUMN]}")
-print(f"{source_rows:>12,}  read")
+    for row in sorted(population_counts, key=lambda item: -item["rows"]):
+        print(f"{row['rows']:>12,}  {row[POPULATION_COLUMN]}")
+    print(f"{source_rows:>12,}  read")
 
 # COMMAND ----------
 
@@ -223,25 +251,30 @@ print(f"{source_rows:>12,}  read")
 
 # COMMAND ----------
 
-with price_run.step():
-    excluded = resolved.filter(~is_full_market_value()).count()
-    price_run.measure(
-        "source_rows", excluded, scope="excluded_category_b", denominator=resolved_rows
-    )
+if price_run is not None:
+    with price_run.step():
+        excluded = resolved.filter(~is_full_market_value()).count()
+        price_run.measure(
+            "source_rows",
+            excluded,
+            scope="excluded_category_b",
+            denominator=resolved_rows,
+        )
 
-    facts = transform_fact_area_month_price(resolved)
-    written = overwrite(facts, FACT_PRICE)
-    price_run.measure("gold_rows", written)
+        facts = transform_fact_area_month_price(resolved)
+        written = overwrite(facts, FACT_PRICE)
+        price_run.measure("gold_rows", written)
 
-print(f"{excluded:,} category B transactions excluded")
-print(f"{written:,} rows written to {FACT_PRICE}")
+    print(f"{excluded:,} category B transactions excluded")
+    print(f"{written:,} rows written to {FACT_PRICE}")
 
 # COMMAND ----------
 
-with price_run.step():
-    record_area_conformance(price_run, FACT_PRICE, "fact_area_month_price")
+if price_run is not None:
+    with price_run.step():
+        record_area_conformance(price_run, FACT_PRICE, "fact_area_month_price")
 
-price_run.succeed(rows_written=written)
+    price_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
@@ -256,29 +289,27 @@ price_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
-mix_run = AuditRun(
-    source="fact_area_month_transaction_mix", layer="gold", ingestion_ts=INGESTION_TS
+mix_run = stage.open_stage(
+    "fact_area_month_transaction_mix", "gold", INGESTION_TS, plan
 )
-mix_run.start()
-print(f"fact_area_month_transaction_mix run {mix_run.run_id}")
 
-with mix_run.step():
-    record_populations(mix_run, population_counts)
+if mix_run is not None:
+    with mix_run.step():
+        record_populations(mix_run, population_counts)
 
-    facts = transform_fact_area_month_transaction_mix(resolved)
-    written = overwrite(facts, FACT_MIX)
-    mix_run.measure("gold_rows", written)
+        facts = transform_fact_area_month_transaction_mix(resolved)
+        written = overwrite(facts, FACT_MIX)
+        mix_run.measure("gold_rows", written)
 
-print(f"{written:,} rows written to {FACT_MIX}")
+    print(f"{written:,} rows written to {FACT_MIX}")
 
 # COMMAND ----------
 
-with mix_run.step():
-    record_area_conformance(
-        mix_run, FACT_MIX, "fact_area_month_transaction_mix"
-    )
+if mix_run is not None:
+    with mix_run.step():
+        record_area_conformance(mix_run, FACT_MIX, "fact_area_month_transaction_mix")
 
-mix_run.succeed(rows_written=written)
+    mix_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
@@ -298,68 +329,72 @@ mix_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
-lsoa_run = AuditRun(
-    source="fact_lsoa_year_price", layer="gold", ingestion_ts=INGESTION_TS
-)
-lsoa_run.start()
-print(f"fact_lsoa_year_price run {lsoa_run.run_id}")
+lsoa_run = stage.open_stage("fact_lsoa_year_price", "gold", INGESTION_TS, plan)
 
-with lsoa_run.step():
-    record_populations(lsoa_run, population_counts)
-    lsoa_run.measure(
-        "source_rows", excluded, scope="excluded_category_b", denominator=resolved_rows
-    )
+if lsoa_run is not None:
+    with lsoa_run.step():
+        record_populations(lsoa_run, population_counts)
+        lsoa_run.measure(
+            "source_rows",
+            excluded,
+            scope="excluded_category_b",
+            denominator=resolved_rows,
+        )
 
-    unlocated = resolved.filter(no_small_area() & is_full_market_value()).count()
-    lsoa_run.measure(
-        "source_rows", unlocated, scope="no_small_area", denominator=resolved_rows
-    )
+        unlocated = resolved.filter(no_small_area() & is_full_market_value()).count()
+        lsoa_run.measure(
+            "source_rows", unlocated, scope="no_small_area", denominator=resolved_rows
+        )
 
-    facts = transform_fact_lsoa_year_price(resolved)
-    written = overwrite(facts, FACT_LSOA_PRICE)
-    lsoa_run.measure("gold_rows", written)
+        facts = transform_fact_lsoa_year_price(resolved)
+        written = overwrite(facts, FACT_LSOA_PRICE)
+        lsoa_run.measure("gold_rows", written)
 
-print(f"{unlocated:,} category A transactions carry no small-area code")
-print(f"{written:,} rows written to {FACT_LSOA_PRICE}")
-
-# COMMAND ----------
-
-with lsoa_run.step():
-    fact = spark.table(FACT_LSOA_PRICE)  # noqa: F821
-    small_areas = spark.table(DIM_LSOA)  # noqa: F821
-
-    assert_keys_conform(
-        fact,
-        small_areas,
-        child_column="lsoa_code",
-        parent_column="lsoa_code",
-        child_name="fact_lsoa_year_price",
-        parent_name="dim_lsoa",
-    )
-    assert_keys_conform(
-        fact,
-        spark.table(DIM_DATE),  # noqa: F821
-        child_column="year_start_date",
-        parent_column="date_key",
-        child_name="fact_lsoa_year_price",
-        parent_name="dim_date",
-    )
-
-    reached, total = measure_dimension_coverage(
-        fact, small_areas, "lsoa_code", "lsoa_code"
-    )
-    lsoa_run.measure(
-        "dimension_rows_with_facts", reached, scope="dim_lsoa", denominator=total
-    )
-
-print("fact_lsoa_year_price keys resolve in dim_lsoa and dim_date")
-print(f"{reached:,} of {total:,} small areas carry rows")
-
-lsoa_run.succeed(rows_written=written)
+    print(f"{unlocated:,} category A transactions carry no small-area code")
+    print(f"{written:,} rows written to {FACT_LSOA_PRICE}")
 
 # COMMAND ----------
 
-_ = labelled.unpersist()
+if lsoa_run is not None:
+    with lsoa_run.step():
+        fact = spark.table(FACT_LSOA_PRICE)  # noqa: F821
+        small_areas = spark.table(DIM_LSOA)  # noqa: F821
+
+        assert_keys_conform(
+            fact,
+            small_areas,
+            child_column="lsoa_code",
+            parent_column="lsoa_code",
+            child_name="fact_lsoa_year_price",
+            parent_name="dim_lsoa",
+        )
+        assert_keys_conform(
+            fact,
+            spark.table(DIM_DATE),  # noqa: F821
+            child_column="year_start_date",
+            parent_column="date_key",
+            child_name="fact_lsoa_year_price",
+            parent_name="dim_date",
+        )
+
+        reached, total = measure_dimension_coverage(
+            fact, small_areas, "lsoa_code", "lsoa_code"
+        )
+        lsoa_run.measure(
+            "dimension_rows_with_facts", reached, scope="dim_lsoa", denominator=total
+        )
+
+    print("fact_lsoa_year_price keys resolve in dim_lsoa and dim_date")
+    print(f"{reached:,} of {total:,} small areas carry rows")
+
+    lsoa_run.succeed(rows_written=written)
+
+# COMMAND ----------
+
+# Released against the run that built it, not against the last one to read it, since
+# the three are gated apart even though the chain plans them together.
+if price_run is not None:
+    _ = labelled.unpersist()
 
 # COMMAND ----------
 

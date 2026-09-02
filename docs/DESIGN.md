@@ -2,7 +2,7 @@
 
 This document captures the architectural decisions, engineering trade-offs, and delivery plan behind the platform. It complements the project README with deeper rationale and serves as the working design reference across phases.
 
-> **Status:** Phase 1 complete, Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, and all four dimensions and all nine facts are loaded and verified on the cluster at 36,119,680 fact rows. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998.
+> **Status:** Phase 1 complete, Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, and all four dimensions and all nine facts are loaded and verified on the cluster at 36,119,680 fact rows. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is in progress: continuous integration runs lint and the full test suite on every push and pull request, and the reconciliation is asserted against registered thresholds instead of read off a screen. Phase 4.1 and 4.2 are complete: every source resolves its own URL and release date before a run, and one pipeline drives a pre-run job, six gated copies and a twelve-task Databricks job in which a source that fails at Bronze skips exactly the tables built on it.
 
 ---
 
@@ -411,7 +411,7 @@ I name and organise HTTP linked services by their authentication shape, not by t
 
 ### 3. Watermark as a JSON array in ADLS
 
-The watermark is stored as a JSON array (not an object) because ADF's Lookup plus ForEach iterates arrays cleanly. It lives in ADLS over Azure SQL, which removes an entire database dependency. When Databricks joins the stack in Phase 2, the watermark moves to a Delta table.
+The watermark is stored as a JSON array (not an object) because ADF's Lookup plus ForEach iterates arrays cleanly. It lives in ADLS over Azure SQL, which removes an entire database dependency. The watermark stayed a JSON array on the volume when Databricks joined the stack. Decision 27 records why: ADF reads and writes it on every orchestration run at no compute cost, and moving that state into Delta would start a cluster before any data moves, for a write-side benefit a notebook writing the JSON back already gives.
 
 ### 4. Three-level route cascade
 
@@ -600,6 +600,12 @@ The category B distribution says the same thing from a different direction. Land
 **Row counts cannot serve as the comparison.** A change row leaves the count untouched and a delete offsets an addition, so a year can match exactly on count and differ in every value. The measured gap is large: the 1995 file moved by 18 rows across four releases while a single release's delta carried 31 rows against that year. The diff therefore hashes the business columns on both sides, anti-joins on TUID for presence, then compares hashes for rows present in both, and only rows whose hash differs are unpacked to find which columns moved. Hashing also avoids comparing 31M rows column by column, but correctness is the reason for it, not cost.
 
 This decision would change if Land Registry stopped applying corrections to the yearly files. The change-only file would then be the sole record of them, retaining it would become necessary, and the rebuild would silently go stale. Nothing in the platform would notice, which is the one reason the annual reconcile is scheduled and not run on demand alone.
+
+**Considered and rejected, 28-08-2026: generalising this to every source.** The other five need no annual reload. HPI, Doogal, BoE and ONS are single-file sources with no incremental path at all, so every run is already a full load of the whole publication. Police archives are point-in-time snapshots and corrections arrive as new snapshots that the monthly incremental already collects, so re-fetching the seven archives already in Bronze would return identical bytes at roughly 12 GB a year for nothing. See Decision 65.
+
+Worth recording that the scope of the reconcile is smaller than it first looks. Silver declares each table once and writes with `INSERT OVERWRITE`, and the Gold load notebooks share `overwrite`, so both layers already rebuild completely from whatever Bronze holds on every run. A full Bronze fetch followed by an ordinary downstream run *is* the annual rebuild; no new Silver or Gold logic is involved.
+
+Implemented as `full_load_yearly_refresh_month` on the watermark, `8` for PPD and `0` for Police, read by the yearly-stepped router as `@or(equals(p_full_load_complete, false), equals(p_full_load_yearly_refresh_month, int(utcnow('MM'))))`. `0` and not null: a month is 1 to 12 so it can never match, it is unambiguously an integer for a typed parameter, and a key absent from an entry makes ADF fail the run outright instead of evaluating to nothing.
 
 ### 17. One shared contract across Silver transforms
 
@@ -1324,8 +1330,9 @@ directory; `fact_area_month_hpi` is Land Registry's mix-adjusted index over the 
 areas and months. One registry, two methods, two independent results.
 
 The counts agree. The category A transaction count correlates with the publisher's sales volume at 0.9998 across 123,375 cells, with an aggregate ratio of 1.0036. The
-yearly ratio holds within about three percent from 1995 to 2025 and shows no step, so
-neither pipeline changed under the other.
+yearly ratio runs 0.9728 to 1.0641 from 1995 to 2026, mean 1.0039, and shows no step,
+so neither pipeline changed under the other. Both bounds are ordinary years: 2014 at the
+bottom and 2023 at the top.
 
 The prices agree in a way that settles a modelling question. The published average tracks the transaction median, and not the transaction mean: a median ratio of 1.011 against a mean ratio of 1.176. A raw
 mean carries the right tail and mix adjustment removes it. Any screen comparing this
@@ -1364,7 +1371,268 @@ mean monthly mortgage moved from £879 to £1,631, up 86%, while mean rent moved
 to £1,061, up 20%. The share of area-months where owning costs more than renting moved
 from 41.7% to 99.5%. The rate cycle, not the housing market, did most of that.
 
+### 58. Schema changes stop the load and get a human decision
+
+The roadmap carried a Delta schema evolution demonstration from Phase 1 through to Phase 4. Building six Silver transforms produced the opposite behaviour everywhere the feature could have applied, so the item is dropped and this entry records what happens instead.
+
+Two different changes both get called schema evolution. A new value inside an existing column is a value-set change, and Police.uk's crime type list has done this twice inside the loaded history: six categories to August 2011, eleven to April 2013, then fourteen from May 2013, when the Home Office split public disorder and weapons apart and renamed violent crime. At the 2011-09 boundary "Other crime" fell by 172,623 while five new types appeared totalling 169,645. `dim_crime_type` carries all 16 types with each one's first and last published month and what it was split out of, so a series can be reconstructed across the boundary. No Delta column moved either time. Both changes are in the history the platform loaded, so the bounded vocabulary guard that would stop a third has not yet fired against a live release.
+
+A column appearing or disappearing is the other change, and it is the one `mergeSchema` addresses. Every Silver transform declares its source column set and asserts it, and Doogal's suite proves each of the 60 published columns is either mapped or explicitly dropped. When Land Registry or Police.uk next moves a column, the guard raises, the load stops, and the column is mapped or dropped by a decision that reaches the constant and the tests before the next run. Decision 26 gives the reason: quarantining a contract violation turns a loud stop into a quiet partial load.
+
+The cost is a failed run and a commit before the load succeeds, where merging would have loaded the same night. I take that cost, because a table that gained a column nobody decided about is a table whose schema nobody can describe.
+
+`mergeSchema` is the right tool where the write schema is undeclared and the reader tolerant, typically an append-only landing table taking whatever a publisher sends. Decision 11 removed that table from this platform when Bronze stayed as Volumes over the raw files. Nothing in the design is left for the feature to do, which is why a demonstration would have run against invented data.
+
+This decision would change if a source were added whose publisher moves columns often enough that a stop per change is unaffordable, or if a landing table were introduced between the raw files and Silver.
+
+### 59. Continuous integration runs the layer that does not need a cluster
+
+Every suite ran on demand and nothing ran them on a schedule. The cluster runners cost eight minutes of fixed startup per notebook, which is why Decision 44 rejected a run-everything notebook; a GitHub runner pays no such cost, so continuous integration is where running everything belongs.
+
+Two jobs. `lint` installs ruff at the pin read out of `requirements-dev.txt` and runs `ruff check .`, with rules and configuration in `ruff.toml` so a local run and the runner run the same thing. `tests` installs the pinned stack and runs the suites. Runner versions track DBR 17.3 LTS: Ubuntu 24.04, Zulu Java 17, Python 3.12. A suite passing against a different Spark or a different Java says nothing about the cluster.
+
+Two details cost more thought than the rest. Ruff's F rules flag `spark`, `dbutils` and `display` as undefined names in every notebook, because Databricks injects them at runtime; `ruff.toml` declares them as builtins, which suppresses those three and still reports a genuine undefined name. And the test step pipes pytest through `tee` to collapse a failing run to its distinct errors, which without `pipefail` returns the exit code of `tee` and reports a failing suite as green. `set -o pipefail` is written into the step, so the behaviour does not depend on how the runner resolves its shell.
+
+The suites are discovered, not listed. Each directory under `tests/` holding at least one test file becomes a matrix leg on its own runner, so wall-clock time is the largest leg instead of the sum. A directory with no tests exits pytest with 5, which reads as a failure, so empty ones are skipped and join the matrix when they gain a test. A test file at the root of `tests/` would belong to no leg, so discovery fails, and a run cannot report green over a suite it never collected. Branch protection requires `tests-passed`, a gate job depending on the matrix, because leg names change whenever a directory is added.
+
+What this does not cover is the larger half. There is no Delta, no Unity Catalog, no write path, no ADLS and no data at volume, so a green check means the transform layer computes what it should on Apache Spark. It is not cluster confirmation, and the rule that nothing counts as done until it has run on the cluster is unchanged by it.
+
+### 60. Transforms are portable across storage, and were not across SQL dialect
+
+The transform modules take a DataFrame and return one, read no tables and touch no Delta, Unity Catalog or ADLS. That is what made them testable away from the cluster from Phase 2 onward. The first CI run failed several hundred tests on one cause, and the cause was that purity had been defined against storage and never against dialect.
+
+`try_to_date` is a Databricks function. Apache Spark 4.0 registers 21 `try_*` functions and that is not one of them. Seven call sites across five transforms parsed their dates through it, every one correct on the cluster and none of them runnable anywhere else. An expression built through `F.expr` is a string resolved by whichever engine evaluates it, so nothing about the module boundary catches this.
+
+The replacement is `CAST(try_to_timestamp(x, fmt) AS DATE)`, which both engines register. I checked it against the nine format shapes these sources publish before changing anything: each parses to the same date the direct call gives, unparseable and empty and null input all return null and none of them raise, and the date survives every session timezone including one across the date line, because the parse and the cast shift in opposite directions. The `try_` form is not cosmetic. ANSI mode defaults on from Spark 4.0, so a plain `to_date` aborts the load on the first malformed cell instead of leaving the null that the cast guards turn into a failure naming the column.
+
+The seven sites now call `parsed_date` in `databricks_src/silver/transforms/expressions.py`, which holds the parse and takes the format from the caller, since the format belongs to the source and there are five distinct ones across six transforms. Past the third caller the shared module is the convention anyway, and the practical gain is that the next dialect difference is one edit and not a hunt through five files.
+
+One option was available and worth naming because it is tempting. Registering a local function named `try_to_date` in the test fixture would have turned CI green in an hour without touching a transform. It would also mean every local run exercised an implementation the cluster never runs, which is worse than having no continuous integration at all.
+
+This decision would change if a source needed something Databricks provides and Apache Spark has no equivalent for. The honest response then is to mark that suite cluster-only and say so, rather than fake the function locally.
+
+### 61. The quality framework is a threshold registry
+
+The roadmap carried a parameterised rules framework from Phase 1: `quality_rules.json` under `config/`, a generic notebook reading it, rejected rows routed to quarantine. Before writing any of it I counted what there was to configure. The six Silver transforms carry 32 guards between them and `conformance.py` carries four more. Not one of the 36 holds a tolerance.
+
+Numbers do appear in them, and they are published facts, not thresholds: a United Kingdom bounding box at 49.0 to 61.0 latitude, Doogal's grid reference sentinel of 9, Police's unlocated coordinate of 0. Loosening any of those would not admit more marginal rows, it would admit wrong ones. A check with no number to argue about belongs in the transform as a guard, which is where all 36 already are.
+
+What remains is a small population of genuine thresholds: the six freshness bounds in the audit writer, all still unset by design, and the cross-source reconciliation, which computed a correlation and several ratios and asserted none of them. That is a threshold evaluator and not a rule language, and it lives in `databricks_src/quality/rules/evaluator.py` beside the audit writer.
+
+`quality.rule_result` takes one row per rule per run, keyed on `pipeline_run.run_id` so a rule evaluated inside a load and a rule evaluated by a standalone check record the same way. It carries the measured value, the bounds in force, and the verdict. Bounds are written into the row and not looked up when it is read, because widening a bound later would otherwise reinterpret every result recorded under the old one.
+
+Four things defend a result, since a table constraint alone defends less than it looks like it does. Bounds live on the rule and are copied onto the result, so a caller cannot pass one and cannot pass the wrong one. The evaluator refuses NaN and infinity before comparing: Spark orders NaN above every number, so an unguarded NaN satisfies any floor and persists as a pass, which I measured instead of reasoning about. A CHECK ties the verdict to the numbers beside it, so a row claiming a pass its own values contradict cannot be written. And the caller names the rules it intended to evaluate, because no constraint fires on a row that was never written, and a rule that quietly stops running otherwise looks exactly like one that keeps passing.
+
+The registry also declares whether a rule reports once per run or once per scope. A per-year rule recorded without its year produces several rows under one run that nothing can tell apart afterwards, so the evaluator rejects a scoped rule called without a scope and an unscoped one given one.
+
+`config/quality_rules.json` goes with the engine, and the quarantine table goes with it too, for the reason Decision 26 gave: a contract violation stops the load, so no rows survive to be quarantined, and a threshold breach produces a measurement and no set of rejected rows.
+
+This decision would change if the threshold population grew past what a Python registry reads clearly, or if a bound needed changing by someone who cannot commit to the repo.
+
+### 62. Three reconciliation rules, with bounds read off thirty-two measured years
+
+A rule is registered only once its bound is known, and the registry refuses one carrying neither a floor nor a ceiling. The first three all compare the transaction pipeline against the published index, which is the only comparison here that does not come from the pipeline being checked.
+
+`ppd_hpi_count_correlation` floors at 0.99 against a measured 0.9998, and its note records that it is coarse. The cells span district to composite, so both counts cover four orders of magnitude, and a correlation over that spread sits near one almost whatever happens at the level that matters. I simulated it: coarse levels agreeing exactly and districts wrong by up to 90% still returns 0.99993, while the district-only correlation falls to 0.68. It catches a structural break and nothing finer.
+
+`ppd_hpi_count_ratio_by_year` bands at 0.95 to 1.08, one result per transfer year. Across 1995 to 2026 the ratio runs 0.9728 to 1.0641 with a mean of 1.0039. The band is wider below than above because a shortfall is the failure this pipeline can cause and a surplus is usually the publisher still reporting. A three-sigma band computes to 0.9443 to 1.0635 and rejects 2023, an ordinary year, so the spread is not normal enough to set the band that way.
+
+`ppd_hpi_median_ratio_by_year` bands at 0.93 to 1.08 over the same years, where it runs 0.9524 to 1.0587. The published average tracks the transaction median and not the transaction mean, and that is the relationship any screen comparing the two series rests on.
+
+The mean ratio is stable at 1.1821 across the same period and is not registered. Nothing downstream reads it, and a rule nobody acts on gets widened rather than investigated.
+
+The first run recorded 65 results, one correlation and two per year across thirty-two years, and none breached.
+
+### 63. `latest_release` records when a publisher released, never what period the data covers
+
+The fetch gate is `latest_release >= last_refreshed`. The second value advances to the run date every time a source comes through clean, so the first has to be a date that moves forward with each publication. Any value that trails the calendar by a fixed margin sits permanently below it and the source is skipped on every run, including the run that has just found a file the watermark does not hold. Nothing reports this: ADF skipping a source and ADF fetching one both leave no failure marker, so `02` records the source as succeeded and advances `last_refreshed` regardless.
+
+The distinction matters because the six publishers address their files two different ways. ONS puts the release date in the path, so `19august2026` is both the identifier and the release. HPI and Police put the data month in the filename, and that trails publication by roughly two months: `UK-HPI-full-file-2026-06.csv` was published on 19 August 2026, and the police archive `2026-06.zip` on 29 July 2026. Deriving `latest_release` from those names would have written 2026-06-01 into a field compared against a `last_refreshed` of 2026-08-28.
+
+The rule is therefore that `latest_release` is always a publication date. Where the URL carries it, it is parsed from there. Where it does not, it is read from `Last-Modified` on the object itself, which every one of the six publishers sends. The data month keeps its own job: it builds the address and the Bronze landing name, so the landed file says which release it is without being opened.
+
+The failure this prevents is silent in both directions. A month written into the field gates the source shut while reporting success. A publication date written into a filename would land a new release on top of an old file under the old name.
+
+### 64. HPI addresses are constructed and confirmed, not listed
+
+Land Registry publish the HPI full file to a public S3 bucket, one object per data month, at an address whose pattern never varies. The bucket also answers an anonymous GET at its root with a `ListBucketResult`, and the first implementation read the published months off that listing.
+
+Measured on 28-08-2026, the listing does not work for this. The `prefix` query parameter is stripped before it reaches S3, so the response comes back as the first thousand keys of the whole bucket with `IsTruncated` true and none of the full files among them. `Marker` would be stripped by whatever strips `prefix`, which rules out paging to them.
+
+The replacement builds the address and confirms it with a HEAD. Candidates run from the current calendar month down to the month the watermark already holds, newest first, and the first that answers is the newest published. Two properties come out of ending the walk on a month known to exist instead of after a fixed count. A release that has not landed yet is distinguishable from an address pattern that has moved, because in the first case the bottom of the walk answers and in the second it does not. And the month already ingested is probed on every run, so a run with nothing new costs the same as a run with a release and `latest_release` is written without waiting for the publisher to move.
+
+Constructing and confirming is better than listing even where listing works. A listing says a key exists; a HEAD says the exact address the Copy activity will fetch resolves, and returns its release date in the same response. The URL is confirmed before it is written to the watermark, so an address that 404s never reaches ADF.
+
+Selection is on the filename token and never on the timestamp. Land Registry rewrite every object in that directory on each release, so a file from 2017 carries the same `Last-Modified` as the current one and ordering by time ranks nothing.
+
+### 65. Police archives are point-in-time snapshots, so only the newest is resolved
+
+police.uk publish one archive per month named by its data month. The publisher's own downloads page describes each as data as held at a particular point in history and states that every archive but the newest is out of date. The changelog records corrections as a force resubmitting its data, which lands in the next snapshot instead of rewriting an existing one. The project has already measured this from the other side: British Transport Police restated the whole of 2023 downward by roughly 45% between the December 2023 and June 2026 archives.
+
+Two consequences. Only the newest archive is worth resolving, and the archives already in Bronze never need re-fetching to pick up a restatement, because a restatement arrives as a new snapshot that the monthly incremental already collects and Silver's newest-wins dedup already prefers.
+
+The month comes from `/api/crime-last-updated`, which reports the data month of the latest release directly, so nothing is probed to find it. The release date comes from `Last-Modified` on the archive, which is why the address is asked for even on a run where the month has not moved: without that request a watermark seeded at `1900-01-01` would stay gated shut while reporting success. One HEAD against a source where ingress is free is beneath consideration.
+
+A 404 means the endpoint has moved ahead of the archive. That is not a failure and writes no marker: nothing new can be fetched, and the run that finds the archive posted will advance the snapshot. The archive already held is asked instead, so the release date is still recorded. A month older than the one already ingested does raise, because the publisher does not withdraw archives and that means the endpoint is being read wrongly.
+
+### 66. The fixed-address sources take their release date from `Last-Modified`
+
+PPD, Doogal and BoE publish at one address that never moves, so they have no resolver and nothing to resolve. What they still need is a release date, or the gate has nothing above the seeded `1900-01-01` to compare and the source is skipped on every run while `02` records it as succeeded.
+
+All three send `Last-Modified`, measured 28-08-2026 across three different server stacks: S3 for PPD, IIS for BoE, and an unidentified one for Doogal. So a header read answers it and no new module was needed; `resolution.release_date` already parsed HTTP dates for Police, and the probe took it from one caller to five.
+
+PPD is asked at its monthly change file, not a yearly one, because that is the object that moves when Land Registry publish.
+
+Two failure modes, weighed and accepted. A header that moves without the content changing, such as a CMS redeploy, opens the gate for one redundant download and nothing else. Content changing without the header moving would skip a release silently, but all three are static files on filesystems or object storage where a write always moves the timestamp, and `ETag` is the fallback signal if it ever appears. PPD and Doogal send one; BoE does not.
+
+### 67. One clock, and it is UTC
+
+Two ADF expressions read the current time, and both compare against dates written by a Databricks notebook. The yearly refresh clause compares a configured month against `int(utcNow('MM'))`; the incremental clause is `utcNow('yyyy-MM-dd') > p_last_refreshed`.
+
+UK local time was considered for both, since every publisher here is a UK body releasing at 09:30 UK. It was rejected because `latest_release` comes from HTTP `Last-Modified`, which is UTC by protocol and cannot be moved. During British Summer Time the UK and UTC calendar dates differ between 23:00 and midnight UTC, and a `last_refreshed` written in UK time would run a day ahead through that hour. Sitting on the right of `latest_release >= last_refreshed`, a value running ahead makes the comparison fail, and a real release would be skipped with no marker and nothing to show for it. The reverse asymmetry is why the decision is not symmetric: moving only ADF to UK time would have put the ahead-running value on the *left* of that comparison, where it costs at most a redundant fetch. Moving Databricks could drop a release.
+
+Everything is therefore UTC, and it is UTC by construction, not by default. Azure VMs run UTC regardless of region, so `datetime.now()` on the driver already returns UTC, but only because the OS timezone happens to be set that way. The cluster system setting, the Spark session timezone and the Python runtime are three independent layers that do not synchronise, so a `TZ` environment variable or an init script added later would move `datetime.now()` without touching Spark and without anything failing. Both notebooks pass the run timestamp through `astimezone(dt.timezone.utc)` before taking a date from it, which is a no-op on a UTC cluster and a correction on any other.
+
+Two format notes worth keeping. .NET custom specifiers are case-sensitive, so the month is `MM` and the day is `dd`; `D` is not a custom specifier at all and passes through as a literal. And a single `M` is read as a standard specifier, the month-day pattern, which returns `August 28` instead of `8`.
+
+The incremental clause uses `>` and not `>=`. A same-day repeat is suppressed while the retry path survives, because a failed Copy leaves `last_refreshed` where it was, so it is still behind today on the next run.
+
+### 68. A stage that waits records that it waited
+
+`pipeline_run` gained a fourth status. A stage the plan skipped closes as `skipped`, carrying `failure_cascade` in `error_type` and the names it is waiting on in `error_message`, rather than writing nothing.
+
+The first instinct was to write nothing, on the grounds that a skip is derivable: given the failures a run recorded, the skip set falls out of the dependency chain. That is the argument Decision 28 already rejected in a different form. A metrics-only table cannot distinguish a failed load from a notebook that never ran, and absence is ambiguous in exactly the same way here. A run where twelve stages waited and a run that died after seven leave identical evidence behind.
+
+The derivation argument is also wrong on its own terms. The skip set is a function of the failures *and* of the dependency chain in force at the time. The chain is hardcoded and changes whenever a table is added, so recomputing a June run's skips under September's chain answers a question about a model that did not exist in June. The same reasoning put the bounds in force into every `rule_result` row.
+
+`error_type` carries the reason because it is already the taxonomy of why a run produced no data: `ValueError`, `BronzeCopyFailed`, and now `failure_cascade`. A dedicated column would have been null on every row but these.
+
+One thing does not change: the query each stage runs filters on `status = 'failed'` exactly. Widening it to anything short of succeeded would make a skipped stage cascade the same failure a second time.
+
+### 69. A gate reads evidence, not the absence of a failure
+
+Three things stop a planned table rebuilding: it failed, its notebook died before reaching it, or the job never got there. Only the first leaves a failure row. A gate built on "has nothing failed upstream" passes in the other two cases and loads against last month's table.
+
+Both were reachable. A failed fact is inert by design, since nothing is built behind one, so it never enters the plan and stays in the list of tables a downstream check believes are fresh. And the dimension load writes four tables in one notebook: if the second raises, the third and fourth are never constructed and record nothing at all, while the plan still lists them because only the second failed.
+
+So a stage requires positive evidence. Every item it reads must carry a successful run of its own under this job run. One predicate closes failed, skipped and never-reached together, and none of them has to be modelled separately.
+
+The evidence is a `(name, layer)` pair, never a bare name. A source records twice, once when ADF lands its file and once when Silver reads it, so a bronze success is not a Silver rebuild and a name alone cannot say which one is being claimed. Failures are the opposite and are read as bare names, because a source failing at either layer cascades identically.
+
+Outside a job run there is no evidence rather than no successes, and the two are different values. A notebook run by hand gates on the chain alone; treating absent evidence as unmet would make every notebook unrunnable outside the pipeline.
+
+### 70. The plan is recorded as metrics, not as pre-inserted rows
+
+A skipped stage now writes a row, but a stage the job never reached still writes nothing, because a task the scheduler never starts runs no code. The obvious fix is for the first task to pre-insert a row per expected stage, which later stages then update.
+
+That was rejected. It changes `pipeline_run` from one row per notebook execution to one row per expected stage, requires the writer to find-or-create by `(job_run_id, source, layer)` instead of minting a run id, gives every row two writers, and is still blind if the first task itself never runs.
+
+Instead `02_post_run_record_state` records the plan it already computes as `planned_stage` metrics under a run of its own named `pipeline_plan`, one metric per stage with the stage in `scope` and `run` or `skip` in `value_text`. `scope` is doing exactly what it does for `gold_rows` per area level. `pipeline_run` keeps its grain, and one registry entry covers nineteen stages.
+
+A stage recorded as `run` and carrying no run row is one the job never reached. That is the question the pre-inserted rows were meant to answer, and it is answered by an anti-join.
+
+It pays a second time. The plan is computed at Bronze close, so comparing it against what the stages went on to record shows where a run degraded after that point: planned `run` against an actual skip is a Silver stage that failed mid-run. Neither record says that on its own.
+
+It also closes a gap nobody had noticed. `02` opened six runs, one per source, and none for itself, so nothing recorded that `02` had run.
+
+### 71. The gate is a package above both the layers it reads from
+
+Eleven notebooks open with the same gate. Written into each one it is twenty lines copied eleven times, none of it reachable by a test, and a copy that loses the skip branch runs a load that should have waited and reports success for it. That is the same failure direction that put the `pipeline_run` query into the audit writer rather than into eleven SQL strings.
+
+`databricks_src/orchestration/stage.py` holds it. Not `bronze/watermark_library`, whose name says bronze while silver and gold import it. Not `quality/audit`, because `bronze/notebooks/02_post_run_record_state` already imports the audit writer, and a `quality` module importing `bronze.watermark_library` would leave the two packages depending on each other with no answer to which sits above the other. The gate reads from both, so it sits above both.
+
+`dbutils` is a parameter rather than an import. The runtime injects it into a notebook's namespace, so a library reaching for it depends on how that injection works and cannot be exercised without it. Passed in, the widget read is testable with a stub.
+
+Nothing in the module ends a notebook. `open_stage` returns the started run or None, and the caller decides. `dbutils.notebook.exit` raises for the notebook runner to catch, and a skipped table inside the dimension load must not stop the three beside it. That single choice is what lets one function serve both the Silver notebooks, which exit, and the Gold notebooks, which cannot.
+
+### 72. A notebook writing one table exits; a notebook writing several gates each
+
+The six Silver notebooks write one table each, so a decision for the notebook and a decision for the table are the same decision, and exiting is the simplest expression of it.
+
+The four Gold notebooks write between two and four. The dimension load reaches fourteen of the sixteen possible subsets, so writing a subset is the ordinary case here. The crime facts split under an HPI or ONS failure: the two area tables read district ancestry off `dim_area` and wait, while the two small-area tables do not and run.
+
+Two of the Gold notebooks cannot split today, since their tables stand behind the same dimensions and nothing distinguishes them. They gate per table anyway. The cost is one line; the alternative is a single decision that is correct until a source is added that feeds one table of a family and not the others, and wrong silently from then on.
+
+Where a notebook's tables share a read, the read is charged to whichever consumer is being written. The dimension load builds its crime projection inside whichever of its two consumers survives, and does not touch the ninety-six million rows when neither is planned.
+
+### 73. A check declares only what its rules require
+
+`CHECK_INPUTS` names what a check must have rebuilt before it can report the rules it registers. For the cross-source verification that is the transaction series, the published index, and the areas they are broken down by.
+
+It reads two more tables than that. The rental yield section reads the rent fact, and the owning-against-renting section reads the calendar. Declaring all five would mean a rent transform raising during the fact load closes the whole check, including the reconciliation between the transaction series and the published index, which needs no rent at all. That is the most valuable output here and the only evidence in the platform that does not come from the pipeline itself.
+
+Both partial cases are reachable. The panel fact notebook writes the index before the rent, so a rent failure leaves the index fresh. The calendar can be a load behind while every fact is fresh, because facts conform against it without being built from it.
+
+So the run opens on what the rules need, and the two sections that record nothing gate themselves on whether their own input rebuilt. The asymmetry is deliberate: a rule evaluated over a stale table writes an answer to `rule_result` that reads as a measurement, which is worse than reporting nothing. A printed figure computed over a stale table is wrong in a job log, which is worse than nothing but not worse than a recorded reading.
+
+### 74. Twelve tasks in a chain, and every dependency after the first is ALL_DONE
+
+The job is `02_post_run_record_state`, six Silver notebooks cheapest first, four Gold notebooks, then the cross-source check, on one shared job cluster.
+
+A chain over a fan-out, because the node is single: six Silver notebooks running concurrently would contend for four cores and for the local disk Police fills to 4.4 GB at peak, and each notebook already spreads across those cores. A chain is also correct by construction rather than by authoring a twelve-way fan-in correctly.
+
+The dependency condition is the part that would have failed silently. Databricks defaults a dependency to `ALL_SUCCESS`, which blocks every task after a failed one. Skipping happens inside the notebooks, so a task that waits reports success and the chain continues on its own, but a task that genuinely fails would, under the default, stop every Gold notebook from starting. No plan would be recomputed, no surviving table would load, nothing would be recorded, and the entire in-notebook cascade would be dead code that had never run.
+
+`02` is the exception and keeps success semantics. If it fails, no Bronze failure is recorded at all, every stage reads an empty failure set, and the run loads against files that never landed. That is the one place in the job where stopping is correct.
+
+### 75. A task timeout cascades, a job timeout does not
+
+The first full run measured 1h 11m 27s: Police 30m 6s, the dimension load 8m 17s, the transaction and crime facts 6m 27s each, and the first task's 5m 28s mostly job-cluster start. The job timeout is four hours, roughly three and a half times that, and it is a failsafe against a hung run rather than a target.
+
+Per-task timeouts matter more, and they behave differently. A job timeout cancels the run: the executing task leaves its row open at `started`, which is the honest killed-run signature, and every later task leaves no row at all. A task timeout marks that one task failed, which records, cascades, and lets `ALL_DONE` carry the rest of the run. The same hang produces a dead run under one and a partial run with a recorded cause under the other.
+
+Caps are set at roughly three times each measured duration, floored at ten minutes. The ordering was checked rather than assumed: Police hanging to its ninety-minute cap lands the run at 2h 11m, still 1h 48m inside the job cap, so the task cap fires first.
+
+The numbers are a baseline, not a constant. Police's first measurement extracted nothing, because staging was already populated, so 30m 6s is the floor with the promote and the verification in it and no archive read. The Delta history of the staging table gave the extraction rate separately, at five million rows a minute across seven appends.
+
+### 76. Two jobs, either side of the ForEach, both run as their owner
+
+The pre-run notebook resolves every source's current URL and release date, and the fetch gate compares what it writes. It therefore has to finish before ADF's copies start, and the copies have to finish before `02` reads their markers. Two Databricks jobs with the ForEach between them.
+
+ADF runs both through the native Databricks Job activity, which waits for completion. The alternative for the pre-run step was ADF's Databricks Notebook activity, which also waits but runs the notebook as ADF's own managed identity. That would have needed Unity Catalog grants on the configs volume and read access to the repository folder under the owner's workspace home, and would have run one notebook as a different principal from every other notebook in the pipeline. A job runs as its owner, so nothing extra is granted.
+
+The Job activity also replaced the Web activity that first triggered the main job. `run-now` returns the moment a run is accepted, so ADF reported success whatever the job then did. Waiting costs integration runtime time for the length of the run, which is the documented trade and immaterial once a month.
+
+### 77. ADF reports success when a Bronze copy fails
+
+Each Copy activity has a failure path: a Web activity that writes a marker to the log volume through the Files API, naming the source, the target and the error.
+
+It ends successfully on purpose. In ADF an activity with a successor is no longer a leaf, so a Copy that failed into a successful marker write leaves the iteration succeeding, the ForEach continuing, and the pipeline green. That reads wrong at first and is right here: Bronze is the only layer ADF owns, so its outcome has to be carried across to the notebooks that read it, and the marker is the carriage. The failure is recorded in `pipeline_run` by `02` and cascades from there.
+
+It also makes the ForEach's own configuration stop mattering. Sequential or parallel, a failed iteration no longer exists to halt the loop.
+
+The marker's `source_name` is the watermark's long name, not the short name everything downstream uses. `02` validates every marker against the watermark registry and raises on a name it does not carry, so a short name there stops the job's first task for all six sources rather than failing one.
+
+The one activity in the pipeline that retries is this one. If the marker write fails, the failure is never recorded, `02` sees nothing, and Silver loads against a file that did not land, the one direction the whole design exists to avoid. After its retries it is the branch's leaf, so the iteration goes red, which is correct: a failure that could not be recorded should make someone look.
+
+### 78. Police staging is kept, and the resume compares what an archive still wins
+
+The seven Police archives expand past what one node holds, so they are staged one at a time and promoted in a single write. Staging was originally dropped by hand after the verification was read, which stopped being possible once the notebook ran unattended.
+
+Keeping it is right, and for a reason the archives themselves supply. Measured, the seven partition cleanly: 49 + 24 + 24 + 24 + 24 + 6 + 36 months, and 2010-12 to 2026-06 inclusive is exactly 187. Six of them cover closed eras that no later release reaches back into, so re-extracting seventy-eight million rows of settled history every month would buy nothing.
+
+What is not stable is which archive wins. The selection resolves each (month, force) slot to the newest archive carrying it, and Police publishes rolling three-year windows, so a new archive out-votes the current one for nearly every month they share. A resume keyed on whether an archive is present would skip the old one, stage the new one in full, and promote both: two vintages of the same crime month, which the notebook's own verify query exists to catch.
+
+So the resume compares the months a staged archive holds against the months the current selection gives it. Equal means skip. Different means re-stage for whatever it has left. Winning nothing means delete. The write is `replaceWhere` scoped to the snapshot, so re-staging replaces an archive's rows instead of adding a second copy, and behaves as an append for an archive not yet staged.
+
+Next month that touches one archive and leaves six alone.
+
 ## Bugs found and fixed
+
+### A ratio inflated by its own denominator
+
+The cross-source verification reported a count ratio per transfer year: transactions counted here against the sales the publisher reported. Every year from 1995 to 2025 sat within a few percent of one. 2026 read 1.5716.
+
+The year-by-year cell divided by `sum(coalesce(sales_volume, 0))`. Two months of 2026 carried a published price and no published volume, so their transactions entered the numerator with nothing opposite them. Five months counted here over three months published, at a true ratio near 0.99, gives about 1.57.
+
+The aggregate cell directly above it was already correct, filtering on a populated volume, which is why it read 1.0036 while the yearly figures said something else and neither looked obviously wrong.
+
+Restricting both sides to cells carrying both counts moves 2026 to 0.991 and leaves every settled year untouched: all 31 of them carried a volume in every cell, so the defect only ever surfaced in the year the publisher had not finished reporting.
+
+The column that would have shown it is now in the output. `cells_with_both_counts` beside `cells` reads 987 against 1,645 for 2026 and identical figures for every other year, which says the two populations differ before any ratio is computed.
+
+It was found by trying to set a threshold on the number. A figure nobody had to defend a bound for had gone a whole phase without being looked at properly.
+
 
 ### A verification query Spark could not plan
 
@@ -1557,18 +1825,18 @@ During Phase 1, ADF used the platform's default `adf-dev` long-lived branch with
 
 Two Phase 2 items ran ahead of Gold. The audit table because six writers exist now and Gold adds more, so the schema is decided once. The freshness assertion because that failure has already happened, and the planned watermark automation would not have caught the one source whose URL cannot be pattern-matched.
 
-`uk_property_intel.quality` holds `pipeline_run` and `pipeline_metric`, created by `databricks_src/setup/03_create_quality_tables.py` from DDL generated by the writer, so the table definition and the write schema cannot drift. `databricks_src/quality/audit/writer.py` carries the writer and a 29-entry metric registry. All six Silver notebooks record through it, and the folder sits beside `framework/` and `rules/`, not inside them, because it writes what a notebook hands it and evaluates nothing.
+`uk_property_intel.quality` holds `pipeline_run`, `pipeline_metric` and `rule_result`, created by `databricks_src/setup/03_create_quality_tables.py` from DDL generated by the modules that write them, so a table definition and its write schema cannot drift. `databricks_src/quality/audit/writer.py` carries the run and metric writer and a 29-entry metric registry, and every Silver and Gold notebook records through it. `databricks_src/quality/rules/evaluator.py` carries the threshold registry and `rule_result`. They are separate modules because the writer records what a notebook hands it and evaluates nothing, while the evaluator compares a value against a bound and returns a verdict.
 
 Everything the notebooks previously printed and discarded is now recorded: the file inventory, row counts in and out, the newest date the content carries, and per-source measures. Three sources record entity coverage against a rolling twelve-month window, which separates a permanently departed reporter from one that stopped recently. On the Police load that distinguished Greater Manchester and British Transport Police, both long gone and correctly excluded from the denominator, from Gloucestershire, which stopped in January 2026 and is named.
 
 ### Carried into later phases
 
-- The PPD reconcile path described in Decision 16 is designed but not built. Silver is a full rebuild from the current yearly files, which is complete, not provisional, because those files are restated on every release.
+- The PPD annual reconcile is live and confirmed. `full_load_yearly_refresh_month` on the watermark is read by the yearly-stepped router, so the August run re-fetches every yearly file and both layers rebuild from it, which is the whole of the reconcile: Silver writes with `INSERT OVERWRITE` and the Gold loads share `overwrite`, so nothing further sits behind the trigger. The diff Decision 16 describes is the part still designed and not built. `quality.reconcile_run` and `quality.reconcile_diff` have no writer, so the rebuild heals without recording what moved.
 - The PPD delta merge is cancelled, not deferred. It was scoped when the change-only file was assumed to carry data the yearly files did not. Both are published from the same release and describe the same state, so a merge would add change-data-capture machinery without adding a row. The change-only file survives as an orchestrator download list, in Phase 4.
-- The quality-rules framework, watermark automation, and the quarantine table follow Gold. Gold produces a second class of check, covering join integrity, referential coverage, and aggregate reconciliation, that looks nothing like the Silver row checks. Committing to a config schema before seeing it risks a shape Gold has to work around.
+- Deferring the quality-rules framework and watermark automation until after Gold was the right call, and both landed in Phase 4. Gold produced the second class of check the deferral anticipated, covering join integrity, referential coverage and aggregate reconciliation, and seeing it is what turned the planned config-driven rule engine into a threshold registry. See Decisions 61 and 63. The quarantine table is the one item still outstanding, for the reason Decision 26 gave.
 - Every freshness bound is unset. The mechanism is built and the values are recorded on every run, but a bound needs to be read off observations spanning a release boundary, and one run per source cannot say where in its cycle a source was measured.
 - The eight per-archive Police measures and both crime vocabularies are written by code that has not yet executed against a real load. Staging was complete when the audit wiring landed, so the loop was skipped. They first record on the next monthly archive.
-- The audit tables have no way to mark a run as synthetic, so a probe has to claim to be one of the six real sources and be deleted afterwards. Once ADF orchestrates the notebooks, its pipeline run id lands in a `parent_run_id` column and the dashboard's success rate is computed over scheduled runs alone, which keeps development re-runs in the history without distorting the headline.
+- A probe still has to claim a real name, because `AuditRun` validates every source against the audit registry and rejects anything it does not declare. What changed in Phase 4.2 is that it no longer has to be told apart by hand. Every run carries the Databricks job run id, so a probe is opened under an id prefixed `probe-`, is found and removed as a set, and is invisible to the pipeline while it exists: each stage filters on its own job run id, so a probe run and a scheduled run cannot read each other. A dashboard separates the two on the same column by excluding the prefix. The `parent_run_id` column this once anticipated was never built. ADF's own pipeline run id would have carried no more than the Databricks job run id does, and the job run id is what the notebooks already had to share for the failure cascade to work at all.
 
 ### Planned (Silver scope)
 
@@ -1576,15 +1844,16 @@ Everything the notebooks previously printed and discarded is now recorded: the f
    - Bronze → Silver transformations (clean, type, dedupe, Delta-format)
    - Data quality checks applied at ingestion time
    - Magic-byte validation as a direct follow-through from the Phase 1 bug
-   - Schema enforcement with Delta Lake's `mergeSchema`
+   - Schema enforcement against a declared source column set, asserted per source. The `mergeSchema` plan here was dropped in Decision 58
    - Excel sources read via the `dev.mauch:spark-excel_2.13:4.0.0_0.31.2` Spark plugin for Spark-native ingestion consistency
-   - Pure transformation functions live in `databricks_src/silver/transforms/` for unit-testability; notebooks import them
+   - Pure transformation functions live in `databricks_src/silver/transforms/` for unit-testability; notebooks import them. `expressions.py` holds the column expressions more than one source needs, starting with the date parse
 
-2. **Parameterised quality-rules framework**
-   - `quality_rules.json` under `config/` defining per-source validation rules
-   - Generic validation notebook reads rules and applies them dynamically (PySpark, not SQL, since rule application needs to be programmatic)
-   - Rejected records routed to a quarantine Delta table in the `quality` schema
-   - Quality metrics logged to `quality.pipeline_run` and `quality.pipeline_metric` on every run
+2. **Threshold rule framework**: built, and not as planned
+   - The JSON rule file and the generic validation notebook are dropped. Counting what there was to configure found 32 guards across the six Silver transforms and four more in `conformance.py`, none of them carrying a tolerance. See Decision 61.
+   - `databricks_src/quality/rules/evaluator.py` holds the registry, the evaluator and the definition of `quality.rule_result`, created alongside the other two quality tables by the same setup notebook.
+   - Three reconciliation rules registered, bounds read off thirty-two measured years, evaluated by `05_verify_cross_source.py` under its own audit run. See Decision 62.
+   - The quarantine table goes with the engine, for the reason Decision 26 gave.
+   - Open: the six freshness bounds are still recorded and unset, and anomaly detection is not built.
 
 3. **Police.uk overlapping-snapshot deduplication**: built, and not as planned
    - The window function above was replaced by selection from the ZIP central directories, which resolves the same thing without decompressing the losing copies or shuffling. See Decision 24.
@@ -1598,10 +1867,10 @@ Everything the notebooks previously printed and discarded is now recorded: the f
 
 5. **pytest + chispa test suite**
    - SparkSession fixture in `tests/conftest.py`. It reuses the cluster's session when one already exists, because builder options are ignored at that point and stopping the session would detach the notebook.
-   - Per-source transform tests in `tests/test_silver_transforms/`. BoE is covered by 26 tests: the data-quality guard, an exact end-to-end SCD2 scenario, the multi-row invariants Delta CHECK constraints cannot express (exactly one current row, contiguous non-overlapping intervals), and edge cases including sixteenth-precision decimals and null-rate gaps. HPI is covered by 35 tests: the four integrity guards, the coverage floor at every nation and composite boundary, typing across both published decimal formats and the volume decimal-point case, null preservation, and an end-to-end projection. PPD is covered by 47 tests: the positional read contract, the code sets at every published value, the one-year-per-file rule the partition key rests on, key uniqueness across files, and the cases where a fault would change no row count and raise nothing, such as a reordered projection or a transfer date carrying a real time component. Doogal is covered by 53 tests: the column contract that proves every one of the 60 source columns is either mapped or explicitly dropped, the in-use equivalence checked on a column that does not survive the projection, the code sets at every published value, null geography admitted only in the BF postcode area, and the fabricated zero coordinate in both directions. ONS is covered by 45 tests: the marker positions in all three structural cases, the two-branch Northern Ireland test that either half alone fails, and the conversion guards. Police is covered by 103 tests, and its split is different from the others because most of the logic is not Spark: 12 cover the archive selection rule over member names alone, the rest cover the predicate registry, the coordinate box in both directions, and the duplicate measurement helpers. That is 309 across the six sources.
-   - The audit writer is covered by a further 46 in `tests/test_quality_audit/`, and it is the only suite that needs no SparkSession: the metric registry, the generated DDL against the write schema, the routing of a value to its column, the freshness verdict, and the failure path. 366 tests in total, all passing on DBR 17.3.
-   - Quality framework tests in `tests/test_quality_framework/`
-   - Runs locally with `pytest` against the versions pinned in `requirements-dev.txt`, and on the cluster through `tests/run_tests.py`. CI integration deferred to Phase 4.
+   - Per-source transform tests in `tests/test_silver_transforms/`. BoE covers the data-quality guard, an exact end-to-end SCD2 scenario, the multi-row invariants Delta CHECK constraints cannot express (exactly one current row, contiguous non-overlapping intervals), and edge cases including sixteenth-precision decimals and null-rate gaps. HPI covers the four integrity guards, the coverage floor at every nation and composite boundary, typing across both published decimal formats and the volume decimal-point case, null preservation, and an end-to-end projection. PPD covers the positional read contract, the code sets at every published value, the one-year-per-file rule the partition key rests on, key uniqueness across files, and the cases where a fault would change no row count and raise nothing, such as a reordered projection or a transfer date carrying a real time component. Doogal covers the column contract that proves every one of the 60 source columns is either mapped or explicitly dropped, the in-use equivalence checked on a column that does not survive the projection, the code sets at every published value, null geography admitted only in the BF postcode area, and the fabricated zero coordinate in both directions. ONS covers the marker positions in all three structural cases, the two-branch Northern Ireland test that either half alone fails, and the conversion guards. Police splits differently from the others because most of its logic is not Spark: the archive selection rule is exercised over member names alone, and the rest covers the predicate registry, the coordinate box in both directions, and the duplicate measurement helpers. `test_expressions.py` carries the shared date parse.
+   - The audit writer is covered in `tests/test_quality_audit/`, and it is the only suite needing no SparkSession: the metric registry, the generated DDL against the write schema, the routing of a value to its column, the freshness verdict, and the failure path. The Gold suites cover one table each, and `tests/test_orchestration/` covers the stage gate: the plan read, both questions it asks, and the skip branch. Per-file counts from the last green run live in the context primer.
+   - Threshold rule tests in `tests/test_quality_rules/`: the registry, the values the evaluator refuses, the generated DDL against the write schema, and the verdict constraint evaluated as SQL against rows the evaluator produced, which is the only place those two declarations can be shown to agree.
+   - Runs locally with `pytest` against the versions pinned in `requirements-dev.txt`, on the cluster through the runner notebooks, one per Silver source plus audit, shared and orchestration, and on every push and pull request through `.github/workflows/tests.yml`, which discovers the suite directories and runs each on its own runner.
    - Test-only dependencies stay notebook-scoped or local, never on the cluster spec (see Decision 13)
 
 6. **Initial Silver → Gold design**, settled in Phase 3.1, and the sketch held
@@ -1634,9 +1903,11 @@ Coverage is uneven, and the gaps stay visible instead of being filled in. 316 di
 6. ✅ ONS (XLSX converted, not read in place, 49,266 rows)
 7. ✅ Police.uk (most complex: seven archives, 8,288 selected files, 96.1M rows, no natural key)
 8. ✅ Gold-layer star schema (four dimensions and all nine facts loaded, and a transaction-derived series reconciled against the published index)
-9. Quality-rules framework, extracted from patterns observed during (2)–(8)
-10. Watermark automation
+9. ✅ Quality-rules framework, built as a threshold registry rather than the configurable engine originally sketched
+10. ✅ Watermark automation, every source resolving its own URL and release date before the run
+11. ✅ Orchestration and the failure cascade, one pipeline driving a twelve-task job over both layers
+12. Freshness bounds, anomaly detection, and JSON schema validation as a third continuous integration job
 
 ---
 
-*Design document status: Phase 2 complete, Phase 3 complete. All six Silver tables built, unit-tested, and confirmed on the cluster, with the pipeline audit tables recording every run. The Gold star is finished: thirteen tables declared and created, all four dimensions loaded at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. Decisions 30 to 32 were queued on 08-08-2026 and rewritten before entry, against measurements taken in Phase 3.1 that contradicted parts of the queued text; 33 to 36 came out of loading the dimensions, 37 to 42 out of building the first two facts, 43 to 51 out of the transaction facts, 52 to 55 out of the crime facts, and 56 and 57 out of verifying the result against a source the pipeline does not produce. Every row count in phases 3.4 and 3.5 was predicted from a probe before the load and matched on the cluster. Last updated 20-08-2026.*
+*Design document status: Phase 2 complete, Phase 3 complete. All six Silver tables built, unit-tested, and confirmed on the cluster, with the pipeline audit tables recording every run. The Gold star is finished: thirteen tables declared and created, all four dimensions loaded at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. Decisions 30 to 32 were queued on 08-08-2026 and rewritten before entry, against measurements taken in Phase 3.1 that contradicted parts of the queued text; 33 to 36 came out of loading the dimensions, 37 to 42 out of building the first two facts, 43 to 51 out of the transaction facts, 52 to 55 out of the crime facts, 56 and 57 out of verifying the result against a source the pipeline does not produce, 58 out of dropping the schema evolution roadmap item at the opening of Phase 4, 59 and 60 out of building continuous integration and the dialect problem its first run exposed, and 61 and 62 out of counting what a rules framework would have had to configure. Every row count in phases 3.4 and 3.5 was predicted from a probe before the load and matched on the cluster. Phase 4 is in progress: continuous integration is running, and the threshold rule framework is built with three reconciliation rules recording 65 results on their first run. Decisions 63 to 67 came out of Phase 4.1, where every source learned to resolve its own URL and release date, and 68 to 78 out of Phase 4.2, which put a pre-run job, six gated copies and a twelve-task Databricks job under one pipeline and made a Bronze failure skip exactly the tables built on it. Last updated 02-09-2026.*
