@@ -1,13 +1,23 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Create the quality tables
 # MAGIC
 # MAGIC Run after `01_create_schemas`. Independent of `02_create_bronze_volumes`.
 # MAGIC
-# MAGIC Two tables. `pipeline_run` takes one row per notebook execution whatever the
-# MAGIC outcome; `pipeline_metric` takes one row per measured value, keyed on that run.
-# MAGIC Both are written by `quality/audit/writer.py`, which every Silver notebook
-# MAGIC imports and every Gold notebook will.
+# MAGIC Three tables. `pipeline_run` takes one row per notebook execution whatever the
+# MAGIC outcome; `pipeline_metric` takes one row per measured value, keyed on that run;
+# MAGIC `rule_result` takes one row per threshold rule evaluated, keyed the same way.
+# MAGIC The first two are written by `quality/audit/writer.py`, which every Silver
+# MAGIC notebook imports and every Gold notebook does. The third is defined by
+# MAGIC `quality/rules/evaluator.py`, which also holds the bounds each rule is checked
+# MAGIC against.
+# MAGIC
+# MAGIC A rule differs from a metric in carrying a bound and a verdict. A measured
+# MAGIC value with no threshold is a metric; a value compared against one is a rule.
 # MAGIC
 # MAGIC They are created here rather than by whichever notebook runs first, because a
 # MAGIC shared table created as a side effect of one source's load is an ordering
@@ -40,6 +50,16 @@ from databricks_src.quality.audit.writer import (
     run_table_ddl,
     sql_literal,
 )
+from databricks_src.quality.rules.evaluator import (
+    KINDS as RULE_KINDS,
+)
+from databricks_src.quality.rules.evaluator import (
+    RULE_COMMENT,
+    RULE_CONSTRAINTS,
+    RULE_TABLE,
+    RULES,
+    rule_table_ddl,
+)
 
 # COMMAND ----------
 
@@ -53,6 +73,7 @@ from databricks_src.quality.audit.writer import (
 # MAGIC ```sql
 # MAGIC DROP TABLE uk_property_intel.quality.pipeline_run;
 # MAGIC DROP TABLE uk_property_intel.quality.pipeline_metric;
+# MAGIC DROP TABLE uk_property_intel.quality.rule_result;
 # MAGIC ```
 
 # COMMAND ----------
@@ -77,7 +98,17 @@ spark.sql(  # noqa: F821
     """
 )
 
-print(f"{RUN_TABLE}\n{METRIC_TABLE}")
+spark.sql(  # noqa: F821
+    f"""
+    CREATE TABLE IF NOT EXISTS {RULE_TABLE} (
+    {rule_table_ddl()}
+    )
+    USING DELTA
+    COMMENT {sql_literal(RULE_COMMENT)}
+    """
+)
+
+print(f"{RUN_TABLE}\n{METRIC_TABLE}\n{RULE_TABLE}")
 
 # COMMAND ----------
 
@@ -95,7 +126,11 @@ print(f"{RUN_TABLE}\n{METRIC_TABLE}")
 
 # COMMAND ----------
 
-TABLES = ((RUN_TABLE, RUN_CONSTRAINTS), (METRIC_TABLE, METRIC_CONSTRAINTS))
+TABLES = (
+    (RUN_TABLE, RUN_CONSTRAINTS),
+    (METRIC_TABLE, METRIC_CONSTRAINTS),
+    (RULE_TABLE, RULE_CONSTRAINTS),
+)
 
 for table, constraints in TABLES:
     print(table)
@@ -173,6 +208,32 @@ for source, bound in FRESHNESS_BOUND_DAYS.items():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC The rule registry. Unlike the metric registry, each entry carries the bounds it
+# MAGIC is checked against, and those bounds are written into every result row rather
+# MAGIC than looked up when the row is read. Widening a bound later therefore cannot
+# MAGIC reinterpret a result recorded under the old one.
+
+# COMMAND ----------
+
+for kind, meaning in RULE_KINDS.items():
+    named = sorted(name for name, rule in RULES.items() if rule.kind == kind)
+    print(f"{kind}  ({meaning})")
+    for name in named:
+        rule = RULES[name]
+        band = (
+            f"[{rule.lower}, {rule.upper}]"
+            if rule.lower is not None and rule.upper is not None
+            else f"floor {rule.lower}"
+            if rule.lower is not None
+            else f"ceiling {rule.upper}"
+        )
+        scope = "per scope" if rule.scoped else "per run "
+        print(f"    {name:<32}{scope}  {band}")
+    print()
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Read shape
 # MAGIC
 # MAGIC Empty on first run. These are the two queries the Phase 5 dashboard is built
@@ -212,6 +273,24 @@ for source, bound in FRESHNESS_BOUND_DAYS.items():
 # MAGIC WHERE m.denominator IS NOT NULL
 # MAGIC GROUP BY r.source, m.metric, date(r.started_ts)
 # MAGIC ORDER BY r.source, m.metric, run_date;
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Rule results, newest run first. A rule absent here for a run that should
+# MAGIC -- have evaluated it is the failure no constraint can catch, which is why the
+# MAGIC -- caller asserts completeness before writing.
+# MAGIC SELECT r.source,
+# MAGIC        r.started_ts,
+# MAGIC        q.rule,
+# MAGIC        q.scope,
+# MAGIC        q.observed,
+# MAGIC        q.lower_bound,
+# MAGIC        q.upper_bound,
+# MAGIC        q.passed
+# MAGIC FROM uk_property_intel.quality.rule_result q
+# MAGIC JOIN uk_property_intel.quality.pipeline_run r USING (run_id)
+# MAGIC ORDER BY r.started_ts DESC, q.rule, q.scope;
 
 # COMMAND ----------
 

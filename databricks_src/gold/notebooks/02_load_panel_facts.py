@@ -17,6 +17,11 @@
 # MAGIC Two `AuditRun` instances, one per table, as in the dimension load. `rows_written` is
 # MAGIC then a real number rather than a total across whatever this notebook happened to
 # MAGIC write.
+# MAGIC #
+# MAGIC Each is gated on its own, and the notebook does not exit as a whole. Both facts
+# MAGIC stand behind `dim_area` and nothing else, so today they always move together, and a
+# MAGIC single decision would be correct until a source is added that feeds one of them.
+# MAGIC A gate per table costs a line and cannot go wrong that way.
 # MAGIC
 # MAGIC No DDL here. The Gold contract is declared once in `00_create_gold_tables.py`, and
 # MAGIC the column order every write depends on is read back off the created table.
@@ -55,7 +60,7 @@ from databricks_src.gold.transforms.fact_area_month_rent import (
 from databricks_src.gold.transforms.fact_area_month_rent import (
     transform_fact_area_month_rent,
 )
-from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.orchestration import stage
 from databricks_src.utils.gold_write import overwrite
 
 CATALOG = "uk_property_intel"
@@ -73,6 +78,25 @@ FACT_RENT = f"{GOLD}.fact_area_month_rent"
 # One timestamp for the whole notebook, carried on both audit rows so a single load reads
 # as one event even though it is two runs.
 INGESTION_TS = datetime.now(timezone.utc)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## The stage plan
+# MAGIC
+# MAGIC Both facts stand behind `dim_area`, so a run where it did not rebuild writes
+# MAGIC neither. `dim_date` is different: the facts conform against it but are not built
+# MAGIC from it, so it can be a load behind and both still run. The first run of a calendar
+# MAGIC year is where that shows, and `assert_keys_conform` fails loudly there rather than
+# MAGIC writing months the calendar has no row for.
+
+# COMMAND ----------
+
+plan = stage.read_plan(dbutils)  # noqa: F821
+
+for _fact in ("fact_area_month_hpi", "fact_area_month_rent"):
+    _waiting = plan.waiting_on(_fact)
+    print(f"{_fact:24}: {'waiting on ' + ', '.join(_waiting) if _waiting else 'runs'}")
 
 # COMMAND ----------
 
@@ -141,38 +165,36 @@ def record_area_conformance(audit_run, fact_table: str, fact_name: str) -> None:
 
 # COMMAND ----------
 
-hpi_run = AuditRun(
-    source="fact_area_month_hpi", layer="gold", ingestion_ts=INGESTION_TS
-)
-hpi_run.start()
-print(f"fact_area_month_hpi run {hpi_run.run_id}")
+hpi_run = stage.open_stage("fact_area_month_hpi", "gold", INGESTION_TS, plan)
 
-with hpi_run.step():
-    hpi = spark.table(HPI)  # noqa: F821
-    hpi.persist(StorageLevel.DISK_ONLY)
+if hpi_run is not None:
+    with hpi_run.step():
+        hpi = spark.table(HPI)  # noqa: F821
+        hpi.persist(StorageLevel.DISK_ONLY)
 
-    # One pass for both. The base is the denominator rather than a metric of its own:
-    # a Gold run reads Silver tables whose own runs recorded what they hold.
-    read_rows = hpi.count()
-    without_measure = hpi.filter(hpi_no_measure()).count()
-    hpi_run.measure(
-        "rows_without_a_measure", without_measure, denominator=read_rows
-    )
+        # One pass for both. The base is the denominator rather than a metric of its
+        # own: a Gold run reads Silver tables whose own runs recorded what they hold.
+        read_rows = hpi.count()
+        without_measure = hpi.filter(hpi_no_measure()).count()
+        hpi_run.measure(
+            "rows_without_a_measure", without_measure, denominator=read_rows
+        )
 
-    facts = transform_fact_area_month_hpi(hpi)
-    written = overwrite(facts, FACT_HPI)
-    hpi_run.measure("gold_rows", written)
+        facts = transform_fact_area_month_hpi(hpi)
+        written = overwrite(facts, FACT_HPI)
+        hpi_run.measure("gold_rows", written)
 
-_ = hpi.unpersist()
-print(f"{read_rows:,} Silver rows read, {without_measure:,} carrying no measure")
-print(f"{written:,} rows written to {FACT_HPI}")
+    _ = hpi.unpersist()
+    print(f"{read_rows:,} Silver rows read, {without_measure:,} carrying no measure")
+    print(f"{written:,} rows written to {FACT_HPI}")
 
 # COMMAND ----------
 
-with hpi_run.step():
-    record_area_conformance(hpi_run, FACT_HPI, "fact_area_month_hpi")
+if hpi_run is not None:
+    with hpi_run.step():
+        record_area_conformance(hpi_run, FACT_HPI, "fact_area_month_hpi")
 
-hpi_run.succeed(rows_written=written)
+    hpi_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
@@ -190,36 +212,34 @@ hpi_run.succeed(rows_written=written)
 
 # COMMAND ----------
 
-rent_run = AuditRun(
-    source="fact_area_month_rent", layer="gold", ingestion_ts=INGESTION_TS
-)
-rent_run.start()
-print(f"fact_area_month_rent run {rent_run.run_id}")
+rent_run = stage.open_stage("fact_area_month_rent", "gold", INGESTION_TS, plan)
 
-with rent_run.step():
-    ons = spark.table(ONS)  # noqa: F821
-    ons.persist(StorageLevel.DISK_ONLY)
+if rent_run is not None:
+    with rent_run.step():
+        ons = spark.table(ONS)  # noqa: F821
+        ons.persist(StorageLevel.DISK_ONLY)
 
-    read_rows = ons.count()
-    without_measure = ons.filter(rent_no_measure()).count()
-    rent_run.measure(
-        "rows_without_a_measure", without_measure, denominator=read_rows
-    )
+        read_rows = ons.count()
+        without_measure = ons.filter(rent_no_measure()).count()
+        rent_run.measure(
+            "rows_without_a_measure", without_measure, denominator=read_rows
+        )
 
-    facts = transform_fact_area_month_rent(ons, spark.table(DIM_AREA))  # noqa: F821
-    written = overwrite(facts, FACT_RENT)
-    rent_run.measure("gold_rows", written)
+        facts = transform_fact_area_month_rent(ons, spark.table(DIM_AREA))  # noqa: F821
+        written = overwrite(facts, FACT_RENT)
+        rent_run.measure("gold_rows", written)
 
-_ = ons.unpersist()
-print(f"{read_rows:,} Silver rows read, {without_measure:,} carrying no measure")
-print(f"{written:,} rows written to {FACT_RENT}")
+    _ = ons.unpersist()
+    print(f"{read_rows:,} Silver rows read, {without_measure:,} carrying no measure")
+    print(f"{written:,} rows written to {FACT_RENT}")
 
 # COMMAND ----------
 
-with rent_run.step():
-    record_area_conformance(rent_run, FACT_RENT, "fact_area_month_rent")
+if rent_run is not None:
+    with rent_run.step():
+        record_area_conformance(rent_run, FACT_RENT, "fact_area_month_rent")
 
-rent_run.succeed(rows_written=written)
+    rent_run.succeed(rows_written=written)
 
 # COMMAND ----------
 

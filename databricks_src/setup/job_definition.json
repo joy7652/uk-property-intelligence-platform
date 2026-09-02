@@ -1,0 +1,192 @@
+{
+  "_description": "Source-of-truth definition for the monthly Silver and Gold job. Hand-maintained; applied with 'databricks jobs create --json @job_definition.json' or reset against an existing job id. ADF triggers it through a Web activity against /api/2.1/jobs/run-now after its ForEach closes, because no native ADF activity runs an existing Databricks job.",
+
+  "_why_a_chain": "One node, four cores, and Police extracts 4.4 GB to cluster-local disk, so parallel Silver tasks would contend for both. A chain also makes the dependency graph correct by construction rather than by authoring a twelve-way fan-in correctly. Silver is ordered cheapest first, which only decides how early a problem shows in the log.",
+
+  "_timeouts": "Job level is a failsafe against a hung run, not a target: the first measured end-to-end run was 1h 11m 27s, so 4h is 3.4x it. Per-task caps are roughly 3x each task's measured duration, floored at 10 minutes, and they matter more than the job cap. A job timeout cancels the run, leaving the executing task open at 'started' and every later task with no row at all. A task timeout marks that task failed, which records, cascades, and lets ALL_DONE carry the rest of the run. Police hanging to its 90m cap still lands 1h 48m inside the job cap, so the task cap fires first. Remeasure when a source grows.",
+
+  "_why_all_done": "Skipping happens inside each notebook, so a task that waits still reports success and the chain continues on its own. What ALL_DONE is for is a task that genuinely fails: the default ALL_SUCCESS would block every task after it, no Gold notebook would execute, no plan would be recomputed, and the whole in-notebook cascade would be dead code. record_bronze_state is the one exception and keeps success semantics, because if it fails no Bronze failures are recorded at all and every stage would read an empty failure set and load against files that never landed.",
+
+  "name": "ukpropertyintel-silver-gold",
+  "max_concurrent_runs": 1,
+  "timeout_seconds": 14400,
+
+  "tags": {
+    "project": "uk-property-market-intelligence-platform",
+    "phase": "4"
+  },
+
+  "job_clusters": [
+    {
+      "job_cluster_key": "pipeline",
+      "new_cluster": {
+        "spark_version": "17.3.x-scala2.13",
+        "node_type_id": "Standard_D4pds_v6",
+        "num_workers": 0,
+        "data_security_mode": "SINGLE_USER",
+        "single_user_name": "kiitkkat@gmail.com",
+        "runtime_engine": "STANDARD",
+        "spark_conf": {
+          "spark.databricks.cluster.profile": "singleNode",
+          "spark.master": "local[*]"
+        },
+        "custom_tags": {
+          "ResourceClass": "SingleNode",
+          "project": "uk-property-market-intelligence-platform",
+          "phase": "4"
+        }
+      }
+    }
+  ],
+
+  "tasks": [
+    {
+      "task_key": "record_bronze_state",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 1200,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/bronze/notebooks/02_post_run_record_state",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+
+    {
+      "task_key": "silver_boe",
+      "depends_on": [{ "task_key": "record_bronze_state" }],
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 600,
+      "libraries": [
+        { "maven": { "coordinates": "dev.mauch:spark-excel_2.13:4.0.0_0.31.2" } }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/silver/notebooks/01_boe_base_rate",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+    {
+      "task_key": "silver_hpi",
+      "depends_on": [{ "task_key": "silver_boe" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 600,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/silver/notebooks/02_hpi",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+    {
+      "task_key": "silver_ons",
+      "depends_on": [{ "task_key": "silver_hpi" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 600,
+      "libraries": [{ "pypi": { "package": "openpyxl==3.1.5" } }],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/silver/notebooks/05_ons",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+    {
+      "task_key": "silver_doogal",
+      "depends_on": [{ "task_key": "silver_ons" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 900,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/silver/notebooks/04_doogal",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+    {
+      "task_key": "silver_ppd",
+      "depends_on": [{ "task_key": "silver_doogal" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 1500,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/silver/notebooks/03_ppd",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+    {
+      "task_key": "silver_police",
+      "depends_on": [{ "task_key": "silver_ppd" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 5400,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/silver/notebooks/06_police",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+
+    {
+      "task_key": "gold_dimensions",
+      "depends_on": [{ "task_key": "silver_police" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 1800,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/gold/notebooks/01_load_dimensions",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+    {
+      "task_key": "gold_panel_facts",
+      "depends_on": [{ "task_key": "gold_dimensions" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 600,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/gold/notebooks/02_load_panel_facts",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+    {
+      "task_key": "gold_transaction_facts",
+      "depends_on": [{ "task_key": "gold_panel_facts" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 1500,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/gold/notebooks/03_load_transaction_facts",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+    {
+      "task_key": "gold_crime_facts",
+      "depends_on": [{ "task_key": "gold_transaction_facts" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 1500,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/gold/notebooks/04_load_crime_facts",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+
+    {
+      "task_key": "verify_cross_source",
+      "depends_on": [{ "task_key": "gold_crime_facts" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 600,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/gold/notebooks/05_verify_cross_source",
+        "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    }
+  ]
+}

@@ -40,7 +40,7 @@ from datetime import date, datetime, timezone
 from pyspark.sql import functions as F
 from pyspark.storagelevel import StorageLevel
 
-from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.orchestration import stage
 from databricks_src.silver.transforms.police import (
     DATASET,
     SILVER_COLUMNS,
@@ -57,6 +57,10 @@ from databricks_src.silver.transforms.police import (
 
 VOLUME_PATH = "/Volumes/uk_property_intel/bronze/police"
 TARGET_TABLE = "uk_property_intel.silver.police_street_crime"
+
+# The name this source carries in the audit registry and in the dependency chain.
+# The only line the two gate cells below differ by across the six Silver notebooks.
+SOURCE = "police"
 STAGING_TABLE = "uk_property_intel.silver.police_street_crime_staging"
 
 STAGE_DIR = "/local_disk0/police_stage"
@@ -98,9 +102,28 @@ CONSTRAINTS = [
 
 # COMMAND ----------
 
-run = AuditRun(source="police", layer="silver", ingestion_ts=INGESTION_TS)
-run.start()
-print(f"run {run.run_id}")
+# MAGIC %md
+# MAGIC ## The stage plan
+# MAGIC
+# MAGIC `job_run_id` comes from the job as `{{job.run_id}}` and is empty when this is
+# MAGIC run by hand, which plans a full run: it belonged to no pipeline execution, so
+# MAGIC there is nothing for it to wait on.
+# MAGIC
+# MAGIC The plan is recomputed here rather than passed in, so a task run on its own
+# MAGIC reaches the same answer as one run in sequence. `orchestration/stage.py` holds
+# MAGIC why what failed and what rebuilt are asked as two questions.
+# MAGIC
+# MAGIC The exit stays here rather than in the module, and outside any `run.step()`
+# MAGIC block, since it raises for the notebook runner and `step` would record that as
+# MAGIC a failure.
+
+# COMMAND ----------
+
+plan = stage.read_plan(dbutils)  # noqa: F821
+run = stage.open_stage(SOURCE, "silver", INGESTION_TS, plan)
+
+if run is None:
+    dbutils.notebook.exit(f"skipped: {SOURCE}")  # noqa: F821
 
 # COMMAND ----------
 

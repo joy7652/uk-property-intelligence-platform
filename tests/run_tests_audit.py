@@ -107,3 +107,30 @@ def run(target: str, *args: str) -> None:
 # COMMAND ----------
 
 run("tests/test_quality_audit/test_writer.py")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Quality rules
+# MAGIC
+# MAGIC The threshold registry, the evaluator, and the `rule_result` table. Bounds live on
+# MAGIC the rule rather than at the call site and are copied onto every result, so widening
+# MAGIC one later cannot reinterpret a result recorded under the old bound. The registry also
+# MAGIC declares whether a rule reports once per run or once per scope, and the evaluator
+# MAGIC holds callers to it.
+# MAGIC
+# MAGIC Three rules cover the PPD against HPI reconciliation, and their bands are pinned here
+# MAGIC against the years they were read off: a band that would reject 2014 or 2023 fails in
+# MAGIC CI rather than firing on the next ordinary year.
+# MAGIC
+# MAGIC Includes the verdict constraint evaluated as SQL against rows the Python evaluator
+# MAGIC produced. The two are declared separately and this is the only place they can be
+# MAGIC shown to agree. Spark orders NaN above every number, so an unguarded NaN would
+# MAGIC satisfy any floor and persist as a pass.
+# MAGIC
+# MAGIC Asserts against synthetic frames through the `spark` fixture. No Delta table is
+# MAGIC touched.
+
+# COMMAND ----------
+
+run("tests/test_quality_rules/test_evaluator.py")

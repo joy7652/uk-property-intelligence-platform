@@ -134,12 +134,12 @@ run("tests/test_gold_transforms/test_fact_lsoa_year_price.py")
 
 # COMMAND ----------
 
-run("tests/test_gold_transforms/test_transactions.py")
-
-# COMMAND ----------
-
 run("tests/test_gold_transforms/test_fact_area_month_crime.py")
 
 # COMMAND ----------
 
 run("tests/test_gold_transforms/test_fact_area_month_crime_total.py")
+
+# COMMAND ----------
+
+run("tests/test_gold_transforms/test_transactions.py")
