@@ -2,7 +2,7 @@
 
 This document captures the architectural decisions, engineering trade-offs, and delivery plan behind the platform. It complements the project README with deeper rationale and serves as the working design reference across phases.
 
-> **Status:** Phase 1 complete, Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, and all four dimensions and all nine facts are loaded and verified on the cluster at 36,119,680 fact rows. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is in progress: continuous integration runs lint and the full test suite on every push and pull request, and the reconciliation is asserted against registered thresholds instead of read off a screen. Phase 4.1 and 4.2 are complete: every source resolves its own URL and release date before a run, and one pipeline drives a pre-run job, six gated copies and a twelve-task Databricks job in which a source that fails at Bronze skips exactly the tables built on it.
+> **Status:** Phase 1 complete, Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, and all four dimensions and all nine facts are loaded and verified on the cluster at 36,119,680 fact rows. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is complete: continuous integration, the quality layer, watermark automation, orchestration and the failure cascade, and a schema the watermark is checked against before the pipeline reads it. A source that fails at ingestion skips exactly the tables built on it. Phase 5 covers consumption, Synapse Serverless and the dashboards.
 
 ---
 
@@ -197,7 +197,7 @@ ADLS Gen2 bronze/ (raw files, per-source layout, exposed as UC External Volumes)
 Azure Databricks + Unity Catalog (transformation, quality, governance)
               ↓
 ADLS Gen2 silver/ → gold/ (Delta Lake, managed tables, schema-level locations)
-   plus ADLS Gen2 quality/ (quarantine + DQ outputs)
+   plus ADLS Gen2 quality/ (run history, metrics, rule results)
               ↓
 Azure Synapse Serverless SQL (Phase 3)
               ↓
@@ -230,10 +230,10 @@ The data lake uses six containers, each with a single responsibility:
 | `bronze` | Raw files as landed by ADF, per-source folder structure | UC external location; exposed as External Volumes under `uk_property_intel.bronze.*` |
 | `silver` | Cleaned, typed, deduplicated Delta managed tables | Managed location for `uk_property_intel.silver` |
 | `gold` | Joined, enriched, denormalised Delta managed tables | Managed location for `uk_property_intel.gold` |
-| `quality` | Quarantine records, rule-run history, DQ metrics | Managed location for `uk_property_intel.quality` |
+| `quality` | Run history, pipeline metrics, rule results | Managed location for `uk_property_intel.quality` |
 | `catalog-root` | Anchor for the Unity Catalog's catalog-level managed location | Catalog managed location for `uk_property_intel` |
 
-The watermark lives at `config/watermark.json` directly (no subfolder), in its own container so its lifecycle and access policy stay independent of the data containers.
+The watermark lives at the root of its own `configs` container, with no subfolder, so its lifecycle and access policy stay independent of the data containers. Databricks reaches it through the Unity Catalog volume `uk_property_intel.configs.watermark`, which puts it at `/Volumes/uk_property_intel/configs/watermark/watermark.json`. The `log/` folder holding the Bronze failure markers sits beside it in the same volume.
 
 ### Unity Catalog hierarchy
 
@@ -242,10 +242,11 @@ uk_property_intel/ (catalog, managed location → catalog-root container)
 ├── bronze/  (schema, no managed location; holds External Volumes pointing at bronze container)
 ├── silver/  (schema, managed location → silver container)
 ├── gold/    (schema, managed location → gold container)
-└── quality/ (schema, managed location → quality container)
+├── quality/ (schema, managed location → quality container)
+└── configs/ (schema, no managed location; holds the watermark volume, external location configs_managed)
 ```
 
-The catalog holds no production tables of its own; every object is created under one of the four schemas. The `bronze` schema holds External Volumes pointing at the `bronze` container, which gives UC governance and lineage over raw files without converting them to Delta (see Decision 11). Silver, Gold, and Quality hold managed Delta tables in their respective containers. The catalog-level managed location exists only because Unity Catalog requires a catalog to have some backing storage even when all its schemas either declare their own or hold only External Volumes. `catalog-root` is the placeholder that satisfies that without using one of the data containers.
+The catalog holds no production tables of its own; every object is created under one of the five schemas. The `bronze` schema holds External Volumes pointing at the `bronze` container, which gives UC governance and lineage over raw files without converting them to Delta (see Decision 11). Silver, Gold, and Quality hold managed Delta tables in their respective containers. `configs` holds no tables at all: one External Volume, `uk_property_intel.configs.watermark`, carrying the watermark and the `log/` folder of Bronze failure markers. It is a schema because a volume has to live in one, not because anything is modelled there. The catalog-level managed location exists only because Unity Catalog requires a catalog to have some backing storage even when all its schemas either declare their own or hold only External Volumes. `catalog-root` is the placeholder that satisfies that without using one of the data containers.
 
 ### Bronze Volume layout
 
@@ -285,7 +286,7 @@ Cost is identical to the single-container layout, so the trade-off is purely org
 - Azure Data Lake Storage Gen2, container `bronze` (renamed from `raw` during Phase 2 setup)
 - Files land at `bronze/<source>/<...>/<file>`, with no redundant `bronze/` subfolder inside the container
 - RBAC: ADF managed identity granted `Storage Blob Data Contributor`
-- Watermark at `config/watermark.json` (separate container, no subfolder)
+- Watermark at the root of the `configs` container, no subfolder, exposed as the volume `uk_property_intel.configs.watermark`
 
 ### Linked services (named by authentication pattern, not by source)
 
@@ -428,7 +429,7 @@ Four logical layers backed by per-container physical storage:
 - **Bronze** — raw files as received, no transformation, in the dedicated `bronze` container. Exposed via Unity Catalog External Volumes.
 - **Silver** — validated, typed, deduplicated, schema-enforced Delta managed tables under `uk_property_intel.silver`.
 - **Gold** — joined, enriched, denormalised Delta managed tables under `uk_property_intel.gold`.
-- **Quality** — quarantine records, rule-run history, and DQ metrics under `uk_property_intel.quality`.
+- **Quality** — run history, pipeline metrics, and rule results under `uk_property_intel.quality`. No quarantine table, for the reason Decision 26 gave.
 
 Each layer maps 1:1 to a container, schema, and managed location (Bronze excepted; see Decision 11).
 
@@ -569,7 +570,7 @@ Key columns are excluded from the count comparison. A dedicated guard already fa
 
 **Volume columns cast through decimal first.** `try_cast('388.0' as int)` returns null, because the string-to-integer parser rejects a decimal point. Sales volumes are currently written as whole numbers, but this file has already changed its price formatting between releases, so volumes route through `decimal(18,6)` before `int`.
 
-### 16. PPD retention differs by file kind, and the changelog is a download list
+### 16. PPD retention differs by file kind, and the changelog is data rather than a trigger
 
 Land Registry publishes PPD in two forms that need different handling. The yearly files are state: `pp-2019.csv` is regenerated every month and stays available at a stable URL, so any version can be re-fetched at will. Land Registry publishes that as a commitment, stating that the single and yearly files continue to be updated monthly and incorporate the most current data, and release lands on the 20th working day. The monthly change-only file sits at a static URL that each release overwrites, so a release missed is a release lost.
 
@@ -579,13 +580,21 @@ Retention follows that asymmetry. Yearly files overwrite in place, because the c
 
 What follows is that shape, not a return to the rejected one. The difference is not which component opens the file, it is that the decision originates in the orchestrator and never travels upward from a layer.
 
-**The changelog is a download list.** The orchestrator selects the distinct transfer years present in the current change-only file, re-downloads those yearly files, and deletes it. It reads one column. Nothing parses the operation type, compares against Silver, or derives a measure, because a stale yearly file is fully described by the current one and the changelog only says which to fetch.
+**The changelog as a download list, designed and then cancelled.** The intended mechanism was for the orchestrator to select the distinct transfer years present in the current change-only file, re-download those yearly files, and delete it. One column read, nothing parsing the operation type or comparing against Silver, because a stale yearly file is fully described by the current one and the changelog only says which to fetch. Keeping the read in the orchestrator was what was supposed to hold the medallion acyclic.
 
-A run that never fetched a changelog cannot recover the years it named, and those wait for the annual reconcile. That is accepted and not mitigated. The state stays correct throughout, since the yearly files are authoritative whenever they are pulled; what a missed changelog delays is the trigger, not the data.
+It does not hold, and the reason is where the file is actually consumed. The changelog is read in Silver and Gold, so a refresh driven by it runs Silver and Gold, then Bronze, then Silver and Gold again. That is the cycle rejected above, arriving by a different route: the orchestrator would be relaying a decision that originated downstream, which is the same dependency with an extra hop in it. Naming the orchestrator as the reader does not make the arrow point the other way.
 
-The changelog exists only to narrow a refresh, so it is fetched only when the refresh is narrow. A full pass over 1995 to the current year needs no list of what to include, and an on-demand reconcile over named years already has one, so neither fetches it. That makes the changelog redundant in the month the annual reconcile runs, beyond merely unnecessary: re-downloading every yearly file is a strict superset of re-downloading the years it would have named. Wiring both would produce the correct result and hide a pointless fetch, which is why the rule is stated here.
+The second cost is worse than the lineage one. A cycle that fails part way through leaves Bronze re-fetched, Silver partly overwritten and Gold built on the mixture, with no layer holding a complete version of either the old state or the new one. A linear run has a last good layer to fall back to at every point, and a cyclic one does not.
 
-A full reconcile runs each June across 1995 to the current year. June rather than January because the current-year file appears somewhere between late March and early May, so a January run would report a missing file every year and train me to ignore it. A narrower reconcile over named years runs on demand, triggered by the years the current changelog names. Both re-pull the yearly files, diff against Silver, then overwrite the affected year partitions with `replaceWhere`.
+What survives is the changelog as data. It is downloaded every month and appended, which is how a correction reaches Silver between one yearly refresh and the next, and Silver's rebuild applies it to whatever transfer year it belongs to without being told which. A row restated in 2003 lands in the 2003 partition because that is what the row says, not because anything worked out that 2003 was affected. The pipeline that does this was already built.
+
+What it cannot do is decide which yearly files to re-fetch, and the reason is that nothing knows which years a changelog names without opening it. Opening it is the cyclic read. The only alternative that avoids the cycle is to re-fetch every yearly file whenever a changelog arrives, which is a full load every month and the end of the incremental system.
+
+So the two paths are a monthly append and an annual full refresh, and they never interleave. In the refresh month the pipeline takes the full-load branch and does not download the changelog at all, because the yearly files already carry everything it would have said. Outside that month it takes the monthly branch. One parameter on the watermark chooses between them.
+
+A missed changelog loses that month's changes until the next August. That is accepted, not mitigated. The yearly files remain authoritative and the annual refresh recovers everything; what a missed month delays is freshness, never correctness.
+
+A full reconcile runs each August across 1995 to the current year, and it is the only reconcile. Not January, because the current-year file appears somewhere between late March and early May, so a January run would report a missing file every year and train me to ignore it. The on-demand pass over named years went with the changelog that would have named them. What is left re-pulls every yearly file and rebuilds from it, which both layers already do on any run.
 
 **The reconcile has no year floor.** Two vintages of the complete yearly set, fetched four months apart, differ in every one of the 32 files. The 1995 file gained 18 rows, 2005 gained 34, 2019 gained 124, and 2025 gained 82,798. Recent years move most, because registration lags transfer, but no year is static. The deltas say the same thing independently: both sampled releases carry rows against every year from 1995 onward. Restricting the reconcile to recent years on the assumption that old files are frozen would therefore miss real corrections, and a spot check on one file over one interval could never have established that they were frozen in the first place.
 
@@ -744,6 +753,8 @@ Almost every guard in this platform is a contract check. An unrecognised crime t
 That leaves the population a quarantine table would actually hold: rows that satisfy the contract and fail a plausibility bound. Across six sources and roughly 130M rows the clearest instance is the 24 rows in Decision 23's source where British Transport Police published Scottish stations with corrupted longitudes, and those are better handled by nulling the coordinate and counting it than by removing the crime.
 
 So the table is deferred, and the decision that gates it is which checks are contract and which are value. That split is worth making explicitly when the quality framework is designed, because it also decides which rules belong in config and which stay in code. If the value population stays this thin, the honest outcome is to record why the table was not built.
+
+**Closed 03-09-2026, not built.** The value population never grew. Decision 61 dropped the rules engine the table was to sit beside, and Decision 82 measured the last candidate that could have produced one: anomaly detection over the facts would have flagged around 1,160 cells a run, and it was rejected because the flag rate rises with area level and so reads structure as fault. With that gone, nothing in the platform produces a row that is neither a contract violation, which stops the load, nor a value already handled in place, which the 24 corrupted longitudes are. This is the outcome the paragraph above named: the honest result is to record why the table was not built.
 
 ### 27. The watermark does not obviously belong in Delta
 
@@ -1617,6 +1628,78 @@ So the resume compares the months a staged archive holds against the months the 
 
 Next month that touches one archive and leaves six alone.
 
+### 79. The schema is repository code, the watermark is volume state
+
+`config/watermark.schema.json` is committed. The watermark it describes is not, and never was: it lives at `/Volumes/uk_property_intel/configs/watermark/watermark.json`, written by `01_pre_run_resolve_urls` on every run.
+
+The split falls out of what each one is. A schema changes through review and should produce a diff, a pull request and a test run. State changes every month and should produce none of those. Putting the schema beside the state would cost three things at once: continuous integration has no volume, so the whole suite would fail there rather than run; an edit would leave no trace; and the repository would stop containing the definition of its own configuration.
+
+It also decides where `SCHEMA_PATH` points. `schema.py` walks three parents up from `databricks_src/bronze/watermark_library/` to the repository root, which works identically in a checkout, in a workspace folder and on a runner.
+
+**The split against `registry.load`.** Two functions now read the same array, so each check belongs to exactly one of them. `registry.load` keeps what has to be true before a lookup means anything: valid JSON, an array, not empty, every entry carrying a `source_name`, no name repeated. The schema takes the per-entry contract: which keys each load pattern brings, and what type each holds. Nothing is checked twice, because a duplicated check drifts and then the two disagree with no way to say which is right.
+
+**`unevaluatedProperties` over the forbidden-key idiom.** Keys belonging to the other route were first refused with `properties: {start_year: false}` inside the branch. Measured, that reports `False schema does not allow 1995` and names neither the key nor a schema path containing it, because the `properties` validator reports at the parent when its subschema is `false`. Restructured so each branch declares its own keys and the item declares `unevaluatedProperties: false`, the same fault reports `'start_year' was unexpected`. One keyword then covers both a key from the wrong route and a key from nowhere, and the forbidden lists disappear.
+
+### 80. A whole number written as a decimal
+
+JSON Schema counts `8.0` as an integer. The specification defines the `integer` type by value and not by representation, so `"type": "integer"` accepts it, `multipleOf: 1` accepts it, and no keyword separates the two.
+
+That matters here because `json.dumps` writes it back as `8.0`, and ADF compares `full_load_yearly_refresh_month` against a typed integer parameter. A hand-edit typing `8.0` would pass every check in the file and change what the router does.
+
+So the four whole-number fields are checked in `assert_invariants`, which is the same placement the project already gave this problem once before: the schema states shape, and anything the schema cannot state is a Python check beside it. It is the general form of the note that Delta CHECK constraints cannot express multi-row invariants, which is why the SCD2 tests exist.
+
+The tuple naming those fields is itself a hazard, since a field renamed in the schema and not in the tuple stops being checked with nothing failing. A test ties the two together: every name in `WHOLE_NUMBER_FIELDS` must be declared in the schema and typed `integer` there.
+
+### 81. Three call sites, because each one alone misses something
+
+`01_pre_run_resolve_urls` validates after the read, before the write, and again on what landed. That looks like the same check three times and is not.
+
+After the read catches a watermark hand-edited between runs, which is the likeliest fault in the file and the only one that arrives without any code running. Stopping there means no resolver writes into a malformed array.
+
+Before the write is the one that matters most. `registry.update` refuses a field an entry does not already carry, so a resolver cannot invent a key, but nothing stops it writing the wrong type into a key that exists. This is the last point where that can be caught with the good watermark still on the volume, and it sits inside the branch that runs only when something moved, since an unchanged array was already validated after the read.
+
+On what landed catches a write that did not complete. `registry.dump` round-trips in memory and compares against the array as read, so it proves the serialisation is faithful and can say nothing about the bytes on disk.
+
+The schema is read and meta-checked once into `WATERMARK_SCHEMA` and passed to each call, so three checks cost one file read.
+
+### 82. Anomaly detection over the facts, rejected
+
+Measured over `fact_area_month_hpi`, each area against its own history of published month-over-month change: 147,444 cells across 405 areas. Three sigma flags 0.788% of them, roughly 1,160 cells, and the median-absolute-deviation fence flags 0.713%. That is a population, and a population has nowhere to go. Decision 26 closed the quarantine table, and a detector that produces a thousand flagged cells per run reopens it by the back door.
+
+The tails say the fence is not mis-set, it is mis-chosen. Against a normal distribution, three sigma should flag 0.27% and flags 0.788%, two and a half should flag 1.24% and flags 1.991%, and two should flag 4.55% and flags 5.014%. The body is close to normal and the tails are about three times heavier, which is what a price index looks like and not what a fault looks like. Widening the fence to control the volume gives up the sensitivity the detector was for.
+
+The decisive measurement runs the wrong way. Flag rates rise with area level: under three sigma, districts flag 0.742% while counties flag 1.061%, regions 1.382% and composites 1.549%; under the median-absolute-deviation fence, districts flag 0.654% against 2.259% for nations. Aggregates have the most transactions behind them and the least sampling noise, so a detector firing on them three times as often is reading structure. Stamp duty changes, seasonality and the 2020 to 2021 distortion are all real features of the series, and an aggregate shows them cleanly where a district buries them in noise. A quality check that fires hardest where the data is most trustworthy is measuring the wrong thing.
+
+### 83. Run-to-run drift, which is the detector the probe was looking for
+
+The same query asked whether a closed year's reconciliation ratio moves between runs. Across four runs, 23 of 32 years moved by exactly zero. The nine that moved are 2003, 2016 and 2020 through 2026, and the largest movement anywhere in the table is 0.0015, in the current year.
+
+A noise floor of zero is worth more than any fence over a distribution. It needs no assumption about shape, which is what sank Decision 82, and the movement it detects is a real event: Decision 16 records that Land Registry restate the yearly files on every release, so a settled year shifting by 0.0001 is a correction arriving, not noise.
+
+Two rules come out of it, and they are complementary. A count of settled years that moved at all, and the largest movement across them. A change in how Silver counts transactions moves many years by a small amount, which shows as a high count and a low maximum. A publisher restatement moves one year by a large amount, which shows as the reverse. A single rule of either kind is blind to one of the two.
+
+Neither is registrable yet, and the reason is not the bound. Both need a definition of settled, and age does not supply one: 2024 moved 0.0009 while 2016 moved 0.0001 and 2014 moved zero. Where the boundary sits is a fact about Land Registry's correction window, and the four runs on record span two publication vintages rather than four, so it has not been measured. `assert_registry_consistent` refuses a rule with neither bound, so there is no way to register the measurement now and set the threshold later. It waits, and it costs nothing to wait, because `rule_result` has recorded the underlying series since Phase 4 and the drift is a query over rows that already exist.
+
+### 84. Anomaly detection needs no new rule kind
+
+The roadmap asked for statistical anomaly detection as a further kind of rule. What Decision 83 produced is a further rule of the kind that already exists: a measured number, a registered ceiling, and a verdict. The check notebook computes the delta against the previous successful run and passes it to `evaluate` as `observed`, which leaves the evaluator pure and the table unchanged.
+
+This is the second time this framework has answered a question by not growing. Decision 61 turned a configurable rule engine into a threshold registry after counting what there was to configure, and the same counting applies here: a rule kind earns its place by needing different columns, a different verdict, or a different constraint, and this needs none of the three.
+
+One thing is left open. `KINDS` declares `distribution`, meaning where a value sits against the spread of its own history, and nothing has ever used it. The drift rules are not that either, since they compare one product against its own earlier value rather than against a spread. Whether they take an existing kind or a new one is a decision for the point at which they are registered, and it should not be taken before the bound is measured.
+
+### 85. Validating the ADF definitions in CI, rejected
+
+The roadmap carried a line for validating the pipeline definitions on every pull request. Microsoft publish the tooling for it, an npm package and a GitHub Action wrapping it, and the case for using it looked obvious: catch a pipeline referencing a deleted dataset before it merges.
+
+There is nothing to catch. The ADF resources reach this repository through Studio's Git integration, and Studio validates before it will save. Investigating the package showed how completely: it is a downloader, fetching `https://adf.azure.com/assets/cmd-api/main.js` at run time and executing it. That is the same service that serves Studio, so the job would ask the same engine the same question a second time, about a file that engine wrote.
+
+What the investigation found on the way is the reason the answer is not merely *unnecessary*. The npm version pins the downloader, not the validator, so the rules can change server-side with no version bump. The job needs egress to a live Microsoft endpoint on every run. And the fetched response is written to a file and executed without being checked, so a request that is refused becomes a parse error in a file nobody wrote rather than a network error. A refused request and a real engine are indistinguishable to the runtime until the parse fails.
+
+A check that goes red on someone else's outage, with a message that points at the wrong thing, is the failure Decision 16 named when it refused a January reconcile: it would report a problem every so often for reasons that are never the code, and train me to ignore it. Marking it non-required would have removed the merge block and kept the training.
+
+A narrower local check was considered and rejected on the same ground. Parsing every JSON under `adf/` and asserting each `referenceName` resolves would need no network and pin cleanly, but it looks for a population Studio does not produce. The argument that closed the quarantine table closes this too.
+
 ## Bugs found and fixed
 
 ### A ratio inflated by its own denominator
@@ -1832,8 +1915,10 @@ Everything the notebooks previously printed and discarded is now recorded: the f
 ### Carried into later phases
 
 - The PPD annual reconcile is live and confirmed. `full_load_yearly_refresh_month` on the watermark is read by the yearly-stepped router, so the August run re-fetches every yearly file and both layers rebuild from it, which is the whole of the reconcile: Silver writes with `INSERT OVERWRITE` and the Gold loads share `overwrite`, so nothing further sits behind the trigger. The diff Decision 16 describes is the part still designed and not built. `quality.reconcile_run` and `quality.reconcile_diff` have no writer, so the rebuild heals without recording what moved.
-- The PPD delta merge is cancelled, not deferred. It was scoped when the change-only file was assumed to carry data the yearly files did not. Both are published from the same release and describe the same state, so a merge would add change-data-capture machinery without adding a row. The change-only file survives as an orchestrator download list, in Phase 4.
-- Deferring the quality-rules framework and watermark automation until after Gold was the right call, and both landed in Phase 4. Gold produced the second class of check the deferral anticipated, covering join integrity, referential coverage and aggregate reconciliation, and seeing it is what turned the planned config-driven rule engine into a threshold registry. See Decisions 61 and 63. The quarantine table is the one item still outstanding, for the reason Decision 26 gave.
+
+  Decision 83 may have overtaken it. The drift measurement records what moved between two runs at year grain, from rows `rule_result` already holds, and the reconcile diff records what moved between two vintages of the same years. Whether those are one measurement at two grains, or two things that only look alike, is worth settling before either is built, because building both would put the same fact in two tables.
+- The PPD delta merge is cancelled, not deferred. It was scoped when the change-only file was assumed to carry data the yearly files did not. Both are published from the same release and describe the same state, so a merge would add change-data-capture machinery without adding a row. The changelog-driven refresh that would have replaced it is cancelled too, on 03-09-2026, because the changelog is read in Silver and Gold and a refresh driven from there makes the medallion cyclic. The file itself is not cancelled: it is still downloaded and appended every month except the refresh month, which is how a correction reaches Silver between annual refreshes.
+- Deferring the quality-rules framework and watermark automation until after Gold was the right call, and both landed in Phase 4. Gold produced the second class of check the deferral anticipated, covering join integrity, referential coverage and aggregate reconciliation, and seeing it is what turned the planned config-driven rule engine into a threshold registry. See Decisions 61 and 63. The quarantine table is closed with them, and Decision 26 records why it was never built.
 - Every freshness bound is unset. The mechanism is built and the values are recorded on every run, but a bound needs to be read off observations spanning a release boundary, and one run per source cannot say where in its cycle a source was measured.
 - The eight per-archive Police measures and both crime vocabularies are written by code that has not yet executed against a real load. Staging was complete when the audit wiring landed, so the loop was skipped. They first record on the next monthly archive.
 - A probe still has to claim a real name, because `AuditRun` validates every source against the audit registry and rejects anything it does not declare. What changed in Phase 4.2 is that it no longer has to be told apart by hand. Every run carries the Databricks job run id, so a probe is opened under an id prefixed `probe-`, is found and removed as a set, and is invisible to the pipeline while it exists: each stage filters on its own job run id, so a probe run and a scheduled run cannot read each other. A dashboard separates the two on the same column by excluding the prefix. The `parent_run_id` column this once anticipated was never built. ADF's own pipeline run id would have carried no more than the Databricks job run id does, and the job run id is what the notebooks already had to share for the failure cascade to work at all.
@@ -1852,7 +1937,7 @@ Everything the notebooks previously printed and discarded is now recorded: the f
    - The JSON rule file and the generic validation notebook are dropped. Counting what there was to configure found 32 guards across the six Silver transforms and four more in `conformance.py`, none of them carrying a tolerance. See Decision 61.
    - `databricks_src/quality/rules/evaluator.py` holds the registry, the evaluator and the definition of `quality.rule_result`, created alongside the other two quality tables by the same setup notebook.
    - Three reconciliation rules registered, bounds read off thirty-two measured years, evaluated by `05_verify_cross_source.py` under its own audit run. See Decision 62.
-   - The quarantine table goes with the engine, for the reason Decision 26 gave.
+   - The quarantine table goes with the engine, and is closed rather than deferred. See Decision 26.
    - Open: the six freshness bounds are still recorded and unset, and anomaly detection is not built.
 
 3. **Police.uk overlapping-snapshot deduplication**: built, and not as planned
@@ -1906,8 +1991,21 @@ Coverage is uneven, and the gaps stay visible instead of being filled in. 316 di
 9. ✅ Quality-rules framework, built as a threshold registry rather than the configurable engine originally sketched
 10. ✅ Watermark automation, every source resolving its own URL and release date before the run
 11. ✅ Orchestration and the failure cascade, one pipeline driving a twelve-task job over both layers
-12. Freshness bounds, anomaly detection, and JSON schema validation as a third continuous integration job
+12. ✅ Watermark schema validation, joining the existing test suite rather than becoming a third continuous integration job
+13. ✅ Phase 4 closed. Validating the ADF definitions in continuous integration was investigated and rejected, and the two remaining bounds moved to Future work, where they hold nothing open
 
 ---
 
-*Design document status: Phase 2 complete, Phase 3 complete. All six Silver tables built, unit-tested, and confirmed on the cluster, with the pipeline audit tables recording every run. The Gold star is finished: thirteen tables declared and created, all four dimensions loaded at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. Decisions 30 to 32 were queued on 08-08-2026 and rewritten before entry, against measurements taken in Phase 3.1 that contradicted parts of the queued text; 33 to 36 came out of loading the dimensions, 37 to 42 out of building the first two facts, 43 to 51 out of the transaction facts, 52 to 55 out of the crime facts, 56 and 57 out of verifying the result against a source the pipeline does not produce, 58 out of dropping the schema evolution roadmap item at the opening of Phase 4, 59 and 60 out of building continuous integration and the dialect problem its first run exposed, and 61 and 62 out of counting what a rules framework would have had to configure. Every row count in phases 3.4 and 3.5 was predicted from a probe before the load and matched on the cluster. Phase 4 is in progress: continuous integration is running, and the threshold rule framework is built with three reconciliation rules recording 65 results on their first run. Decisions 63 to 67 came out of Phase 4.1, where every source learned to resolve its own URL and release date, and 68 to 78 out of Phase 4.2, which put a pre-run job, six gated copies and a twelve-task Databricks job under one pipeline and made a Bronze failure skip exactly the tables built on it. Last updated 02-09-2026.*
+*Design document status: Phases 1 to 4 complete. Bronze ingestion, the Silver layer, the Gold star, and the quality, automation and orchestration work, all verified on the cluster. Phase 5 covers consumption. Two bounds sit in Future work, waiting on the publication calendar rather than on code. Row counts, measured durations and reconciliation figures live in the sections that explain them. Last updated 03-09-2026.*
+
+---
+
+### Future work — held for observation
+
+Everything below is built as mechanism and unset as configuration, so none of it is waiting on code. What each needs is a bound read off values only the publication calendar can produce, which is why they sit after the delivery sequence instead of holding a step of it open.
+
+**The six freshness bounds.** Every source records its age on every run and `verdict` returns unknown against an unset bound. Decision 29 requires observations spanning a release boundary before a bound is set, because one run per source cannot say where in its cycle a source was measured. Two boundaries is the earliest useful reading, and each source moves on its publisher's own schedule.
+
+**The two run-to-run drift rules from Decision 83.** A count of settled years whose reconciliation ratio moved, and the largest movement across them. Both need a measured definition of settled, and age does not supply one: across the four runs on record, 2024 moved 0.0009 while 2016 moved 0.0001 and 2014 moved zero. Where the boundary falls is a fact about Land Registry's correction window. The four runs span two publication vintages, so it has not been measured, and `assert_registry_consistent` refuses a rule with neither bound, so the measurement cannot be registered now and thresholded later.
+
+Nothing is lost by waiting. `rule_result` has recorded the drift series since Phase 4 and the audit tables have recorded freshness since Phase 2, so both bounds are computable retrospectively over whatever has accumulated by the time they are set. If Land Registry publish their own correction window, that answers the second without waiting at all.

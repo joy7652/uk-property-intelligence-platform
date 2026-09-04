@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/joy7652/uk-property-intelligence-platform/config/watermark.schema.json",
+  "title": "Watermark",
+  "description": "The array ADF's Lookup reads before anything else runs. Every key ADF or a resolver reads is declared here, because a key absent from an entry fails the pipeline run outright rather than evaluating to nothing. Shape only: this says which keys exist and what type they hold, never whether a value is currently right.",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "properties": {
+      "source_name": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The key every lookup and every Bronze failure marker names."
+      },
+      "display_name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "load_pattern": {
+        "enum": [
+          "single_file",
+          "yearly_stepped"
+        ],
+        "description": "Selects the ADF route. An unknown value reaches no branch."
+      },
+      "_comment": {
+        "type": "string",
+        "description": "Prose for a reader. Nothing reads it, so nothing checks it is current."
+      },
+      "linked_service_type": {
+        "enum": [
+          "anonymous",
+          "landregistry_hpi",
+          "user_agent",
+          "accept_header"
+        ],
+        "description": "Resolves to a real linked service, so an unknown value fails at run time."
+      },
+      "base_url": {
+        "type": "string",
+        "pattern": "^https://[^/]"
+      },
+      "folder_name": {
+        "type": "string",
+        "pattern": "^[^/].*/$",
+        "description": "Bronze landing path, relative to the container, trailing slash included."
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "full_load_complete": {
+        "type": "boolean"
+      },
+      "last_refreshed": {
+        "$ref": "#/$defs/date"
+      },
+      "latest_release": {
+        "$ref": "#/$defs/date",
+        "description": "The publisher's release date, never the period the data covers."
+      }
+    },
+    "required": [
+      "source_name",
+      "display_name",
+      "load_pattern",
+      "_comment",
+      "linked_service_type",
+      "base_url",
+      "folder_name",
+      "active",
+      "full_load_complete",
+      "last_refreshed",
+      "latest_release"
+    ],
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "load_pattern": {
+              "const": "single_file"
+            }
+          },
+          "required": [
+            "load_pattern"
+          ]
+        },
+        "then": {
+          "properties": {
+            "relative_url": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path or query string appended to base_url. ONS begins with a query, so no leading slash is required."
+            },
+            "file_name": {
+              "type": "string",
+              "pattern": "^[^/]+\\.[A-Za-z0-9]+$"
+            }
+          },
+          "required": [
+            "relative_url",
+            "file_name"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "load_pattern": {
+              "const": "yearly_stepped"
+            }
+          },
+          "required": [
+            "load_pattern"
+          ]
+        },
+        "then": {
+          "properties": {
+            "relative_url_prefix": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "file_name_prefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "file_extension": {
+              "type": "string",
+              "pattern": "^\\.[A-Za-z0-9]+$"
+            },
+            "start_year": {
+              "type": "integer",
+              "minimum": 1900,
+              "maximum": 2100
+            },
+            "step_years": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "snapshot_month": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^(0[1-9]|1[0-2])$",
+              "description": "Month token in an archive address, where the source publishes one. Null where the address carries no month."
+            },
+            "last_year_ingested": {
+              "type": "integer",
+              "minimum": 1900,
+              "maximum": 2100
+            },
+            "full_load_yearly_refresh_month": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 12,
+              "description": "Calendar month that triggers a full re-fetch, compared against utcNow('MM'). Zero never matches, which is how a source opts out without the key going absent."
+            },
+            "incremental_type": {
+              "enum": [
+                "static_url",
+                "templated_latest"
+              ]
+            },
+            "incremental_relative_url_prefix": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "incremental_folder_name": {
+              "type": "string",
+              "pattern": "^[^/].*/$"
+            },
+            "incremental_file_name_prefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "incremental_latest_snapshot": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "description": "Data month of the newest published snapshot, written by the pre-run resolver."
+            }
+          },
+          "required": [
+            "relative_url_prefix",
+            "file_name_prefix",
+            "file_extension",
+            "start_year",
+            "step_years",
+            "snapshot_month",
+            "last_year_ingested",
+            "full_load_yearly_refresh_month",
+            "incremental_type",
+            "incremental_relative_url_prefix",
+            "incremental_folder_name",
+            "incremental_file_name_prefix",
+            "incremental_latest_snapshot"
+          ]
+        }
+      }
+    ],
+    "unevaluatedProperties": false
+  },
+  "$defs": {
+    "date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "Pattern fixes the shape; the format checker rejects a day that does not exist."
+    }
+  }
+}

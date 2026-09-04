@@ -6,3 +6,4 @@ pyspark==4.0.0    # DBR 17.3 LTS
 pytest==8.3.5     # DBR 17.3 LTS
 chispa==0.12.0
 ruff==0.16.4
+jsonschema==4.26.0

@@ -142,3 +142,28 @@ run("tests/test_bronze_watermark/test_hpi.py")
 # COMMAND ----------
 
 run("tests/test_bronze_watermark/test_police.py")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 6. Watermark schema
+# MAGIC
+# MAGIC The key-level contract for the watermark, and the invariants no schema keyword can
+# MAGIC hold. A key an ADF expression names and an entry does not carry fails the run outright,
+# MAGIC and at that point a typo and an omission are the same fault, so both are caught here
+# MAGIC instead of at half past nine on a release morning.
+# MAGIC
+# MAGIC `registry.load` already refuses the array-level faults: invalid JSON, a non-array, an
+# MAGIC empty array, a missing `source_name`, a repeated one. Nothing here repeats them. What
+# MAGIC this adds is the per-entry shape, which keys each load pattern brings with it, and the
+# MAGIC two checks JSON Schema has no keyword for. A whole number written as a decimal reads as
+# MAGIC an integer to a validator and as `8.0` to ADF's typed parameter. Two sources sharing a
+# MAGIC Bronze folder satisfy the schema one entry at a time while one overwrites the other.
+# MAGIC
+# MAGIC No value is asserted. Not that a release date is recent, not that a refresh month is
+# MAGIC the one intended, not that a URL resolves. A watermark can pass every check in this
+# MAGIC section and be pointed at last year's file.
+
+# COMMAND ----------
+
+run("tests/test_bronze_watermark/test_schema.py")
