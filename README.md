@@ -3,7 +3,7 @@ Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
 An Azure data platform built around HM Land Registry's 31.4M residential transactions since 1995, joined with five more official UK datasets covering house prices, private rents, postcodes, the Bank of England base rate and street-level crime. The pipelines run off a single JSON config file, so adding a source means editing config, not writing code. Loads are incremental from a per-source watermark. Every file is validated against its expected format before parsing, because a pipeline reporting success only proves bytes moved, and all data access is governed through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
 
-> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,119,680 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is in progress: continuous integration runs lint and the full test suite on every push and pull request, and the reconciliation is asserted against registered thresholds instead of read off a screen. Every source now resolves its own URL and release date before a run, and one pipeline drives a pre-run job, six gated downloads and a twelve-task Databricks job, in which a source that fails at ingestion skips exactly the tables built on it.
+> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,119,680 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is complete: continuous integration, the quality layer, watermark automation, orchestration and the failure cascade, and a schema the watermark is checked against before the pipeline reads it. A source that fails at ingestion skips exactly the tables built on it. Phase 5 covers consumption, Synapse Serverless and the dashboards.
 
 **Highlights**
 
@@ -15,7 +15,7 @@ An Azure data platform built around HM Land Registry's 31.4M residential transac
 - 36.1M Gold fact rows across 9 facts and 4 dimensions, every key conforming and every dropped row counted by cause
 - Config-driven ingestion: a new source is 1 JSON block in the watermark, not a new pipeline
 - Incremental by per-source watermark, with 2 reusable load patterns covering all 6 sources
-- Magic-byte validation and a quarantine/quality layer, because a success flag only means bytes moved
+- Magic-byte validation and a quality layer recording every run, metric and rule result, because a success flag only means bytes moved
 - Unity Catalog governance over a medallion lake on ADLS Gen2, with no secrets in the data path
 
 ---
@@ -53,7 +53,7 @@ ADLS Gen2 bronze/  (raw files, 6 sources, exposed as UC External Volumes)
 Azure Databricks + Unity Catalog  (transformation, quality, governance)
               ↓
 ADLS Gen2 silver/ → gold/  (Delta Lake, managed tables, schema-level locations)
-   plus ADLS Gen2 quality/  (quarantine + DQ outputs)
+   plus ADLS Gen2 quality/  (run history, metrics, rule results)
               ↓
 Azure Synapse Serverless SQL  (planned)
               ↓
@@ -132,7 +132,7 @@ Each linked service's base URL is parameterised via `@{linkedService().p_base_ur
 
 ### 3. Watermark stored as a JSON array in ADLS
 
-The watermark holds per-source state (last ingestion date, URL parameters, load pattern) at `config/watermark.json` in ADLS. Three decisions shaped it:
+The watermark holds per-source state (last ingestion date, URL parameters, load pattern) in its own ADLS container, reached through a Unity Catalog volume at `/Volumes/uk_property_intel/configs/watermark/watermark.json`. It is state rather than source, so it lives beside the data and not in the repository. Three decisions shaped it:
 
 - Array, not object: ADF's Lookup plus ForEach iterates arrays cleanly.
 - ADLS, not Azure SQL: this drops an entire database dependency. When Databricks joins the stack, the watermark moves to a Delta table.
@@ -158,7 +158,7 @@ PL_Master_Orchestrator
 - **Bronze** — raw files as received, no transformation, in a dedicated `bronze` container. Exposed via Unity Catalog External Volumes under `uk_property_intel.bronze.*`, so Silver access flows through UC governance and lineage.
 - **Silver** — validated, typed, deduplicated, schema-enforced. Delta managed tables under `uk_property_intel.silver`, physically stored in the `silver` container.
 - **Gold** — joined, enriched, denormalised for analytical consumption. Star-schema fact and dimension tables under `uk_property_intel.gold`, in the `gold` container.
-- **Quality** — quarantine records, rule-run history, and DQ metrics under `uk_property_intel.quality`, in the `quality` container.
+- **Quality** — run history, pipeline metrics, and rule results under `uk_property_intel.quality`, in the `quality` container. No quarantine table; decision 22 records why.
 
 Each layer maps one-to-one to a Blob container and a Unity Catalog schema. Silver, Gold, and Quality use schema-level managed locations; Bronze uses External Volumes pointing at the bronze container (see Decision 10). Keeping the physical and logical layouts aligned means cost attribution, lifecycle policy, and RBAC all scope per layer, and you can read the medallion structure straight off the storage account.
 
@@ -245,7 +245,7 @@ Silver transforms cast with `try_cast`, which yields null on a malformed value w
 
 Key columns are excluded from that comparison. A null date is already caught by a dedicated guard that reports the offending row, which covers more ground than a count check does.
 
-### 15. PPD retention differs by file kind, and the changelog is a download list
+### 15. PPD retention differs by file kind, and the changelog is data rather than a trigger
 
 Land Registry publishes PPD in two forms that need different handling. The yearly files are state: `pp-2019.csv` is regenerated every month at a stable URL, and Land Registry states that the single and yearly files carry the most current data on every release. The monthly change-only file sits at a static URL that each release overwrites, so a release missed is a release lost.
 
@@ -254,6 +254,10 @@ Both are published from the same release and describe the same state, so the cha
 Silver is rebuilt in full from the current yearly files and partitioned by transfer year. Every file holds exactly one transfer year, confirmed across all 32 files on two separate vintages, so one Bronze file maps to one Silver partition and a reconcile can overwrite a year with `replaceWhere`. TUID is unique across all 31.4M rows, so Silver asserts uniqueness. The two cost the same shuffle, but an assertion names the offending identifiers where a dedup silently discards rows.
 
 An earlier sketch had Bronze read the change-only file, work out which yearly files it affected, and re-fetch those. That is the wrong shape whatever the file contains: a layer deciding what an earlier layer should ingest makes the medallion cyclic, which costs reproducibility and leaves lineage describing something other than dependency. The difference is not which component opens the file, it is that the decision originates in the orchestrator and never travels upward from a layer.
+
+That principle went on to cancel the refresh itself. The changelog is read in Silver and Gold, so any refresh driven by it runs those layers, then Bronze, then those layers again. Putting the orchestrator in the middle relays the decision without reversing the arrow, and a cycle that fails part way leaves no layer holding a complete version of either the old state or the new one. The changelog itself is not cancelled, only the refresh it would have driven. It is downloaded and appended every month, which is how a correction reaches the warehouse between one annual refresh and the next, and the load already places a restated 2003 row in the 2003 partition because that is what the row says. What it cannot do is decide which yearly files to re-download, because nothing knows which years it names without opening it, and the only cycle-free alternative is re-fetching every yearly file every month, which is a full load monthly and the end of incremental loading.
+
+So there are two paths and they never interleave: a monthly append, and one annual refresh in August that takes the full-load branch and skips the changelog entirely, since the yearly files already carry everything it would have said. Miss a month and that month's changes wait for August. That is a freshness cost and never a correctness one.
 
 See DESIGN.md Decision 16 for the reconcile design and the conditions that would change this.
 
@@ -332,6 +336,9 @@ Almost every guard in this platform is a contract check. An unrecognised crime t
 That leaves the population a quarantine table would actually hold: rows that satisfy the contract and fail a plausibility bound. Across six sources and roughly 130M rows, the clearest instance is 24 rows where British Transport Police published Scottish stations with corrupted longitudes, and those are handled better by nulling the coordinate and counting it than by removing the crime.
 
 So the table is deferred, and the decision that gates it is which checks are contract and which are value. If the value population stays this thin, the honest outcome is to record why the table was not built.
+
+**Closed, not built.** The population never appeared. The rules engine this table was to sit beside was dropped after counting what there was to configure, and the last candidate that could have filled it was the anomaly detector, which measurement rejected: it would have flagged around 1,160 cells a run, and its flag rate rose with area size, meaning it read structure as fault. What is left is contract violations, which stop the load, and the occasional bad value handled in place. Neither needs a table, and recording why is what this decision asked for.
+
 
 ### 23. A failed run has to leave a row behind
 
@@ -759,6 +766,55 @@ Where the run actually failed is a query against the audit table, not a colour i
 monitoring pane. That is the right place for it: the audit table is the thing that gets
 built into a pipeline health dashboard, and a colour is not.
 
+### 47. The anomaly detector I planned would have fired hardest on the best data
+
+The roadmap carried a line for statistical anomaly detection from the start: flag house
+price movements that sit too far outside an area's own history. It sounds obviously
+useful, and measuring it before writing it is what stopped it being built.
+
+The measurement covered 147,444 area-months across 405 areas, using the month-over-month
+change the publisher already reports. A three-sigma fence flags 0.788% of those cells,
+about 1,160 of them per run. That alone is close to disqualifying, because a check that
+produces a thousand flagged rows needs somewhere to put them, and this project decided
+against a quarantine table for exactly that reason.
+
+The shape of the tails explains why no tightening or loosening rescues it. Against a
+normal distribution three sigma should flag 0.27% and flags 0.788%; two sigma should flag
+4.55% and flags 5.014%. The middle of the distribution behaves and the tails are about
+three times heavier than the fence assumes, which is what a price index looks like. It is
+not a sign of anything wrong.
+
+What settled it was a number running the wrong way. Flag rates climb with area size:
+districts 0.742%, counties 1.061%, regions 1.382%, composites 1.549%. Under a
+median-based fence the gap is wider still, 0.654% for districts against 2.259% for
+nations. Aggregates have the most transactions behind them and the least noise, so a
+detector flagging them two to three times as often is not finding faults. It is finding
+stamp duty changes, seasonality and the pandemic, all of which are real and all of which
+show up cleanly in an aggregate and get buried in the noise of a single district.
+
+A quality check that fires hardest where the data is most trustworthy is measuring the
+wrong thing, and no threshold setting fixes that.
+
+The same probe found the detector worth having, in a place I had not thought to look. The
+platform reconciles its own transaction counts against the publisher's, per year, and
+records the result every run. Asking whether a settled year's ratio moves between runs
+gives 23 of 32 years at exactly zero, with the largest movement anywhere being 0.0015 in
+the current year. A noise floor of zero needs no distributional assumption at all, and a
+settled year that moves means a publisher restatement, which is a real event worth
+knowing about. That became two ordinary threshold rules instead of a new kind of check.
+
+### 48. The CI check I did not build, and what looking at it turned up
+
+The roadmap carried a line for validating the Data Factory definitions on every pull request. Microsoft publish an npm package for exactly this and a GitHub Action wrapping it, so the line looked like an afternoon of work.
+
+The reason not to build it is that nothing would reach the check un-validated. Pipeline definitions arrive in this repository through Data Factory Studio's Git integration, and Studio validates before it will save. Opening up the package showed how literally: it is a downloader, fetching its actual validation engine from the Data Factory service at run time and executing it. The job would have asked the same engine the same question a second time, about a file that engine had just written.
+
+Looking at it turned up three things worth knowing for anyone who does need it. The package version pins the downloader and not the validator, so the rules can change without a version bump. The job needs network access to a live Microsoft endpoint on every run. And the fetched response is written to a file and executed without being checked, so a failed request becomes a parse error in a file nobody wrote rather than a network error. The response body is executed either way, so a refused request and a real engine are indistinguishable to the runtime until the parse fails.
+
+That combination is what settles it. A check that fails on someone else's outage, with a message pointing at the wrong thing, teaches you to ignore the check. This project already refused a scheduled reconcile in January for the same reason, because it would have reported a missing file every year until I stopped reading the alert.
+
+A smaller version was worth a look before closing the line: parse the JSON directly and assert every reference resolves. It needs no network and pins cleanly, and it was rejected on the same ground as the vendor tool, because it looks for the same nothing.
+
 ## Bugs found and fixed
 
 ### A ratio inflated by its own denominator
@@ -965,6 +1021,8 @@ uk-property-intelligence-platform/
 │   └── workflows/
 │       └── tests.yml                    # lint + discovered suite matrix, on push and PR
 ├── ruff.toml                            # rules, and the Databricks runtime builtins
+├── config/
+│   └── watermark.schema.json            # the watermark contract, one branch per load pattern
 ├── adf/
 │   └── pipelines/                       # JSON definitions, synced via ADF Git integration
 │       ├── PL_Master_Orchestrator.json
@@ -974,8 +1032,6 @@ uk-property-intelligence-platform/
 │       ├── PL_Route_Incremental_Load.json
 │       ├── PL_Incremental_Load_StaticURL.json
 │       └── PL_Incremental_Load_TemplatedLatest.json
-├── config/
-│   ├── watermark.json                   # per-source state, URL parameters, load patterns
 ├── databricks_src/
 │   ├── setup/
 │   │   ├── README.md                    # bootstrap runbook
@@ -996,6 +1052,7 @@ uk-property-intelligence-platform/
 │   │       ├── police.py                # crime-last-updated endpoint, archive confirmed by HEAD
 │   │       ├── resolution.py            # shared failure type and the Last-Modified parse
 │   │       ├── registry.py              # watermark lookup and field merge
+│   │       ├── schema.py                # key-level contract, and the invariants a schema cannot hold
 │   │       └── source_dependency.py     # the dependency chain and the skip planner
 │   ├── silver/
 │   │   ├── notebooks/                   # one notebook per source
@@ -1053,6 +1110,7 @@ uk-property-intelligence-platform/
 │   │   ├── test_dim_crime_type.py       # vocabulary map, publication window
 │   │   └── test_conformance.py          # shared key and grain checks
 │   ├── test_bronze_watermark/
+│   │   ├── test_schema.py               # the schema, against entries wrong in one way each
 │   │   ├── test_registry.py             # watermark lookup, field merge
 │   │   ├── test_source_dependency.py    # dependency chain, skip planner, check inputs
 │   │   ├── test_resolution.py           # failure type, Last-Modified parse
@@ -1084,7 +1142,7 @@ uk-property-intelligence-platform/
   - Azure Data Factory instance (Git-integrated with this repo)
   - ADLS Gen2 storage account with a `bronze` container
   - ADF managed identity granted `Storage Blob Data Contributor` on the storage account
-- Watermark file at `config/watermark.json` in the storage account
+- Watermark file in its own `configs` container, exposed as the Unity Catalog volume `uk_property_intel.configs.watermark`
 
 **Phase 2 (Silver/Gold transformation):**
 - Azure Databricks workspace (Premium tier, Unity Catalog enabled)
@@ -1160,7 +1218,7 @@ After the downloads, a twelve-task Databricks job runs the six Silver notebooks,
 - [x] Crime facts loaded at both grains, with anti-social behaviour held out of every total by constraint: 25,984,439 and 6,328,185 rows by small area, 736,822 and 61,681 by published area, summed up from the small-area aggregate and checked against a direct count
 - [x] Own-versus-rent monthly cost at the base rate of the day, and rent yield, computed downstream from the facts: 45,346 area-months across 331 areas, a yield for 316 districts at a 3.97% median, and the rate cycle moving the share of area-months where owning costs more from 41.7% to 99.5%
 - [x] Join-integrity and referential-coverage checks recorded through the audit writer: every foreign key on all nine facts checked against the loaded dimension after write, and coverage recorded against `dim_area`, `dim_lsoa` and `dim_crime_type`
-- [x] Cross-source reconciliation of a transaction-derived price series against the published index: counts correlating at 0.9998 across 123,375 cells, and the published mix-adjusted average tracking our median to within 1.1%
+- [x] Cross-source reconciliation of a transaction-derived price series against the published index: counts correlating at 0.9998 across 123,375 cells, and the published mix-adjusted average tracking the transaction median to within 1.1%
 
 ### Phase 4 — Advanced features
 
@@ -1169,12 +1227,12 @@ After the downloads, a twelve-task Databricks job runs the six Silver notebooks,
 - [x] Watermark automation — every source resolves its own current URL and release date before the run, and the pipeline fetches only what has actually been republished
 - [x] Orchestration — one pipeline runs a pre-run job, gates and copies six sources, then runs a twelve-task Databricks job end to end
 - [x] Failure cascade — a source that fails at ingestion skips exactly the tables built on it, and every stage that waits records why
-- [ ] Freshness bounds set from the values the runs have recorded, replacing the six unset placeholders
-- [ ] Statistical anomaly detection as a further rule kind: a 3-sigma rolling window over the recorded history, not a single run
+- [x] Watermark schema validation: a key-level contract for the watermark, checked after the read, before the write and on what landed, and joining the existing test suite instead of becoming a separate continuous integration job
+- [x] Statistical anomaly detection, measured and answered. Fact-level detection was rejected on evidence; the drift between runs became two ordinary threshold rules and needed no new rule kind
 - [x] PPD annual reconcile: a refresh month configured on the watermark and read by the yearly-stepped router, so August re-fetches every yearly file and both layers rebuild from it
-- [ ] PPD changelog-driven refresh: the orchestrator reads the distinct transfer years in the change-only file, re-downloads those yearly files, and discards it. Fetched only when the refresh is narrow, since a full or named-year reconcile already covers what it would name
-- [ ] Quarantine table for rejected records, only if the population justifies it
-- [ ] JSON schema validation for the watermark and the ADF pipeline definitions, as a third CI job
+- [x] PPD changelog-driven refresh, cancelled rather than built. Driving a refresh from a file read in Silver and Gold makes the medallion cyclic, and nothing can know which years it names without the cyclic read. The changelog still loads monthly as an append; only the trigger is gone
+- [x] Quarantine table, decided against and recorded rather than left pending. Contract violations stop the load and the thin value population is handled in place, so nothing generates rows needing somewhere to go
+- [x] Validation of the ADF pipeline definitions, investigated and rejected. Studio validates before it will save, and the tooling downloads that same engine at run time, so the check would re-ask a question already answered while adding a live-service dependency that fails as a syntax error
 
 ### Phase 5 — Consumption
 
@@ -1184,6 +1242,15 @@ After the downloads, a twelve-task Databricks job runs the six Silver notebooks,
   - Pipeline Health Dashboard (run history, quality scores, anomaly alerts)
 - [ ] Boundary polygons for the map layers, sourced at dashboard time. The platform holds postcode points, not area shapes, so a choropleth needs geometry the pipeline does not carry
 
+
+### Future work — held for observation
+
+Both items below are built as mechanism and unset as configuration, so neither is waiting on code. Each needs a bound read off values that only the publication calendar can produce, which is why they sit after the phases instead of leaving one open.
+
+- [ ] The six freshness bounds. Every source records its age on every run, and a bound has to be read off observations spanning a release boundary before it means anything
+- [ ] The two run-to-run drift rules. Both need a measured definition of when a transfer year is settled, which is a fact about Land Registry's correction window rather than something to choose
+
+Nothing is lost by the wait. Both series have been recorded since the layers that produce them were built, so either bound can be computed retrospectively over everything accumulated by the time it is set.
 ---
 
-*Project status: Phase 2 complete, Phase 3 complete. All six Silver sources plus the pipeline audit tables and per-source freshness recording, built, tested and confirmed on the cluster. The Gold star is finished: thirteen tables created, all four dimensions loaded and verified at 19,723 calendar days, 432 published areas, 36,778 small areas and 16 crime types, and all nine facts loaded at 36,119,680 rows. The index at 147,453 and rents at 49,248; monthly area price at 124,631, the transaction composition breakdown at 1,552,988 and annual small-area price at 1,134,233; and the four crime facts at 25,984,439, 6,328,185, 736,822 and 61,681. A transaction-derived price series reconciles against the published index at a count correlation of 0.9998 across 123,375 cells. Phase 4 covers CI/CD, the testing framework, the quality layer and orchestration, and is in progress: continuous integration is running, the threshold rule framework is built with three reconciliation rules that recorded 65 results on their first run, every source resolves its own URL and release date before a run, and one pipeline now drives a pre-run job, six gated downloads and a twelve-task Databricks job, measured end to end at 1h 11m 27s. A source that fails at ingestion skips exactly the tables built on it, and every stage that waits records why. What remains in the phase is freshness bounds, anomaly detection and a third continuous integration job. Last updated 02-09-2026.*
+*Project status: Phases 1 to 4 complete. Bronze ingestion for all six sources, the Silver layer, the Gold star schema, and the quality, automation and orchestration work, all verified on the cluster. Phase 5 covers consumption: Synapse Serverless and the dashboards. Two bounds sit in Future work, waiting on the publication calendar rather than on code. Last updated 03-09-2026.*

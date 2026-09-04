@@ -42,11 +42,23 @@ import urllib.error
 import urllib.request
 import uuid
 
-from databricks_src.bronze.watermark_library import hpi, ons, police, registry, resolution
+from databricks_src.bronze.watermark_library import (
+    hpi,
+    ons,
+    police,
+    registry,
+    resolution,
+    schema,
+)
 
 VOLUME = "/Volumes/uk_property_intel/configs/watermark"
 WATERMARK_PATH = f"{VOLUME}/watermark.json"
 LOG_PATH = f"{VOLUME}/log"
+
+# Read from the repository and checked against its own meta-schema once, then passed
+# to each call site. The schema is code and lives with the code; the watermark is
+# state and lives on the volume beside the data.
+WATERMARK_SCHEMA = schema.load_schema()
 
 # Sent on every publisher request. ONS returns 403 to some default clients, and a
 # request that identifies itself is the courtesy a scraped page is owed.
@@ -132,13 +144,22 @@ RESOLUTION_FAILED = (resolution.ResolutionError, urllib.error.URLError, OSError)
 # MAGIC One JSON array, the same file ADF's Lookup reads. Loading it through the
 # MAGIC registry checks it is an array of uniquely named entries before anything is
 # MAGIC changed, since a malformed watermark reaches ADF exactly as found.
+# MAGIC
+# MAGIC The schema check that follows is the per-entry half: which keys each load
+# MAGIC pattern carries, and their types. A key an ADF expression names and an entry
+# MAGIC does not carry fails the pipeline run outright, so a hand-edit that arrived
+# MAGIC since the last run stops here rather than three activities later.
 
 # COMMAND ----------
 
 with open(WATERMARK_PATH, encoding="utf-8") as handle:
     original = registry.load(handle.read())
 
+schema.validate(original, WATERMARK_SCHEMA)
+schema.assert_invariants(original)
+
 print(f"{len(original)} sources: {', '.join(registry.names(original))}")
+print("watermark matches the schema")
 
 entries = original
 
@@ -373,6 +394,12 @@ for source_name, address_field in FIXED_ADDRESS_SOURCES.items():
 # MAGIC
 # MAGIC `dump` is given the array as it was read, so an entry lost or reordered stops the
 # MAGIC notebook instead of reaching ADF.
+# MAGIC
+# MAGIC The schema runs again immediately before the write, and this is the call that
+# MAGIC matters most. `update` refuses a field an entry does not already carry, so a
+# MAGIC resolver cannot invent a key, but nothing stops it writing the wrong type into
+# MAGIC a key that exists. This is the last point where that can be caught with the
+# MAGIC good watermark still on the volume.
 
 # COMMAND ----------
 
@@ -385,6 +412,9 @@ else:
         print(source_name)
         for field, (before, after) in sorted(fields.items()):
             print(f"  {field}: {before}  ->  {after}")
+
+    schema.validate(entries, WATERMARK_SCHEMA)
+    schema.assert_invariants(entries)
 
     text = registry.dump(entries, original=original)
     with open(WATERMARK_PATH, "w", encoding="utf-8") as handle:
@@ -401,11 +431,16 @@ else:
 # MAGIC
 # MAGIC `active` is ADF's own filter and is not read here, so a source can show `fetch`
 # MAGIC below and still not be fetched.
+# MAGIC
+# MAGIC The schema runs on what was read back. `dump` round-trips in memory, so it
+# MAGIC cannot see a write that landed truncated; this can.
 
 # COMMAND ----------
 
 with open(WATERMARK_PATH, encoding="utf-8") as handle:
     written = registry.load(handle.read())
+
+schema.validate(written, WATERMARK_SCHEMA)
 
 print(f"{'source':34}{'latest_release':16}{'last_refreshed':16}{'active':8}fetch")
 for entry in written:
