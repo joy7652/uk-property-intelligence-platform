@@ -1,0 +1,118 @@
+table pipeline_metric
+	lineageTag: 8ed0b0f1-9ed5-4ed4-b22e-7105a8be85b6
+
+	measure 'Metric rows' = COALESCE ( COUNTROWS ( pipeline_metric ), 0 )
+		formatString: 0
+		lineageTag: d0a89e26-1e59-4b85-a79b-9c6a60b8995a
+
+	measure 'Runs recorded' = COALESCE ( DISTINCTCOUNT ( pipeline_metric[run_id] ), 0 )
+		formatString: 0
+		lineageTag: b4a190f1-71f8-478f-91c3-4fca66665fb0
+
+	measure 'Metric value' = SUM (pipeline_metric[value_numeric])
+		lineageTag: 2caac420-f096-4de2-9027-15a5be284a79
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure Share = DIVIDE ( SUM ( pipeline_metric[value_numeric] ), SUM ( pipeline_metric[denominator] ) )
+		lineageTag: c580ea5b-5bf8-4450-8181-84b8d1490786
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Last recorded' =
+			
+			CALCULATE (
+			    MAX ( pipeline_run[started_ts] ),
+			    CROSSFILTER ( pipeline_run[run_id], pipeline_metric[run_id], BOTH )
+			)
+		formatString: General Date
+		lineageTag: 7b34a277-2d7b-474a-854c-bbbbc19f44e1
+
+	measure 'Newest data date' =
+			
+			CALCULATE ( MAX ( pipeline_metric[value_date] ), pipeline_metric[metric] = "newest_data_date" )
+		formatString: General Date
+		lineageTag: 596f2c1e-6de1-4e82-869e-964e4f59d464
+
+	measure 'Lag days' = DATEDIFF ( [Newest data date], MAX ( pipeline_run[started_ts] ), DAY )
+		formatString: 0
+		lineageTag: 022e47c4-5529-4f10-bbf9-892fbf5081b2
+
+	column run_id
+		dataType: string
+		lineageTag: b21ac15f-4f71-4d80-9b5b-c5948f141a91
+		summarizeBy: none
+		sourceColumn: run_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column metric
+		dataType: string
+		lineageTag: 47be8abc-f3c3-40a9-829d-6734af2bb512
+		summarizeBy: none
+		sourceColumn: metric
+
+		annotation SummarizationSetBy = Automatic
+
+	column scope
+		dataType: string
+		lineageTag: 0b0ea058-8761-4f19-8c62-c0fb3089114e
+		summarizeBy: none
+		sourceColumn: scope
+
+		annotation SummarizationSetBy = Automatic
+
+	column value_numeric
+		dataType: double
+		lineageTag: efff41a8-c08e-4d8d-825f-6d1e6c6203ef
+		summarizeBy: sum
+		sourceColumn: value_numeric
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column value_text
+		dataType: string
+		lineageTag: 07b52c70-f3b5-4c4e-b8c7-5a0379592ae6
+		summarizeBy: none
+		sourceColumn: value_text
+
+		annotation SummarizationSetBy = Automatic
+
+	column value_date
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: c4b37133-52d8-46cc-832b-cbf0434b53e9
+		summarizeBy: none
+		sourceColumn: value_date
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column denominator
+		dataType: double
+		lineageTag: 9ecaa728-c6b8-4cf5-8e94-ed2a7980c819
+		summarizeBy: sum
+		sourceColumn: denominator
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	partition pipeline_metric = m
+		mode: import
+		source =
+				let
+				    Source = Databricks.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog="uk_property_intel", Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    quality_Schema = uk_property_intel_Database{[Name="quality",Kind="Schema"]}[Data],
+				    pipeline_metric_Table = quality_Schema{[Name="pipeline_metric",Kind="Table"]}[Data]
+				in
+				    pipeline_metric_Table
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

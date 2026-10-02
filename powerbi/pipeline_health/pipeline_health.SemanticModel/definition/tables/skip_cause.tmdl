@@ -1,0 +1,78 @@
+table skip_cause
+	lineageTag: dce206cf-2419-4e2a-93a4-f5f40beb19c9
+
+	column run_id
+		dataType: string
+		lineageTag: 389b02d5-5763-4a19-92dd-e0982d5facb7
+		summarizeBy: none
+		sourceColumn: run_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column waiting_stage
+		dataType: string
+		lineageTag: d43b4185-1f1b-4858-9534-b236beb2d15b
+		summarizeBy: none
+		sourceColumn: waiting_stage
+
+		annotation SummarizationSetBy = Automatic
+
+	column waiting_layer
+		dataType: string
+		lineageTag: 5bbad3a2-5d06-4b38-81ba-6d493cd19d68
+		summarizeBy: none
+		sourceColumn: waiting_layer
+
+		annotation SummarizationSetBy = Automatic
+
+	column cause_name
+		dataType: string
+		lineageTag: e26d8fb5-42c4-40b9-9966-4753db81c06c
+		summarizeBy: none
+		sourceColumn: cause_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column cause_layer
+		dataType: string
+		lineageTag: 3aeb1ed1-99c9-4780-8a98-45157a9ba6e2
+		summarizeBy: none
+		sourceColumn: cause_layer
+
+		annotation SummarizationSetBy = Automatic
+
+	partition skip_cause = m
+		mode: import
+		source =
+				let
+				    Skips = Table.SelectRows(pipeline_run, each [status] = "skipped"),
+				
+				    // skip() writes "waiting on " then a comma list, bare for a source and
+				    // "name (layer)" for a stage. One row per waiting stage becomes one row per
+				    // cause, which is the grain a cascade is counted at.
+				    Split = Table.AddColumn(Skips, "causes",
+				        each Text.Split(Text.AfterDelimiter([error_message], "waiting on "), ", "),
+				        type list),
+				
+				    Kept     = Table.SelectColumns(Split, {"run_id", "source", "layer", "causes"}),
+				    Renamed  = Table.RenameColumns(Kept, {
+				        {"source", "waiting_stage"},
+				        {"layer",  "waiting_layer"}
+				    }),
+				    Expanded = Table.ExpandListColumn(Renamed, "causes"),
+				    Named    = Table.RenameColumns(Expanded, {{"causes", "cause"}}),
+				
+				    Parsed  = Table.AddColumn(Named, "cause_name",
+				        each if Text.Contains([cause], " (") then Text.BeforeDelimiter([cause], " (")
+				             else [cause], type text),
+				    Layered = Table.AddColumn(Parsed, "cause_layer",
+				        each if Text.Contains([cause], " (") then Text.BetweenDelimiters([cause], "(", ")")
+				             else null, type text),
+				    Final   = Table.RemoveColumns(Layered, {"cause"})
+				in
+				    Final
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

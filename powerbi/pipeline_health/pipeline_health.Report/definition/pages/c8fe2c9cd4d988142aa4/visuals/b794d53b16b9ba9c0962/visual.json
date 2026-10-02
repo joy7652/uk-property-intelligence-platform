@@ -1,0 +1,153 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "b794d53b16b9ba9c0962",
+  "position": {
+    "x": 20,
+    "y": 465,
+    "z": 10000,
+    "height": 235,
+    "width": 940,
+    "tabOrder": 10000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "source"
+                }
+              },
+              "queryRef": "pipeline_run.source",
+              "nativeQueryRef": "source"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "layer"
+                }
+              },
+              "queryRef": "pipeline_run.layer",
+              "nativeQueryRef": "layer"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "status"
+                }
+              },
+              "queryRef": "pipeline_run.status",
+              "nativeQueryRef": "status"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "offset_seconds"
+                }
+              },
+              "queryRef": "Sum(pipeline_run.offset_seconds)",
+              "nativeQueryRef": "offset_seconds"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "stage_seconds"
+                }
+              },
+              "queryRef": "Sum(pipeline_run.stage_seconds)",
+              "nativeQueryRef": "stage_seconds"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "reported_seconds"
+                }
+              },
+              "queryRef": "Sum(pipeline_run.reported_seconds)",
+              "nativeQueryRef": "reported_seconds"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "rows_written"
+                }
+              },
+              "queryRef": "Sum(pipeline_run.rows_written)",
+              "nativeQueryRef": "rows_written"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "error_message"
+                }
+              },
+              "queryRef": "pipeline_run.error_message",
+              "nativeQueryRef": "error_message"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "pipeline_run"
+                  }
+                },
+                "Property": "offset_seconds"
+              }
+            },
+            "direction": "Ascending"
+          }
+        ]
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "4558d6b12499568a173a",
+  "position": {
+    "x": 795,
+    "y": 495,
+    "z": 10000,
+    "height": 205,
+    "width": 465,
+    "tabOrder": 10000
+  },
+  "visual": {
+    "visualType": "textbox",
+    "objects": {
+      "general": [
+        {
+          "properties": {
+            "paragraphs": [
+              {
+                "textRuns": [
+                  {
+                    "value": "Bounds are written onto each result row when it is measured, never looked up when it is read, so widening a bound later cannot reinterpret a result recorded under the old one. Bound versions above 1 for any rule means a bound moved, and the lower and upper shown become the outermost band rather than the band in force. Freshness carries no verdict: no bound is set for any of the six sources, so the lag is recorded and asserted against nothing.",
+                    "textStyle": {
+                      "fontSize": "9pt"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

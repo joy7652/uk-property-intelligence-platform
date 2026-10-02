@@ -1,0 +1,256 @@
+{
+  "version": "1.1.0",
+  "diagrams": [
+    {
+      "ordinal": 0,
+      "scrollPosition": {
+        "x": 195.78806133624585,
+        "y": 0
+      },
+      "nodes": [
+        {
+          "location": {
+            "x": 2241.0360028032037,
+            "y": 47.594668068774467
+          },
+          "nodeIndex": "dim_area",
+          "nodeLineageTag": "98f02bba-aad9-4f6f-a293-f713418fb7d5",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 1
+        },
+        {
+          "location": {
+            "x": 1315.7712500985456,
+            "y": 0
+          },
+          "nodeIndex": "dim_crime_type",
+          "nodeLineageTag": "28fbc620-81ca-4f55-afa8-304ea754f7df",
+          "size": {
+            "height": 248,
+            "width": 234
+          },
+          "zIndex": 2
+        },
+        {
+          "location": {
+            "x": 0.49377612973876239,
+            "y": 18.261493008799221
+          },
+          "nodeIndex": "dim_date",
+          "nodeLineageTag": "cf409807-aa3d-4663-ab7f-c6b73658729e",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 3
+        },
+        {
+          "location": {
+            "x": 1213.4057448726626,
+            "y": 1326.9714293139086
+          },
+          "nodeIndex": "dim_lsoa",
+          "nodeLineageTag": "1a53d9bc-ef71-4c89-8d36-914b9e849f9e",
+          "size": {
+            "height": 296,
+            "width": 234
+          },
+          "zIndex": 4
+        },
+        {
+          "location": {
+            "x": 961.27298269500318,
+            "y": 878.9756273501298
+          },
+          "nodeIndex": "fact_area_month_crime",
+          "nodeLineageTag": "46dfed6e-6cd6-44d4-9ec3-c36195495eb3",
+          "size": {
+            "height": 176,
+            "width": 234
+          },
+          "zIndex": 5
+        },
+        {
+          "location": {
+            "x": 1294.5213476050017,
+            "y": 290.55659489638168
+          },
+          "nodeIndex": "fact_area_month_crime_total",
+          "nodeLineageTag": "7ce3ea4a-f36c-4e62-a9ef-359ab4357139",
+          "size": {
+            "height": 176,
+            "width": 234
+          },
+          "zIndex": 6
+        },
+        {
+          "location": {
+            "x": 653.379372647721,
+            "y": 1063.6025664933213
+          },
+          "nodeIndex": "fact_area_month_hpi",
+          "nodeLineageTag": "cfd591cb-d7aa-4fbc-bd24-b0a4e1efbab9",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 13
+        },
+        {
+          "location": {
+            "x": 477.03450743031385,
+            "y": 473.43728566969327
+          },
+          "nodeIndex": "fact_area_month_price",
+          "nodeLineageTag": "4a6b5b05-fdec-44ab-a7df-1475dd7bb132",
+          "size": {
+            "height": 200,
+            "width": 234
+          },
+          "zIndex": 7
+        },
+        {
+          "location": {
+            "x": 666.837150787542,
+            "y": 756.50605081567221
+          },
+          "nodeIndex": "fact_area_month_rent",
+          "nodeLineageTag": "41e26fab-7599-4017-afa9-68c3bfd716f7",
+          "size": {
+            "height": 300,
+            "width": 234
+          },
+          "zIndex": 8
+        },
+        {
+          "location": {
+            "x": 1316.8495789860128,
+            "y": 608.71072837448833
+          },
+          "nodeIndex": "fact_area_month_transaction_mix",
+          "nodeLineageTag": "62102ede-edc5-41ea-876a-106658cac00c",
+          "size": {
+            "height": 248,
+            "width": 234
+          },
+          "zIndex": 9
+        },
+        {
+          "location": {
+            "x": 1647.900569379638,
+            "y": 3.82363116579495
+          },
+          "nodeIndex": "fact_lsoa_month_crime_total",
+          "nodeLineageTag": "521559d1-e2f0-4b29-a26e-7fe2ffe26395",
+          "size": {
+            "height": 176,
+            "width": 234
+          },
+          "zIndex": 10
+        },
+        {
+          "location": {
+            "x": 660.48772379480215,
+            "y": 1359.5419569777209
+          },
+          "nodeIndex": "fact_lsoa_year_price",
+          "nodeLineageTag": "e1d21120-bade-4c22-a172-918cd6058480",
+          "size": {
+            "height": 200,
+            "width": 234
+          },
+          "zIndex": 11
+        },
+        {
+          "location": {
+            "x": 1972.9374434637136,
+            "y": 650.61834106488516
+          },
+          "nodeIndex": "rule_result",
+          "nodeLineageTag": "9e00d510-ff11-4c5d-8ffd-d5e4f7d6d6f4",
+          "size": {
+            "height": 272,
+            "width": 234
+          },
+          "zIndex": 12
+        },
+        {
+          "location": {
+            "x": 2402.2029643303363,
+            "y": 608.6366112327928
+          },
+          "nodeIndex": "fact_lsoa_month_crime",
+          "nodeLineageTag": "77a0b08f-58f4-465d-83ee-d6f26b28bcb9",
+          "size": {
+            "height": 176,
+            "width": 234
+          },
+          "zIndex": 14
+        },
+        {
+          "location": {
+            "x": 2685.7091882005975,
+            "y": 759.48571465695431
+          },
+          "nodeIndex": "_Measure",
+          "nodeLineageTag": "3ec7dbda-5b5c-4d02-a2b3-fab6e4e304e1",
+          "size": {
+            "height": 104,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 2969.2154120708587,
+            "y": 699.48571465695431
+          },
+          "nodeIndex": "Deposit share",
+          "nodeLineageTag": "16eb4335-7cdd-425d-a966-09c2323104f8",
+          "size": {
+            "height": 224,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 3252.72163594112,
+            "y": 699.48571465695431
+          },
+          "nodeIndex": "Term years",
+          "nodeLineageTag": "64921376-d648-4bb9-8ecc-d6d076280158",
+          "size": {
+            "height": 224,
+            "width": 234
+          },
+          "zIndex": 0
+        },
+        {
+          "location": {
+            "x": 3536.2278598113812,
+            "y": 699.48571465695431
+          },
+          "nodeIndex": "Lender margin",
+          "nodeLineageTag": "f5b6ff96-2281-4621-8b0d-f601470c0fd4",
+          "size": {
+            "height": 224,
+            "width": 234
+          },
+          "zIndex": 0
+        }
+      ],
+      "name": "All tables",
+      "zoomValue": 39.748649571274932,
+      "pinKeyFieldsToTop": false,
+      "showExtraHeaderInfo": false,
+      "hideKeyFieldsWhenCollapsed": false,
+      "tablesLocked": false
+    }
+  ],
+  "selectedDiagram": "All tables",
+  "defaultDiagram": "All tables"
+}

@@ -1,0 +1,68 @@
+table fact_area_month_crime_total
+	isHidden
+	lineageTag: 7ce3ea4a-f36c-4e62-a9ef-359ab4357139
+
+	column area_code
+		dataType: string
+		isHidden
+		lineageTag: 132450bb-ee76-4caf-9eb0-df23626b1faf
+		summarizeBy: none
+		sourceColumn: area_code
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column month_start_date
+		dataType: dateTime
+		isHidden
+		formatString: Long Date
+		lineageTag: 324a31db-9dce-414b-9a9c-6ff4eae5f0d5
+		summarizeBy: none
+		sourceColumn: month_start_date
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column crime_count_excl_asb
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: a951c44d-4961-4a18-9e42-7d8a3db943f6
+		summarizeBy: sum
+		sourceColumn: crime_count_excl_asb
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column anti_social_behaviour
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 18e40d47-dc2c-437c-bac7-232a1d4933f6
+		summarizeBy: sum
+		sourceColumn: anti_social_behaviour
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	partition fact_area_month_crime_total = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    gold_Schema = uk_property_intel_Database{[Name="gold",Kind="Schema"]}[Data],
+				    fact_area_month_crime_total_Table = gold_Schema{[Name="fact_area_month_crime_total",Kind="Table"]}[Data]
+				in
+				    fact_area_month_crime_total_Table
+
+	changedProperty = IsHidden
+
+	annotation PBI_ResultType = Table
+

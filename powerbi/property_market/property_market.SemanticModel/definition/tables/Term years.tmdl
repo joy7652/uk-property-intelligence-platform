@@ -1,0 +1,26 @@
+table 'Term years'
+	lineageTag: 64921376-d648-4bb9-8ecc-d6d076280158
+
+	measure 'Term years Value' = SELECTEDVALUE('Term years'[Term years], 25)
+		formatString: 0
+		lineageTag: f629c8a7-b556-4de6-a12b-8cb7b9bdc37d
+
+	column 'Term years'
+		formatString: 0
+		lineageTag: 3e27d602-b031-4030-bd7d-2a8f230b7628
+		summarizeBy: none
+		sourceColumn: [Value]
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 0
+				}
+
+		annotation SummarizationSetBy = User
+
+	partition 'Term years' = calculated
+		mode: import
+		source = GENERATESERIES(5, 40, 5)
+
+	annotation PBI_Id = 6fcd3e24c4d94daeb2fd4fc7a7119bc6
+

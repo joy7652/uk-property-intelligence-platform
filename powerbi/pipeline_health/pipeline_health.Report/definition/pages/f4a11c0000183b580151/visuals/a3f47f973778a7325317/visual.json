@@ -1,0 +1,202 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "a3f47f973778a7325317",
+  "position": {
+    "x": 30,
+    "y": 165,
+    "z": 6000,
+    "height": 150,
+    "width": 760,
+    "tabOrder": 6000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "rule"
+                }
+              },
+              "queryRef": "rule_result.rule",
+              "nativeQueryRef": "rule"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Check runs"
+                }
+              },
+              "queryRef": "rule_result.Check runs",
+              "nativeQueryRef": "Check runs",
+              "format": "G"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Scopes"
+                }
+              },
+              "queryRef": "rule_result.Scopes",
+              "nativeQueryRef": "Scopes",
+              "format": "G"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Bound versions"
+                }
+              },
+              "queryRef": "rule_result.Bound versions",
+              "nativeQueryRef": "Bound versions",
+              "format": "G"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Lower in force"
+                }
+              },
+              "queryRef": "rule_result.Lower in force",
+              "nativeQueryRef": "Lower in force",
+              "format": "0.0000"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Upper in force"
+                }
+              },
+              "queryRef": "rule_result.Upper in force",
+              "nativeQueryRef": "Upper in force",
+              "format": "0.0000"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Observed Avg"
+                }
+              },
+              "queryRef": "rule_result.Observed Avg",
+              "nativeQueryRef": "Observed Avg",
+              "format": "0.0000"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Drift"
+                }
+              },
+              "queryRef": "rule_result.Drift",
+              "nativeQueryRef": "Drift",
+              "format": "0.0000"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Full spread"
+                }
+              },
+              "queryRef": "rule_result.Full spread",
+              "nativeQueryRef": "Full spread",
+              "format": "0.0000"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Breached"
+                }
+              },
+              "queryRef": "rule_result.Breached",
+              "nativeQueryRef": "Breached",
+              "format": "G"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Years moved"
+                }
+              },
+              "queryRef": "rule_result.Years moved",
+              "nativeQueryRef": "Years moved"
+            }
+          ]
+        }
+      }
+    },
+    "objects": {
+      "total": [
+        {
+          "properties": {
+            "totals": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

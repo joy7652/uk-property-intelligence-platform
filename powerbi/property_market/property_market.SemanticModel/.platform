@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "SemanticModel",
+    "displayName": "property_market"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "73577f73-2140-464e-857a-37986372b2aa"
+  }
+}

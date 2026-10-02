@@ -1,0 +1,120 @@
+relationship 77b7f565-e4db-47c9-929c-9d0d507c86d5
+	fromColumn: dim_lsoa.district_code
+	toColumn: dim_area.area_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship 76a1de74-096c-46bc-ab4d-3abe008e9bb4
+	fromColumn: fact_area_month_crime.area_code
+	toColumn: dim_area.area_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship ddd419a1-3b73-48e7-98f0-9e78a6e2f824
+	fromColumn: fact_area_month_crime.month_start_date
+	toColumn: dim_date.date_key
+
+	annotation PBI_IsFromSource = FS
+
+relationship daec72be-7175-4f1a-8427-07d533eee075
+	fromColumn: fact_area_month_crime.crime_type
+	toColumn: dim_crime_type.crime_type
+
+	annotation PBI_IsFromSource = FS
+
+relationship 910cfcc4-9220-4b53-8b99-e69cd134b761
+	fromColumn: fact_area_month_crime_total.area_code
+	toColumn: dim_area.area_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship 3fc5883e-4a21-4fdb-a59b-07ae83156578
+	fromColumn: fact_area_month_crime_total.month_start_date
+	toColumn: dim_date.date_key
+
+	annotation PBI_IsFromSource = FS
+
+relationship ad29a704-df9a-43c1-bb16-5eb1c316395a
+	fromColumn: fact_area_month_hpi.area_code
+	toColumn: dim_area.area_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship 0a141ea1-aa1e-4990-98ca-1088fba49b8c
+	fromColumn: fact_area_month_hpi.month_start_date
+	toColumn: dim_date.date_key
+
+	annotation PBI_IsFromSource = FS
+
+relationship 70a0437c-26ef-4995-96b1-b4dfd06e9d1e
+	fromColumn: fact_area_month_price.area_code
+	toColumn: dim_area.area_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship 0ef8615a-3d3e-4eb7-a516-a00492571f9c
+	fromColumn: fact_area_month_price.month_start_date
+	toColumn: dim_date.date_key
+
+	annotation PBI_IsFromSource = FS
+
+relationship f5ecbf32-a194-4521-a6b1-b83c2a0c3e84
+	fromColumn: fact_area_month_rent.area_code
+	toColumn: dim_area.area_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship 97887b80-c919-4d23-9abc-e82f23e277f7
+	fromColumn: fact_area_month_rent.month_start_date
+	toColumn: dim_date.date_key
+
+	annotation PBI_IsFromSource = FS
+
+relationship 38b6ce49-c7ec-4d57-adb9-a382c127ef5c
+	fromColumn: fact_area_month_transaction_mix.area_code
+	toColumn: dim_area.area_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship 34c0eafd-d81e-42b7-ae7a-bb8b69f3cf6a
+	fromColumn: fact_area_month_transaction_mix.month_start_date
+	toColumn: dim_date.date_key
+
+	annotation PBI_IsFromSource = FS
+
+relationship f3be53f0-3e13-470f-aee1-2bff62416be8
+	fromColumn: fact_lsoa_month_crime_total.lsoa_code
+	toColumn: dim_lsoa.lsoa_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship 47178b99-61ed-490f-b3fa-51cc73f69b8d
+	fromColumn: fact_lsoa_month_crime_total.month_start_date
+	toColumn: dim_date.date_key
+
+	annotation PBI_IsFromSource = FS
+
+relationship b86e6163-dd6b-4f35-91b6-0a9d2eed7e55
+	fromColumn: fact_lsoa_year_price.lsoa_code
+	toColumn: dim_lsoa.lsoa_code
+
+	annotation PBI_IsFromSource = FS
+
+relationship 81ce3dea-0f33-4421-9d1e-b38a531ff0c2
+	fromColumn: fact_lsoa_year_price.year_start_date
+	toColumn: dim_date.date_key
+
+	annotation PBI_IsFromSource = FS
+
+relationship d3348905-1eef-604a-5f89-a1e2892b514f
+	fromColumn: fact_lsoa_month_crime.lsoa_code
+	toColumn: dim_lsoa.lsoa_code
+
+relationship f4435f45-9249-8ab6-4921-82ee1f308ef5
+	fromColumn: fact_lsoa_month_crime.month_start_date
+	toColumn: dim_date.date_key
+
+relationship 549ffbe3-986d-b9d6-c84c-9e5b1ed7e0e6
+	fromColumn: fact_lsoa_month_crime.crime_type
+	toColumn: dim_crime_type.crime_type
+

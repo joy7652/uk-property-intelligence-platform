@@ -1,0 +1,77 @@
+table fact_lsoa_year_price
+	lineageTag: e1d21120-bade-4c22-a172-918cd6058480
+
+	column lsoa_code
+		dataType: string
+		isHidden
+		lineageTag: 24d60bd3-00a5-40b9-9466-60e89f018099
+		summarizeBy: none
+		sourceColumn: lsoa_code
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column year_start_date
+		dataType: dateTime
+		isHidden
+		formatString: Long Date
+		lineageTag: 16746829-b1c6-421c-a36f-14adbbe6cc96
+		summarizeBy: none
+		sourceColumn: year_start_date
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column median_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 2887805f-e6a9-4ef0-9b19-f511fe9474da
+		summarizeBy: sum
+		sourceColumn: median_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column mean_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 4e286bb5-ed34-441c-ab23-e5bb01494bcb
+		summarizeBy: sum
+		sourceColumn: mean_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column transaction_count
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 21710ba0-755b-4968-b7f9-a498beac54b9
+		summarizeBy: sum
+		sourceColumn: transaction_count
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	partition fact_lsoa_year_price = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    gold_Schema = uk_property_intel_Database{[Name="gold",Kind="Schema"]}[Data],
+				    fact_lsoa_year_price_Table = gold_Schema{[Name="fact_lsoa_year_price",Kind="Table"]}[Data]
+				in
+				    fact_lsoa_year_price_Table
+
+	annotation PBI_ResultType = Table
+

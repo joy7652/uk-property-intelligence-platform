@@ -1,0 +1,359 @@
+table pipeline_run
+	lineageTag: a8a1b5d1-0ff2-43db-a9a5-9bee7b3236bd
+
+	measure Stages = COUNTROWS ( pipeline_run )
+		formatString: 0
+		lineageTag: e8f646ee-b277-4025-9024-e0ae346ef5e1
+
+		changedProperty = IsHidden
+
+	measure Succeeded = COALESCE ( CALCULATE ( [Stages], pipeline_run[status] = "succeeded" ), 0 )
+		formatString: 0
+		lineageTag: c4d086fe-d9ee-4c49-9e31-4c54be5f2e12
+
+		changedProperty = IsHidden
+
+	measure Failed = COALESCE ( CALCULATE ( [Stages], pipeline_run[status] = "failed" ), 0 )
+		formatString: 0
+		lineageTag: a06a3e17-3ee4-4f8a-8434-8c7112d82b6c
+
+		changedProperty = IsHidden
+
+	measure Skipped = COALESCE ( CALCULATE ( [Stages], pipeline_run[status] = "skipped" ), 0 )
+		formatString: 0
+		lineageTag: fde38bc0-f717-44e2-b229-d646475b454d
+
+		changedProperty = IsHidden
+
+	measure 'Wall clock (s)' =
+			
+			VAR FirstStart = MIN ( pipeline_run[started_ts] )
+			VAR LastEnd    = MAX ( pipeline_run[ended_ts] )
+			RETURN IF ( NOT ISBLANK ( LastEnd ), DATEDIFF ( FirstStart, LastEnd, SECOND ) )
+		formatString: 0
+		lineageTag: 05ddeb75-6328-4f18-9b46-638b07961d00
+
+		changedProperty = IsHidden
+
+	measure 'Blocked stages' = DISTINCTCOUNT ( skip_cause[waiting_stage] )
+		formatString: 0
+		lineageTag: 16c71f33-152d-4343-a4b5-89a8655f8cdd
+
+		changedProperty = IsHidden
+
+	column run_id
+		dataType: string
+		lineageTag: 320474de-cbb2-4f18-8957-bbe89ab15807
+		summarizeBy: none
+		sourceColumn: run_id
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column source
+		dataType: string
+		lineageTag: f56d10a7-5c5e-4bc5-9097-61db2cebd4da
+		summarizeBy: none
+		sourceColumn: source
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column layer
+		dataType: string
+		lineageTag: 20a777b9-e5d6-486f-bcc2-7d0066d5eb04
+		summarizeBy: none
+		sourceColumn: layer
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column started_ts
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: f2c79b8b-2264-4df5-971b-e9a3d48d829c
+		summarizeBy: none
+		sourceColumn: started_ts
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column ended_ts
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 90f4a5b2-1514-4ab0-a9c5-77269c66467b
+		summarizeBy: none
+		sourceColumn: ended_ts
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column status
+		dataType: string
+		lineageTag: 06909d2e-cb53-4e2c-9ba9-76ca5eed65b3
+		summarizeBy: none
+		sourceColumn: status
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column rows_written
+		dataType: int64
+		formatString: 0
+		lineageTag: 2f15b905-7ac3-4767-aea6-d51691e7ebd3
+		summarizeBy: sum
+		sourceColumn: rows_written
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column ingestion_ts
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 0bd38717-ac12-41d8-8179-6faa98ea2613
+		summarizeBy: none
+		sourceColumn: ingestion_ts
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column error_type
+		dataType: string
+		lineageTag: d1c31315-28c8-4123-8d3a-f6026a9bb32c
+		summarizeBy: none
+		sourceColumn: error_type
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column error_message
+		dataType: string
+		lineageTag: 57a33888-c8c4-43b1-9c7e-39ffff878bcd
+		summarizeBy: none
+		sourceColumn: error_message
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column job_run_id
+		dataType: string
+		lineageTag: d610d363-e615-4873-889e-8d7159d979ce
+		summarizeBy: none
+		sourceColumn: job_run_id
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column reported_seconds
+		dataType: double
+		formatString: 0
+		lineageTag: 2554c14d-8eef-491d-86a4-a949fa5451ec
+		summarizeBy: sum
+		sourceColumn: reported_seconds
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column stage_sequence
+		dataType: int64
+		formatString: 0
+		lineageTag: 5c9dd83b-80de-4446-86ef-b87653d37b7f
+		summarizeBy: sum
+		sourceColumn: stage_sequence
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column stage_started_ts
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 6b9c8a6f-6e21-4aae-942c-6ef77bba2b53
+		summarizeBy: none
+		sourceColumn: stage_started_ts
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column stage_seconds
+		dataType: double
+		formatString: 0
+		lineageTag: e88c6ec8-bb19-4cf3-8f76-1c9a34943e2c
+		summarizeBy: sum
+		sourceColumn: stage_seconds
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column run_started_ts
+		dataType: dateTime
+		formatString: General Date
+		lineageTag: 1ee2beaa-1566-49cc-932e-c221d5084001
+		summarizeBy: none
+		sourceColumn: run_started_ts
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column offset_seconds
+		dataType: double
+		formatString: 0
+		lineageTag: 111da486-35a9-4512-94eb-21a2a91a1321
+		summarizeBy: sum
+		sourceColumn: offset_seconds
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isDecimal":true}
+
+	column planned
+		dataType: string
+		lineageTag: f4cdd9ba-f124-4905-b673-83c92d891a2a
+		summarizeBy: none
+		sourceColumn: planned
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column execution
+		dataType: string
+		lineageTag: fe7e267e-f150-4808-9a8b-b1b75c577e3f
+		summarizeBy: none
+		sourceColumn: execution
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	partition pipeline_run = m
+		mode: import
+		source =
+				let
+				    Host = "adb-7405616127577226.6.azuredatabricks.net",
+				    Path = "/sql/1.0/warehouses/65e93ffd5f4ef90c",
+				
+				    Source   = Databricks.Catalogs(Host, Path, null),
+				    Catalog  = Source{[Name = "uk_property_intel", Kind = "Database"]}[Data],
+				    Schema   = Catalog{[Name = "quality", Kind = "Schema"]}[Data],
+				    Runs     = Schema{[Name = "pipeline_run", Kind = "Table"]}[Data],
+				    Metrics  = Schema{[Name = "pipeline_metric", Kind = "Table"]}[Data],
+				
+				    // Everything recorded is UTC. Dropping the offset here makes the whole query
+				    // type-stable, whichever of datetime or datetimezone the connector hands back.
+				    Local = Table.TransformColumns(Runs, {
+				        {"started_ts",   DateTime.From, type datetime},
+				        {"ended_ts",     DateTime.From, type datetime},
+				        {"ingestion_ts", DateTime.From, type datetime}
+				    }),
+				
+				    // What the row claims on its own, kept beside the derived figure so the page can
+				    // show the gap rather than quietly replacing one with the other.
+				    Reported = Table.AddColumn(Local, "reported_seconds",
+				        each if [ended_ts] = null then null
+				             else Duration.TotalSeconds([ended_ts] - [started_ts]),
+				        type number),
+				
+				    // AuditRun defaults started_ts to ingestion_ts, so every stage one notebook
+				    // opened carries the same value and the pair identifies the notebook. Stage
+				    // boundaries are therefore the closes, taken in order inside the group.
+				    Grouped = Table.Group(Reported, {"job_run_id", "started_ts"}, {{"stages",
+				        each
+				            let
+				                Ordered = Table.Sort(_, {
+				                    {each if [ended_ts] = null then 1 else 0, Order.Ascending},
+				                    {"ended_ts", Order.Ascending}
+				                }),
+				                Ends   = List.Buffer(Table.Column(Ordered, "ended_ts")),
+				                Seq    = Table.AddIndexColumn(Ordered, "stage_sequence", 1, 1, Int64.Type),
+				                Opened = Table.AddColumn(Seq, "stage_started_ts",
+				                    each if [stage_sequence] = 1 then [started_ts]
+				                         else Ends{[stage_sequence] - 2},
+				                    type datetime),
+				                Timed  = Table.AddColumn(Opened, "stage_seconds",
+				                    each if [ended_ts] = null or [stage_started_ts] = null then null
+				                         else Duration.TotalSeconds([ended_ts] - [stage_started_ts]),
+				                    type number)
+				            in
+				                Timed,
+				        type table}}),
+				    Stages = Table.Combine(Grouped[stages]),
+				
+				    // Offset from the execution's first start, for the stacked-bar Gantt.
+				    RunStart = Table.Group(Stages, {"job_run_id"},
+				        {{"run_started_ts", each List.Min([started_ts]), type datetime}}),
+				    WithStart = Table.ExpandTableColumn(
+				        Table.NestedJoin(Stages, {"job_run_id"}, RunStart, {"job_run_id"},
+				            "run", JoinKind.LeftOuter),
+				        "run", {"run_started_ts"}),
+				    Offset = Table.AddColumn(WithStart, "offset_seconds",
+				        each if [stage_started_ts] = null then null
+				             else Duration.TotalSeconds([stage_started_ts] - [run_started_ts]),
+				        type number),
+				
+				    // The plan names a stage with no layer, and six of those names are used at both
+				    // bronze and silver. Bronze is left out of the key so a Silver plan cannot
+				    // attach itself to the Bronze row as well.
+				    Plan = Table.SelectColumns(
+				        Table.SelectRows(Metrics, each [metric] = "planned_stage"),
+				        {"run_id", "scope", "value_text"}),
+				    PlanRuns = Table.SelectColumns(
+				        Table.SelectRows(Runs, each [source] = "pipeline_plan"),
+				        {"run_id", "job_run_id"}),
+				    PlanKeyed = Table.AddColumn(
+				        Table.ExpandTableColumn(
+				            Table.NestedJoin(Plan, {"run_id"}, PlanRuns, {"run_id"}, "p", JoinKind.Inner),
+				            "p", {"job_run_id"}, {"plan_job_run_id"}),
+				        "plan_key", each [plan_job_run_id] & "|" & [scope], type text),
+				    PlanOnly = Table.SelectColumns(PlanKeyed, {"plan_key", "value_text"}),
+				
+				        Keyed = Table.AddColumn(Offset, "plan_key",
+				        each if [layer] = "bronze" or [job_run_id] = null then null
+				             else [job_run_id] & "|" & [source],
+				        type text),
+				    Joinable   = Table.SelectRows(Keyed, each [plan_key] <> null),
+				    Unjoinable = Table.AddColumn(
+				        Table.SelectRows(Keyed, each [plan_key] = null),
+				        "planned", each null, type text),
+				    Matched = Table.ExpandTableColumn(
+				        Table.NestedJoin(Joinable, {"plan_key"}, PlanOnly, {"plan_key"},
+				            "plan", JoinKind.LeftOuter),
+				        "plan", {"value_text"}, {"planned"}),
+				    Planned = Table.Combine({Matched, Unjoinable}),
+				
+				    Labelled = Table.AddColumn(Planned, "execution",
+				        each if [job_run_id] = null then "Hand run"
+				             else DateTime.ToText(DateTime.From([run_started_ts]),
+				                      [Format = "dd MMM HH:mm", Culture = "en-GB"]),
+				        type text),
+				    Tidy = Table.RemoveColumns(Labelled, {"plan_key"})
+				in
+				    Tidy
+
+	changedProperty = IsHidden
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "a024f042083bcb794b7e",
+  "position": {
+    "x": 215,
+    "y": 85,
+    "z": 2000,
+    "height": 70,
+    "width": 180,
+    "tabOrder": 2000
+  },
+  "visual": {
+    "visualType": "cardVisual",
+    "query": {
+      "queryState": {
+        "Data": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "metric_registry"
+                    }
+                  },
+                  "Property": "Names recorded"
+                }
+              },
+              "queryRef": "metric_registry.Names recorded",
+              "nativeQueryRef": "Names recorded",
+              "format": "G"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Measure": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "metric_registry"
+                  }
+                },
+                "Property": "Names recorded"
+              }
+            },
+            "direction": "Descending"
+          }
+        ],
+        "isDefaultSort": true
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

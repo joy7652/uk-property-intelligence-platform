@@ -1,0 +1,100 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "9a79c72f519d5e900080",
+  "position": {
+    "x": 20,
+    "y": 565,
+    "z": 8000,
+    "height": 135,
+    "width": 760,
+    "tabOrder": 8000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "scope"
+                }
+              },
+              "queryRef": "rule_result.scope",
+              "nativeQueryRef": "scope"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Observed Avg"
+                }
+              },
+              "queryRef": "rule_result.Observed Avg",
+              "nativeQueryRef": "Observed Avg",
+              "format": "0.0000"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Drift"
+                }
+              },
+              "queryRef": "rule_result.Drift",
+              "nativeQueryRef": "Drift",
+              "format": "0.0000"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Measure": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "rule_result"
+                  }
+                },
+                "Property": "Drift"
+              }
+            },
+            "direction": "Descending"
+          }
+        ]
+      }
+    },
+    "objects": {
+      "total": [
+        {
+          "properties": {
+            "totals": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

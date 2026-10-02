@@ -1,0 +1,89 @@
+table rule_result
+	lineageTag: 9e00d510-ff11-4c5d-8ffd-d5e4f7d6d6f4
+
+	column run_id
+		dataType: string
+		lineageTag: 51ea164f-60d9-477d-9e95-ba7d39da0e28
+		summarizeBy: none
+		sourceColumn: run_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column rule
+		dataType: string
+		lineageTag: f0ab5589-3308-4330-b7d7-b01f3d4411ec
+		summarizeBy: none
+		sourceColumn: rule
+
+		annotation SummarizationSetBy = Automatic
+
+	column scope
+		dataType: string
+		lineageTag: 0b075a7f-2538-4172-b006-2b8685ddc35c
+		summarizeBy: none
+		sourceColumn: scope
+
+		annotation SummarizationSetBy = Automatic
+
+	column observed
+		dataType: double
+		lineageTag: ff60f3ba-9af9-4de9-b269-b079ff896da0
+		summarizeBy: sum
+		sourceColumn: observed
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column lower_bound
+		dataType: double
+		lineageTag: 195d5842-ea24-4f48-b4e6-b26711ac876e
+		summarizeBy: sum
+		sourceColumn: lower_bound
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column upper_bound
+		dataType: double
+		lineageTag: 2804e700-6dcf-481d-9455-2d88ad62a45b
+		summarizeBy: sum
+		sourceColumn: upper_bound
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column passed
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 22a5b59d-55c3-422c-8e92-6c2a11bf776a
+		summarizeBy: none
+		sourceColumn: passed
+
+		annotation SummarizationSetBy = Automatic
+
+	column detail
+		dataType: string
+		lineageTag: 1a225c09-5279-43b7-b489-6c896e5842cc
+		summarizeBy: none
+		sourceColumn: detail
+
+		annotation SummarizationSetBy = Automatic
+
+	partition rule_result = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    quality_Schema = uk_property_intel_Database{[Name="quality",Kind="Schema"]}[Data],
+				    rule_result_Table = quality_Schema{[Name="rule_result",Kind="Table"]}[Data]
+				in
+				    rule_result_Table
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+
