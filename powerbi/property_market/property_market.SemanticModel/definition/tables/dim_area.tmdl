@@ -1,0 +1,115 @@
+table dim_area
+	lineageTag: 98f02bba-aad9-4f6f-a293-f713418fb7d5
+
+	column area_code
+		dataType: string
+		lineageTag: e6732943-a9ee-40e9-a8a8-1de0c45dbadb
+		summarizeBy: none
+		sourceColumn: area_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column area_name
+		dataType: string
+		lineageTag: 6c418911-4f35-4732-9fd2-7ecbf0e93af2
+		summarizeBy: none
+		sourceColumn: area_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column area_level
+		dataType: string
+		lineageTag: 6adef2c6-fd5e-47ea-82d9-67c996b8fb74
+		summarizeBy: none
+		sourceColumn: area_level
+
+		annotation SummarizationSetBy = Automatic
+
+	column parent_area_code
+		dataType: string
+		lineageTag: 4739181c-3163-4a79-9a3e-663e081d70a3
+		summarizeBy: none
+		sourceColumn: parent_area_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column region_code
+		dataType: string
+		lineageTag: 870a8df3-f06b-4983-9f96-62c2730f5ea1
+		summarizeBy: none
+		sourceColumn: region_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column nation_code
+		dataType: string
+		lineageTag: 17ab19d2-801e-47c2-bb18-dc6bb02e2813
+		summarizeBy: none
+		sourceColumn: nation_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column country_name
+		dataType: string
+		lineageTag: 662ea906-a18b-4a38-b2f9-1ef527c3df4d
+		summarizeBy: none
+		sourceColumn: country_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column code_source
+		dataType: string
+		lineageTag: 7f26a3a4-015c-4ec7-83cb-6c49b343b8a5
+		summarizeBy: none
+		sourceColumn: code_source
+
+		annotation SummarizationSetBy = Automatic
+
+	column name_source
+		dataType: string
+		lineageTag: 66a99138-888f-4bcc-9978-8432f0f01500
+		summarizeBy: none
+		sourceColumn: name_source
+
+		annotation SummarizationSetBy = Automatic
+
+	column has_price_index
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: f281cac8-efd7-4ad0-a1f5-a699d12ecd15
+		summarizeBy: none
+		sourceColumn: has_price_index
+
+		annotation SummarizationSetBy = Automatic
+
+	column has_rent_index
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: bf9cc999-c363-4054-99d0-4671005a261f
+		summarizeBy: none
+		sourceColumn: has_rent_index
+
+		annotation SummarizationSetBy = Automatic
+
+	column has_postcodes
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: f1773059-9ed7-4b60-ad48-3adf4df04192
+		summarizeBy: none
+		sourceColumn: has_postcodes
+
+		annotation SummarizationSetBy = Automatic
+
+	partition dim_area = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    gold_Schema = uk_property_intel_Database{[Name="gold",Kind="Schema"]}[Data],
+				    dim_area_Table = gold_Schema{[Name="dim_area",Kind="Table"]}[Data]
+				in
+				    dim_area_Table
+
+	annotation PBI_ResultType = Table
+

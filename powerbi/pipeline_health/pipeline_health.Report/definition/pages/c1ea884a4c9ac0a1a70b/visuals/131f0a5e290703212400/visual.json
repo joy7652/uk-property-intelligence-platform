@@ -1,0 +1,53 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "131f0a5e290703212400",
+  "position": {
+    "x": 975,
+    "y": 555,
+    "z": 9000,
+    "height": 145,
+    "width": 285,
+    "tabOrder": 9000
+  },
+  "visual": {
+    "visualType": "textbox",
+    "objects": {
+      "general": [
+        {
+          "properties": {
+            "paragraphs": [
+              {
+                "textRuns": [
+                  {
+                    "value": "Shares are summed before they are divided, so a run's subdivisions carry their real weight. Averaging the per-scope percentages would count a small archive the same as a large one. Names with no rows are registered in the writer and have never been written; the registry table is what makes that visible, since a query over recorded metrics alone cannot show a metric that was never recorded.",
+                    "textStyle": {
+                      "fontSize": "9pt"
+                    }
+                  }
+                ]
+              },
+              {
+                "textRuns": [
+                  {
+                    "value": ""
+                  }
+                ]
+              },
+              {
+                "textRuns": [
+                  {
+                    "value": "Trends read one metric at a time. Select a row in the coverage matrix to filter both charts. A metric written by several stages of one notebook shares a timestamp across them, so the lines are separated by stage rather than summed into one.",
+                    "textStyle": {
+                      "fontSize": "9pt"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

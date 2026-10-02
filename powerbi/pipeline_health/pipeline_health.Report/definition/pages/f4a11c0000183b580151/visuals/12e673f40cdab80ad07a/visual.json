@@ -1,0 +1,103 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "12e673f40cdab80ad07a",
+  "position": {
+    "x": 20,
+    "y": 325,
+    "z": 7000,
+    "height": 230,
+    "width": 760,
+    "tabOrder": 7000
+  },
+  "visual": {
+    "visualType": "lineChart",
+    "query": {
+      "queryState": {
+        "Category": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "scope"
+                }
+              },
+              "queryRef": "rule_result.scope",
+              "nativeQueryRef": "scope",
+              "active": true
+            }
+          ]
+        },
+        "Y": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Lower in force"
+                }
+              },
+              "queryRef": "rule_result.Lower in force",
+              "nativeQueryRef": "Lower in force"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Observed Avg"
+                }
+              },
+              "queryRef": "rule_result.Observed Avg",
+              "nativeQueryRef": "Observed Avg"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "rule_result"
+                    }
+                  },
+                  "Property": "Upper in force"
+                }
+              },
+              "queryRef": "rule_result.Upper in force",
+              "nativeQueryRef": "Upper in force"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Measure": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "rule_result"
+                  }
+                },
+                "Property": "Lower in force"
+              }
+            },
+            "direction": "Descending"
+          }
+        ],
+        "isDefaultSort": true
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

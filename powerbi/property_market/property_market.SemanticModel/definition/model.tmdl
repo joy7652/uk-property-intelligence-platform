@@ -1,0 +1,36 @@
+model Model
+	culture: en-US
+	defaultPowerBIDataSourceVersion: powerBI_V3
+	sourceQueryCulture: en-US
+	valueFilterBehavior: independent
+	dataAccessOptions
+		legacyRedirects
+		returnErrorValuesAsNull
+
+annotation __PBI_TimeIntelligenceEnabled = 0
+
+annotation PBI_QueryOrder = ["dim_area","dim_crime_type","dim_date","dim_lsoa","fact_area_month_crime","fact_area_month_crime_total","fact_area_month_hpi","fact_area_month_price","fact_area_month_rent","fact_area_month_transaction_mix","fact_lsoa_month_crime_total","fact_lsoa_year_price","rule_result","fact_lsoa_month_crime","_Measure"]
+
+annotation PBI_ProTooling = ["DevMode"]
+
+ref table dim_area
+ref table dim_crime_type
+ref table dim_date
+ref table dim_lsoa
+ref table fact_area_month_crime
+ref table fact_area_month_crime_total
+ref table fact_area_month_hpi
+ref table fact_area_month_price
+ref table fact_area_month_rent
+ref table fact_area_month_transaction_mix
+ref table fact_lsoa_month_crime_total
+ref table fact_lsoa_year_price
+ref table rule_result
+ref table fact_lsoa_month_crime
+ref table _Measure
+ref table 'Deposit share'
+ref table 'Term years'
+ref table 'Lender margin'
+
+ref cultureInfo en-US
+

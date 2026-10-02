@@ -1,0 +1,62 @@
+table metric_registry
+	lineageTag: 786f19e0-d7ed-40c8-b7f1-43a7d3e3caa9
+
+	measure 'Registered names' = COUNTROWS ( metric_registry )
+		formatString: 0
+		lineageTag: 210c85d8-ed9c-46ad-a010-c0ad9a753261
+
+	measure 'Names recorded' = COUNTROWS ( FILTER ( metric_registry, NOT ISEMPTY ( RELATEDTABLE ( pipeline_metric ) ) ) )
+		formatString: 0
+		lineageTag: c5237870-93e5-41bc-b1c5-14e206167574
+
+	measure 'Never recorded' = [Registered names] - COALESCE ( [Names recorded], 0 )
+		formatString: 0
+		lineageTag: 9d96dc2c-a34e-4149-bf7d-8af2c11ebc90
+
+	column metric
+		dataType: string
+		lineageTag: e9fd1098-3b04-4044-8e78-0f8c1a286bad
+		summarizeBy: none
+		sourceColumn: metric
+
+		annotation SummarizationSetBy = Automatic
+
+	column kind
+		dataType: string
+		lineageTag: 177bc8f0-69ab-4ab3-973b-fc6aacf3c81f
+		summarizeBy: none
+		sourceColumn: kind
+
+		annotation SummarizationSetBy = Automatic
+
+	column kind_meaning
+		dataType: string
+		lineageTag: 1f2481a0-574e-48a5-bcae-55e4a905facf
+		summarizeBy: none
+		sourceColumn: kind_meaning
+
+		annotation SummarizationSetBy = Automatic
+
+	column note
+		dataType: string
+		lineageTag: b20271a2-72d3-411f-8397-53685c9afe07
+		summarizeBy: none
+		sourceColumn: note
+
+		annotation SummarizationSetBy = Automatic
+
+	partition metric_registry = m
+		mode: import
+		source =
+				let
+				    Source = Databricks.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog="uk_property_intel", Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    quality_Schema = uk_property_intel_Database{[Name="quality",Kind="Schema"]}[Data],
+				    metric_registry_Table = quality_Schema{[Name="metric_registry",Kind="Table"]}[Data]
+				in
+				    metric_registry_Table
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+

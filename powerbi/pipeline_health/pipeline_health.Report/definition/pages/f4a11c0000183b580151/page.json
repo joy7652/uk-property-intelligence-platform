@@ -1,0 +1,8 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json",
+  "name": "f4a11c0000183b580151",
+  "displayName": "Rules and freshness",
+  "displayOption": "FitToPage",
+  "height": 720,
+  "width": 1280
+}

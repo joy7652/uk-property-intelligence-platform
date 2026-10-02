@@ -1,0 +1,186 @@
+table fact_area_month_hpi
+	isHidden
+	lineageTag: cfd591cb-d7aa-4fbc-bd24-b0a4e1efbab9
+
+	column area_code
+		dataType: string
+		isHidden
+		lineageTag: 7290742f-6d5e-4284-b605-bf5a6d045489
+		summarizeBy: none
+		sourceColumn: area_code
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column month_start_date
+		dataType: dateTime
+		isHidden
+		formatString: Long Date
+		lineageTag: 31660d11-5027-4abb-9201-bf94b24ee370
+		summarizeBy: none
+		sourceColumn: month_start_date
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column avg_price
+		dataType: double
+		isHidden
+		lineageTag: bdd46f49-26a9-4b07-9341-22407ae1016f
+		summarizeBy: sum
+		sourceColumn: avg_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column avg_price_seasonally_adjusted
+		dataType: double
+		isHidden
+		lineageTag: 66435ceb-9354-422b-8415-64dd5c9170e8
+		summarizeBy: sum
+		sourceColumn: avg_price_seasonally_adjusted
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column price_index
+		dataType: double
+		isHidden
+		lineageTag: e1ff0e46-f9ce-4390-a80c-8ac9b4b77d66
+		summarizeBy: sum
+		sourceColumn: price_index
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column price_index_seasonally_adjusted
+		dataType: double
+		isHidden
+		lineageTag: 1a93872b-6740-4400-ad2e-072849465e51
+		summarizeBy: sum
+		sourceColumn: price_index_seasonally_adjusted
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column pct_change_1m
+		dataType: double
+		isHidden
+		lineageTag: c203d256-f04c-4778-a14d-0dfa682c9753
+		summarizeBy: sum
+		sourceColumn: pct_change_1m
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column pct_change_12m
+		dataType: double
+		isHidden
+		lineageTag: 05fca7bd-12f3-49a1-a788-283f222dfb6b
+		summarizeBy: sum
+		sourceColumn: pct_change_12m
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column sales_volume
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 5d05211a-6dab-4d53-b5c0-b5eecf653fba
+		summarizeBy: sum
+		sourceColumn: sales_volume
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column detached_price
+		dataType: double
+		isHidden
+		lineageTag: 02f1336a-6eea-4a92-ba1a-74306f16f6e3
+		summarizeBy: sum
+		sourceColumn: detached_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column semi_detached_price
+		dataType: double
+		isHidden
+		lineageTag: dff35efd-f706-4bb7-a3ac-ecdb399f65ee
+		summarizeBy: sum
+		sourceColumn: semi_detached_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column terraced_price
+		dataType: double
+		isHidden
+		lineageTag: 8777b50d-df9a-41c1-b749-509fd1453904
+		summarizeBy: sum
+		sourceColumn: terraced_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column flat_price
+		dataType: double
+		isHidden
+		lineageTag: 9971e07a-81b3-4255-932a-459ed5c25747
+		summarizeBy: sum
+		sourceColumn: flat_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	partition fact_area_month_hpi = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    gold_Schema = uk_property_intel_Database{[Name="gold",Kind="Schema"]}[Data],
+				    fact_area_month_hpi_Table = gold_Schema{[Name="fact_area_month_hpi",Kind="Table"]}[Data]
+				in
+				    fact_area_month_hpi_Table
+
+	changedProperty = IsHidden
+
+	annotation PBI_ResultType = Table
+

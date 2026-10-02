@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "pipeline_health"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "376f712c-5dde-4e5b-8803-e41955f17872"
+  }
+}

@@ -1,0 +1,81 @@
+table dim_crime_type
+	lineageTag: 28fbc620-81ca-4f55-afa8-304ea754f7df
+
+	column crime_type
+		dataType: string
+		lineageTag: c558d607-533a-4217-bcc8-37ffffc9417f
+		summarizeBy: none
+		sourceColumn: crime_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column first_published_month
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: 96e9bdf9-1db8-4f4e-a4f3-0da420db4939
+		summarizeBy: none
+		sourceColumn: first_published_month
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column last_published_month
+		dataType: dateTime
+		formatString: Long Date
+		lineageTag: 906ef242-8639-4878-89c5-e15d268e0904
+		summarizeBy: none
+		sourceColumn: last_published_month
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column is_current
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 0c299e32-cb8a-4906-b2cf-e9e17f433d25
+		summarizeBy: none
+		sourceColumn: is_current
+
+		annotation SummarizationSetBy = Automatic
+
+	column vocabulary_era
+		dataType: int64
+		formatString: 0
+		lineageTag: 0e9218c1-83f0-4787-9386-3914b8af072f
+		summarizeBy: sum
+		sourceColumn: vocabulary_era
+
+		annotation SummarizationSetBy = Automatic
+
+	column predecessor_crime_type
+		dataType: string
+		lineageTag: c3593a45-02fb-4e55-80f5-3d179613d64f
+		summarizeBy: none
+		sourceColumn: predecessor_crime_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column is_anti_social_behaviour
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: ac15a2b6-a5f9-4fab-b953-98307a00be51
+		summarizeBy: none
+		sourceColumn: is_anti_social_behaviour
+
+		annotation SummarizationSetBy = Automatic
+
+	partition dim_crime_type = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    gold_Schema = uk_property_intel_Database{[Name="gold",Kind="Schema"]}[Data],
+				    dim_crime_type_Table = gold_Schema{[Name="dim_crime_type",Kind="Table"]}[Data]
+				in
+				    dim_crime_type_Table
+
+	annotation PBI_ResultType = Table
+

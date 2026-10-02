@@ -1,0 +1,229 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "6d4c2b66226240040b10",
+  "position": {
+    "x": 0,
+    "y": 0,
+    "z": 0,
+    "height": 351.1522308882503,
+    "width": 649.92263727935824,
+    "tabOrder": 0
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "dim_area"
+                    }
+                  },
+                  "Property": "area_level"
+                }
+              },
+              "queryRef": "dim_area.area_level",
+              "nativeQueryRef": "area_level"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "_Measure"
+                    }
+                  },
+                  "Property": "Crimes excl ASB"
+                }
+              },
+              "queryRef": "_Measure.Crimes excl ASB",
+              "nativeQueryRef": "Crimes excl ASB",
+              "format": "#,0"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "_Measure"
+                    }
+                  },
+                  "Property": "Crimes excl ASB (district grain)"
+                }
+              },
+              "queryRef": "_Measure.Crimes excl ASB (district grain)",
+              "nativeQueryRef": "Crimes excl ASB (district grain)",
+              "format": "#,0"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "_Measure"
+                    }
+                  },
+                  "Property": "LSOA crimes excl ASB"
+                }
+              },
+              "queryRef": "_Measure.LSOA crimes excl ASB",
+              "nativeQueryRef": "LSOA crimes excl ASB",
+              "format": "#,0"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "dim_area"
+                  }
+                },
+                "Property": "area_level"
+              }
+            },
+            "direction": "Ascending"
+          }
+        ]
+      }
+    },
+    "objects": {
+      "total": [
+        {
+          "properties": {
+            "totals": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "459d18f0d06334c286c0",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "dim_area"
+              }
+            },
+            "Property": "area_level"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "c23aae6a2602ba81db73",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "_Measure"
+              }
+            },
+            "Property": "Crimes excl ASB"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "d65fca6933ca061bbdae",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "_Measure"
+              }
+            },
+            "Property": "Crimes excl ASB (district grain)"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "f1705d4791e357e7abd5",
+        "field": {
+          "Measure": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "_Measure"
+              }
+            },
+            "Property": "LSOA crimes excl ASB"
+          }
+        },
+        "type": "Advanced"
+      },
+      {
+        "name": "e0f2d3c7a797d0509c38",
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "dim_area"
+              }
+            },
+            "Property": "area_level"
+          }
+        },
+        "type": "Categorical",
+        "filter": {
+          "Version": 2,
+          "From": [
+            {
+              "Name": "d",
+              "Entity": "dim_area",
+              "Type": 0
+            }
+          ],
+          "Where": [
+            {
+              "Condition": {
+                "In": {
+                  "Expressions": [
+                    {
+                      "Column": {
+                        "Expression": {
+                          "SourceRef": {
+                            "Source": "d"
+                          }
+                        },
+                        "Property": "area_level"
+                      }
+                    }
+                  ],
+                  "Values": [
+                    [
+                      {
+                        "Literal": {
+                          "Value": "'district'"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "howCreated": "User"
+      }
+    ]
+  }
+}
