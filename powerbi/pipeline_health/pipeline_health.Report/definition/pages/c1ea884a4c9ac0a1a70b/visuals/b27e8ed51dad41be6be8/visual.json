@@ -1,0 +1,57 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "b27e8ed51dad41be6be8",
+  "position": {
+    "x": 605,
+    "y": 85,
+    "z": 4000,
+    "height": 70,
+    "width": 180,
+    "tabOrder": 4000
+  },
+  "visual": {
+    "visualType": "cardVisual",
+    "query": {
+      "queryState": {
+        "Data": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_metric"
+                    }
+                  },
+                  "Property": "Metric rows"
+                }
+              },
+              "queryRef": "pipeline_metric.Metric rows",
+              "nativeQueryRef": "Metric rows",
+              "format": "#,0"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Measure": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "pipeline_metric"
+                  }
+                },
+                "Property": "Metric rows"
+              }
+            },
+            "direction": "Descending"
+          }
+        ],
+        "isDefaultSort": true
+      }
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

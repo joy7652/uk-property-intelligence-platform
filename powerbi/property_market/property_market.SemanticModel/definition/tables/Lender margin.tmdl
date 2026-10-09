@@ -1,0 +1,28 @@
+table 'Lender margin'
+	lineageTag: f5b6ff96-2281-4621-8b0d-f601470c0fd4
+
+	measure 'Lender margin Value' = SELECTEDVALUE('Lender margin'[Lender margin], 1)
+		lineageTag: 0595c4b0-2c39-4284-96bb-cc359424c0e4
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Lender margin'
+		lineageTag: aaea3914-7bdd-432e-be03-75cc26883a68
+		summarizeBy: none
+		sourceColumn: [Value]
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 0
+				}
+
+		annotation SummarizationSetBy = User
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	partition 'Lender margin' = calculated
+		mode: import
+		source = GENERATESERIES(0, 5, 0.25)
+
+	annotation PBI_Id = 4c881d2621304a5bac076bad025f68e4
+

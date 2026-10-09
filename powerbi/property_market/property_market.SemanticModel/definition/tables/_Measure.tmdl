@@ -1,0 +1,275 @@
+table _Measure
+	lineageTag: 3ec7dbda-5b5c-4d02-a2b3-fab6e4e304e1
+
+	measure 'Area levels in context' = DISTINCTCOUNTNOBLANK ( dim_area[area_level] )
+		formatString: #,0
+		displayFolder: Verification
+		lineageTag: f70fdbaa-2208-41ce-9684-8501855860ba
+
+	measure 'Crimes excl ASB' =
+			
+			IF (
+			    [Area levels in context] > 1,
+			    BLANK (),
+			    SUM ( fact_area_month_crime_total[crime_count_excl_asb] )
+			)
+		formatString: #,0
+		displayFolder: Crime
+		lineageTag: 39222964-aebe-472c-ae23-bf54c443b4c4
+
+	measure 'Anti-social behaviour' =
+			
+			IF (
+			    [Area levels in context] > 1,
+			    BLANK (),
+			    SUM ( fact_area_month_crime_total[anti_social_behaviour] )
+			)
+		formatString: #,0
+		displayFolder: Crime
+		lineageTag: 787508b1-91fa-4224-8438-0a5f8e36bfef
+
+	measure 'Crimes excl ASB (district grain)' =
+			
+			CALCULATE (
+			    SUM ( fact_area_month_crime_total[crime_count_excl_asb] ),
+			    dim_area[area_level] = "district"
+			)
+		formatString: #,0
+		displayFolder: Crime
+		lineageTag: 71f0913a-444a-438d-896e-f71ac6fc1923
+
+	measure 'LSOA crimes excl ASB' = SUM ( fact_lsoa_month_crime_total[crime_count_excl_asb] )
+		formatString: #,0
+		displayFolder: Crime
+		lineageTag: 82dbe1db-4a8b-429b-8e6c-d9ce0d65b3f6
+
+	measure 'Median price' =
+			
+			IF (
+			    COUNTROWS ( fact_area_month_price ) = 1,
+			    SUM ( fact_area_month_price[median_price] ),
+			    BLANK ()
+			)
+		formatString: "£"#,0;-"£"#,0;"£"#,0
+		displayFolder: Prices
+		lineageTag: 49142bd8-54a9-4c06-9b87-7ca77fe6b831
+
+		annotation PBI_FormatHint = {"currencyCulture":"en-GB"}
+
+	measure 'Mean price' =
+			
+			IF (
+			    NOT [Area selection is disjoint],
+			    BLANK (),
+			    DIVIDE (
+			        SUMX (
+			            fact_area_month_price,
+			            fact_area_month_price[mean_price] * fact_area_month_price[transaction_count]
+			        ),
+			        SUM ( fact_area_month_price[transaction_count] )
+			    )
+			)
+		formatString: "£"#,0;-"£"#,0;"£"#,0
+		displayFolder: Prices
+		lineageTag: 5ea91a67-941c-4c8b-be4c-7c0eebbc3409
+
+		annotation PBI_FormatHint = {"currencyCulture":"en-GB"}
+
+	measure 'Avg price (published)' =
+			
+			IF ( COUNTROWS ( fact_area_month_hpi ) = 1, SUM ( fact_area_month_hpi[avg_price] ), BLANK () )
+		formatString: "£"#,0;-"£"#,0;"£"#,0
+		displayFolder: Prices
+		lineageTag: cc6f543e-cab6-44f4-9c64-2ad57937b5d0
+
+		annotation PBI_FormatHint = {"currencyCulture":"en-GB"}
+
+	measure 'Avg price (seasonally adjusted)' =
+			
+			IF ( COUNTROWS ( fact_area_month_hpi ) = 1, SUM ( fact_area_month_hpi[avg_price_seasonally_adjusted] ), BLANK () )
+		formatString: "£"#,0;-"£"#,0;"£"#,0
+		displayFolder: Prices
+		lineageTag: 0fc5ebd0-1736-404c-9e87-5a6de5265f60
+
+		annotation PBI_FormatHint = {"currencyCulture":"en-GB"}
+
+	measure 'Rental price' =
+			
+			IF ( COUNTROWS ( fact_area_month_rent ) = 1, SUM ( fact_area_month_rent[rental_price] ), BLANK () )
+		formatString: "£"#,0;-"£"#,0;"£"#,0
+		displayFolder: Rent
+		lineageTag: a3f89710-b188-4e5f-a3e1-8d73cecc3e81
+
+		annotation PBI_FormatHint = {"currencyCulture":"en-GB"}
+
+	measure 'Base rate %' =
+			
+			VAR MonthStart = SELECTEDVALUE ( dim_date[month_start_date] )
+			RETURN
+			IF (
+			    NOT ISBLANK ( MonthStart ),
+			    CALCULATE (
+			        SELECTEDVALUE ( dim_date[base_rate_pct] ),
+			        ALL ( dim_date ),
+			        dim_date[date_key] = MonthStart
+			    )
+			)
+		formatString: 0.00
+		displayFolder: Calendar
+		lineageTag: 2a7c8662-61cf-4f51-9daf-d45020ebd042
+
+	measure 'Area selection is disjoint' =
+			
+			VAR AreaLevels = DISTINCTCOUNTNOBLANK ( dim_area[area_level] )
+			VAR TheLevel = SELECTEDVALUE ( dim_area[area_level] )
+			VAR Areas = COUNTROWS ( dim_area )
+			RETURN AreaLevels = 1 && NOT ( TheLevel = "composite" && Areas > 1 )
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		displayFolder: Verification
+		lineageTag: 0bf298ff-4d9f-40a6-a39d-4c06cc85970a
+
+	measure 'Cost cells' =
+			
+			COUNTROWS (
+			    FILTER (
+			        SUMMARIZE ( fact_area_month_rent, dim_area[area_code], dim_date[date_key] ),
+			        CALCULATE ( SUM ( fact_area_month_rent[rental_price] ) ) > 0
+			            && CALCULATE ( SUM ( fact_area_month_hpi[avg_price] ) ) > 0
+			    )
+			)
+		formatString: #,0
+		displayFolder: Verification
+		lineageTag: 92bfe619-88df-4b31-8e57-5d1bbfca5317
+
+	measure 'Mean rent (matched)' =
+			
+			AVERAGEX (
+			    SUMMARIZE ( fact_area_month_rent, dim_area[area_code], dim_date[date_key] ),
+			    VAR Rent  = CALCULATE ( SUM ( fact_area_month_rent[rental_price] ) )
+			    VAR Price = CALCULATE ( SUM ( fact_area_month_hpi[avg_price] ) )
+			    RETURN IF ( Rent > 0 && Price > 0, Rent )
+			)
+		formatString: "£"#,0;-"£"#,0;"£"#,0
+		displayFolder: Cost Comparison
+		lineageTag: d63561f0-4bee-49ab-af8f-c82775dc499a
+
+		annotation PBI_FormatHint = {"currencyCulture":"en-GB"}
+
+	measure 'Monthly mortgage' =
+			
+			VAR Months = [Term years Value] * 12
+			RETURN
+			AVERAGEX (
+			    SUMMARIZE ( fact_area_month_rent, dim_area[area_code], dim_date[date_key] ),
+			    VAR Rent   = CALCULATE ( SUM ( fact_area_month_rent[rental_price] ) )
+			    VAR Price  = CALCULATE ( SUM ( fact_area_month_hpi[avg_price] ) )
+			    VAR Rate   = ( CALCULATE ( SELECTEDVALUE ( dim_date[base_rate_pct] ) ) + [Lender margin Value] ) / 1200
+			    VAR Loan   = Price * ( 1 - [Deposit share Value] )
+			    VAR Growth = POWER ( 1 + Rate, Months )
+			    RETURN IF ( Rent > 0 && Price > 0, DIVIDE ( Loan * Rate * Growth, Growth - 1 ) )
+			)
+		formatString: "£"#,0;-"£"#,0;"£"#,0
+		displayFolder: Cost Comparison
+		lineageTag: 92da9c06-a295-437d-a3c6-c88b1f998769
+
+		annotation PBI_FormatHint = {"currencyCulture":"en-GB"}
+
+	measure 'Owning premium' = [Monthly mortgage] - [Mean rent (matched)]
+		formatString: "£"#,0;-"£"#,0;"£"#,0
+		displayFolder: Cost Comparison
+		lineageTag: b1b11a9a-65e3-4695-8396-4c09414f0949
+
+		annotation PBI_FormatHint = {"currencyCulture":"en-GB"}
+
+	measure 'Median price ratio (p50)' =
+			
+			MEDIANX (
+			    FILTER (
+			        SUMMARIZE ( fact_area_month_price, dim_area[area_code], dim_date[date_key] ),
+			        CALCULATE ( SUM ( fact_area_month_hpi[avg_price] ) ) > 0
+			    ),
+			    DIVIDE (
+			        CALCULATE ( SUM ( fact_area_month_price[median_price] ) ),
+			        CALCULATE ( SUM ( fact_area_month_hpi[avg_price] ) )
+			    )
+			)
+		formatString: 0.0000
+		displayFolder: Index Comparison
+		lineageTag: 6904647b-6ee2-4e30-bcdd-82eddd16ed4f
+
+	measure 'Mean price ratio (p50)' =
+			
+			MEDIANX (
+			    FILTER (
+			        SUMMARIZE ( fact_area_month_price, dim_area[area_code], dim_date[date_key] ),
+			        CALCULATE ( SUM ( fact_area_month_hpi[avg_price] ) ) > 0
+			    ),
+			    DIVIDE (
+			        CALCULATE ( SUM ( fact_area_month_price[mean_price] ) ),
+			        CALCULATE ( SUM ( fact_area_month_hpi[avg_price] ) )
+			    )
+			)
+		formatString: 0.0000
+		displayFolder: Index Comparison
+		lineageTag: c246df3a-9342-405f-a5ab-2da531c70136
+
+	measure 'Count ratio' =
+			
+			VAR CellsCount =
+			    FILTER (
+			        SUMMARIZE ( fact_area_month_price, dim_area[area_code], dim_date[date_key] ),
+			        CALCULATE ( SUM ( fact_area_month_hpi[sales_volume] ) ) > 0
+			    )
+			RETURN
+			DIVIDE (
+			    SUMX ( CellsCount, CALCULATE ( SUM ( fact_area_month_price[transaction_count] ) ) ),
+			    SUMX ( CellsCount, CALCULATE ( SUM ( fact_area_month_hpi[sales_volume] ) ) )
+			)
+		formatString: 0.0000
+		displayFolder: Index Comparison
+		lineageTag: 898245e3-099b-4d67-979c-651ef3121a1c
+
+	measure 'Latest complete month' =
+			
+			VAR Months =
+			    FILTER (
+			        ADDCOLUMNS (
+			            SUMMARIZE ( fact_area_month_rent, dim_date[date_key] ),
+			            "@cells", [Cost cells]
+			        ),
+			        [@cells] > 0
+			    )
+			VAR Latest    = MAXX ( Months, dim_date[date_key] )
+			VAR Previous  = MAXX ( FILTER ( Months, dim_date[date_key] < Latest ), dim_date[date_key] )
+			VAR LatestN   = MAXX ( FILTER ( Months, dim_date[date_key] = Latest ),   [@cells] )
+			VAR PreviousN = MAXX ( FILTER ( Months, dim_date[date_key] = Previous ), [@cells] )
+			RETURN
+			IF ( LatestN >= PreviousN, Latest, Previous )
+		formatString: Short Date
+		displayFolder: Calendar
+		lineageTag: b45ff27e-3edf-4553-b56c-9d28f9e84d97
+
+	measure 'Price cells' =
+			
+			COUNTROWS (
+			    FILTER (
+			        SUMMARIZE ( fact_area_month_price, dim_area[area_code], dim_date[date_key] ),
+			        CALCULATE ( SUM ( fact_area_month_hpi[avg_price] ) ) > 0
+			    )
+			)
+		formatString: #,0
+		displayFolder: Verification
+		lineageTag: e5c9e7dc-879b-429b-93b0-a496d8e7f2d6
+
+	partition _Measure = m
+		mode: import
+		source =
+				let
+				    Source = Table.FromRows(Json.Document(Binary.Decompress(Binary.FromText("i44FAA==", BinaryEncoding.Base64), Compression.Deflate)), let _t = ((type nullable text) meta [Serialized.Text = true]) in type table [Column1 = _t]),
+				    #"Changed Type" = Table.TransformColumnTypes(Source,{{"Column1", type text}}),
+				    #"Removed Columns" = Table.RemoveColumns(#"Changed Type",{"Column1"})
+				in
+				    #"Removed Columns"
+
+	annotation PBI_ResultType = Table
+

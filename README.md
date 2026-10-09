@@ -1,9 +1,9 @@
 # UK Property Market Intelligence Platform
 Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
-An Azure data platform built around HM Land Registry's 31.4M residential transactions since 1995, joined with five more official UK datasets covering house prices, private rents, postcodes, the Bank of England base rate and street-level crime. The pipelines run off a single JSON config file, so adding a source means editing config, not writing code. Loads are incremental from a per-source watermark. Every file is validated against its expected format before parsing, because a pipeline reporting success only proves bytes moved, and all data access is governed through Unity Catalog. Later phases add statistical anomaly detection and BI dashboards.
+An Azure data platform built around HM Land Registry's 31.4M residential transactions since 1995 (July 2026 release), joined with five more official UK datasets covering house prices, private rents, postcodes, the Bank of England base rate and street-level crime. The pipelines run off a single JSON config file, so adding a source means editing config, not writing code. Loads are incremental from a per-source watermark. Every file is validated against its expected format before parsing, because a pipeline reporting success only proves bytes moved, and all data access is governed through Unity Catalog.
 
-> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,119,680 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is complete: continuous integration, the quality layer, watermark automation, orchestration and the failure cascade, and a schema the watermark is checked against before the pipeline reads it. A source that fails at ingestion skips exactly the tables built on it. Phase 5 covers consumption, Synapse Serverless and the dashboards.
+> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,126,889 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is complete: continuous integration, the quality layer, watermark automation, orchestration and the failure cascade, and a schema the watermark is checked against before the pipeline reads it. A source that fails at ingestion skips exactly the tables built on it. Phase 5 covers consumption: Power BI over the Gold star through a Databricks SQL warehouse, then a Fabric mirrored catalog. The serving layer is settled, the pipeline health dashboard is live over the quality tables, and the semantic model over the Gold star is built, with its definition in version control as text. Synapse Serverless was removed from the plan once Unity Catalog turned out not to support path-based access to managed tables.
 
 **Highlights**
 
@@ -17,6 +17,10 @@ An Azure data platform built around HM Land Registry's 31.4M residential transac
 - Incremental by per-source watermark, with 2 reusable load patterns covering all 6 sources
 - Magic-byte validation and a quality layer recording every run, metric and rule result, because a success flag only means bytes moved
 - Unity Catalog governance over a medallion lake on ADLS Gen2, with no secrets in the data path
+
+![Pipeline health dashboard, run detail page, 02-09-2026 failure drill: 27 stages, 5 succeeded, 4 failed, 18 skipped](docs/screenshots/pipeline_health_run_detail_drill.png)
+
+*Run detail on the pipeline health dashboard, for a failure drill on 02-09-2026. Four sources had their download addresses broken on purpose and failed at Bronze. The 18 stages built on them skipped, and each recorded which failed input it waited on. HPI and rents, the two sources left alone, still loaded into Silver.*
 
 ---
 
@@ -55,9 +59,11 @@ Azure Databricks + Unity Catalog  (transformation, quality, governance)
 ADLS Gen2 silver/ → gold/  (Delta Lake, managed tables, schema-level locations)
    plus ADLS Gen2 quality/  (run history, metrics, rule results)
               ↓
-Azure Synapse Serverless SQL  (planned)
+Azure Databricks SQL warehouse  (serverless 2X-Small, service principal)
               ↓
-Fabric / Power BI  (planned)
+Power BI  (Import over the whole star, two projects held in this repo)
+              ↓
+Microsoft Fabric mirrored catalog → Direct Lake  (planned)
 ```
 
 ### Design principles
@@ -68,6 +74,7 @@ Fabric / Power BI  (planned)
 - A pipeline reporting success only tells me bytes moved, not that the right bytes moved. Binary files are checked against their expected magic bytes before any Silver-layer parsing.
 - HTTP linked services are host-agnostic and take their base URL per request via `@{linkedService().p_base_url}`, instead of one linked service per host.
 - Silver filters on reliability; Gold filters on the question being asked. Data that is measured and clean stays in Silver even when nothing in the project joins it yet.
+- An aggregation the platform cannot support is refused, never captioned. Anti-social behaviour is kept out of the crime totals by check constraint, and the semantic layer returns blank for any additive measure whose filter context mixes area levels. A warning printed beside a rendered figure is not a control.
 
 ---
 
@@ -448,7 +455,7 @@ unreliable. Eighteen of 49,266 rent rows on the June 2026 release, nine areas ac
 months, and the count moves with each release. Kept, they would make the latest published
 rent for Belfast render blank in a month where England renders a figure.
 
-Loaded: 147,453 index rows across 405 areas, and 49,248 rent rows across 357. Every key
+Loaded: 147,858 index rows across 405 areas, and 49,605 rent rows across 357. Every key
 resolves in both the area dimension and the calendar.
 
 ### 30. Seasonal adjustment stops above district, so it can only serve the benchmark
@@ -682,6 +689,10 @@ The mean ratio is stable at 1.1821 and is not registered. Nothing downstream rea
 and a rule nobody acts on gets widened instead of investigated. The first run recorded
 65 results and none breached.
 
+![Pipeline health dashboard, rules and freshness page, filtered to ppd_hpi_count_ratio_by_year: 128 results over 4 check runs, none breached](docs/screenshots/pipeline_health_rules_freshness.png)
+
+*`ppd_hpi_count_ratio_by_year` on the rules page: 32 transfer years over four check runs, and none of the 128 results outside 0.95 to 1.08. The freshness table beside it has no verdict column, because no source has a bound set yet.*
+
 ### 44. The gate value is when a publisher released, not what the data is about
 
 Six public bodies publish the datasets behind this platform, and none of them agree on
@@ -815,7 +826,105 @@ That combination is what settles it. A check that fails on someone else's outage
 
 A smaller version was worth a look before closing the line: parse the JSON directly and assert every reference resolves. It needs no network and pins cleanly, and it was rejected on the same ground as the vendor tool, because it looks for the same nothing.
 
+### 49. Synapse Serverless cannot read a Unity Catalog managed table
+
+Every version of this plan since Phase 1 ended with Synapse Serverless external tables over Gold. Nothing in Phases 1 to 4 depended on that being true, so it went unexamined until the consumption layer came up.
+
+Databricks documents that path-based access to Unity Catalog managed tables is unsupported, and names the external engines that can reach managed tables: Trino, DuckDB, Apache Spark, Daft, and Iceberg REST catalog clients. Serverless SQL reads a storage path, which is the pattern the rule refuses. Serving it would have meant a second physical copy of the star written where an ungoverned reader could see it.
+
+Power BI now reaches Gold through a Databricks SQL warehouse, and Fabric reaches the same tables by mirroring the catalog into OneLake. Neither copies anything. Full reasoning in DESIGN Decision 86.
+
+### 50. A serverless warehouse, because the idle time costs more than the queries
+
+The five probe queries that sized the serving layer ran for 11.1 seconds in total. The five-minute idle window that followed them cost twenty-seven times as much as the work.
+
+That ratio is the whole argument. A classic 2X-Small warehouse is cheaper per hour, £1.644 all-in against £2.7976, but it holds a driver and a worker with a 256 GB premium disk each, cannot auto-stop under ten minutes, and takes about four minutes to start. Serverless starts in six. A warehouse you can leave running for five minutes after the last query is a different kind of resource from one that makes you wait four minutes to resume, and that gap decides how it actually gets used.
+
+Measured across the whole of Phase 5.1: £0.34, for 7.3 minutes of warehouse time. Full reasoning in DESIGN Decision 87.
+
+### 51. The BI identity cannot see Bronze or Silver
+
+Power BI connects as a Databricks-managed service principal, in a group holding `USE CATALOG` on the catalog and `USE SCHEMA` with `SELECT` on `gold` and `quality`. Nothing is granted on `bronze`, `silver` or `configs`, and nothing anywhere is granted `MODIFY`.
+
+One query against `information_schema.schema_privileges` shows both halves at once: two rows each for the two readable schemas, no row for the other three. `SHOW GRANTS` answers for one object at a time, and an empty result from it cannot tell a correct absence apart from a mistyped schema name.
+
+Entra ID was the original design and is not available here: the subscription is owned by a personal Microsoft account, and the connector's Azure Active Directory option signs in organizational accounts only. Full reasoning in DESIGN Decision 88.
+
+### 52. Import, against the vendor recommendation, on 148.9 MiB
+
+Databricks' own Power BI guidance is explicit: DirectQuery for facts, Dual for dimensions, not Import. The design followed it until the tables were measured.
+
+The whole Gold star is 148.9 MiB compressed. `fact_lsoa_month_crime` holds 97.9 MiB of that in a single file, and an uncached filtered query against it took about five seconds, 92% of that scanning, with one file read and none pruned. A single file cannot be pruned, so the liquid clustering declared on these tables buys nothing until they are orders of magnitude larger.
+
+Thirty-six million rows sounds like a volume that forces DirectQuery. At this compression it is a dataset that fits in memory several times over, and the pipeline refreshes monthly, so there is no live data for DirectQuery to serve. Import answers in milliseconds, touches the warehouse only on refresh, and leaves a file that opens with no platform running. Full reasoning in DESIGN Decision 89.
+
+### 53. A registry that only exists in code cannot show you what it never wrote
+
+The metric registry lived in `writer.py` as a Python dict: 38 names, each with a kind and a note, checked at import so a notebook cannot record under a name nobody declared. That catches a typo. It cannot catch silence.
+
+A metric that fails to be written produces no row, no error, and no absence anything can query. The rule framework already had an answer to the same problem, `assert_rules_reported`, which fails a run that skips a rule it should have evaluated. Metrics had no equivalent, and the reason is that a rule result is expected once per run while a metric is written wherever its notebook happens to reach.
+
+So the registry is now also a table, generated from the same dict the DDL is generated from and replaced whole on every setup run. Registered against recorded becomes a join. On the first dashboard page that used it, ten of the 38 names came back at zero rows across 187 runs going back to August: the entire Police validation block, eight share measures and two vocabulary measures, while three other Police metrics in the same notebook recorded normally. Either that block sits behind a condition no run has met, or it does not fire.
+
+![Pipeline health dashboard, metric coverage page: 38 registered names, 28 recorded, 10 never recorded, 382 metric rows](docs/screenshots/pipeline_health_metric_coverage.png)
+
+*Registered against recorded on the metric coverage page: 38 names, 28 written at least once, 10 never. The two Police vocabulary measures among the ten show at zero in the matrix.*
+
+Unresolved at the time of writing, which is the point. A month of runs recorded nothing about it, and nothing in the platform was capable of saying so.
+
+### 54. The model refuses the sums it cannot support
+
+`dim_area` holds 432 areas at six levels in one table, and the levels contain each other: a district sits inside a region, a region inside a nation, a nation inside a composite. Summing a crime count with no level filter returns 268,131,313 against a district figure of 67,886,868, so every crime lands in the total 3.95 times on average.
+
+The composites make it more than a level problem. Great Britain, England and Wales, and the United Kingdom are three separate rows, and two of them contain the third, so a selection sitting inside one level can still double count.
+
+A caption telling the reader to filter first does not stop the figure rendering. Every additive area measure is therefore guarded, returning blank unless the filter context resolves to a single level and at most one composite. A card with no slicer shows nothing, which is the correct answer, and the 3.95× figure becomes unobtainable.
+
+One thing the guard cost is worth recording, because I nearly got it wrong. Small-area measures need no guard: one grain, no hierarchy above it inside its own dimension, and each small area mapping to exactly one district. Applying the same guard there would have blanked measures that were never at risk. Full reasoning in DESIGN Decision 93.
+
+### 55. The semantic model is text in the repository
+
+The dashboard file reached 102 MB. GitHub refuses a push over 100 MB, and Git LFS would have cleared that block by storing a fresh 102 MB copy on every commit, against a free allowance of 1 GB that ten commits would exhaust.
+
+Saving as a Power BI Project writes the report and the semantic model as plain files: one TMDL file per table, holding definitions and no data. The 102 MB turns out to be a local cache the format keeps in a folder its own generated `.gitignore` already excludes.
+
+A changed measure now appears in a diff. The cost is that cloning this repository gets a model definition and no working report, since a refresh needs access to the warehouse. Full reasoning in DESIGN Decision 94.
+
+### 56. Which statistic the published ratio is
+
+Phase 3 recorded that the published mix-adjusted average tracks the transaction median at a ratio of 1.011, against 1.176 for the mean. Rebuilding those figures in the semantic model meant deciding what kind of average they were, and the verification notebook computes three.
+
+Measured across the 124,362 area-months where both series exist: the median of per-cell ratios gives 1.0107 and 1.1757, the mean of the same ratios gives 1.0126 and 1.1834, and the mean of per-year means gives 1.0123 and 1.1826. Only the first pair rounds to what Phase 3 published, so the headline is a median of ratios.
+
+It matters because the reconciliation rule with a threshold on it, `ppd_hpi_median_ratio_by_year`, bounds the per-year mean. Two different numbers describe the same relationship, and a screen showing the headline above a per-year series needs to say which is which. The card and the chart under it carry different labels for that reason. Full reasoning in DESIGN Decision 95.
+
+### 57. Refresh cost crosses between statement count and volume
+
+Phase 5.2 measured a warm refresh of the quality tables at 32 seconds for 237 KiB, spread across more than a hundred statements, and concluded that cost tracks the number of statements the connector emits and not the bytes moved.
+
+The Gold star tested that. Twelve tables at roughly 51 MiB refresh warm in 18 seconds; adding the crime fact takes the model to 148.9 MiB and 30 seconds. A line through those two points fits about 11.8 seconds of fixed overhead plus 0.12 seconds per MiB, so overhead is around two thirds of elapsed time at 51 MiB and under half at 148.9.
+
+Both accounts hold inside their own range, and the crossover sits near 96 MiB, which this model passes through. Two measurements define a line exactly, so this is a fit and not a validation. A third at an intermediate size would test whether the relationship is linear at all. Full reasoning in DESIGN Decision 96.
+
 ## Bugs found and fixed
+
+### A median that counted the gaps
+
+Two measures rebuilding the published price-to-index ratios came back at 1.0102 and 1.1752 against targets of 1.0107 and 1.1757. Both low by 0.0005, which is too consistent for rounding and far too large for floating point.
+
+The populations matched. A measure written for the purpose counted 124,362 cells on the model side, the same number the SQL join returns, and neither price column holds a null. The mean of those same cell ratios reproduced its own target exactly. Only the median was wrong.
+
+`MEDIANX` includes blanks; `MEDIAN` and `AVERAGEX` discard them. The iteration ran over all 124,962 price cells, and the 600 that carry a median price with no published index returned blank, which `MEDIANX` then sorted in as zeros and which dragged the middle down by 268 ranks. Filtering the table instead of the expression fixed it.
+
+Second time blank handling has differed by function here. Phase 5.2 found `DISTINCTCOUNT` counting a blank as a value, inside a measure written to guard against exactly that.
+
+### A newest month that is never complete
+
+Rent and the house price index do not publish together. Rent reaches 2026-07 where the index reaches 2026-06, so the newest month a screen joining the two can use always trails the newest month one of them holds.
+
+The measure written to find that month compared the last two months of the rent fact and stepped back when the newer one was thinner. It returned June, which is wrong: July won on rent alone, June became the fallback, and June is the incomplete month. Restricting the candidates to months the intersection actually covers fixed it.
+
+Underneath is a publication pattern worth recording. Of 45,677 area-months in the intersection, 137 months carry all 331 areas and the newest carries 330. The missing one is Northern Ireland, which files no rent row for that month and fills it the month after. Its other 26 rental areas never reach this screen at all, because the index does not publish for them, so a four-nation comparison on the newest month would quietly show three.
 
 ### A ratio inflated by its own denominator
 
@@ -993,8 +1102,10 @@ thing that was about to stop being true.
 | Compute | Azure Databricks (PySpark, Delta Lake, DBR 17.3 LTS, Photon-eligible) |
 | Governance | Unity Catalog (managed tables, schema-level managed locations, External Volumes for Bronze) |
 | Identity | User-assigned managed identity via Databricks Access Connector |
-| Query (planned) | Azure Synapse Serverless SQL |
-| Visualisation (planned) | Microsoft Fabric / Power BI |
+| Serving | Databricks SQL warehouse, serverless 2X-Small, reached as a Databricks-managed service principal over OAuth |
+| Visualisation | Power BI Desktop, Import over the whole Gold star, saved as Power BI Projects (`.pbip` with TMDL) |
+| Mirroring (planned) | Microsoft Fabric mirrored Azure Databricks catalog, Direct Lake |
+| Infrastructure as code (planned) | Terraform over the serving layer |
 | Source control | GitHub (trunk-based, branch-protected main) |
 | Testing | pytest + chispa for PySpark transforms |
 | CI/CD | GitHub Actions (lint and the test suite on every push and pull request) |
@@ -1041,7 +1152,9 @@ uk-property-intelligence-platform/
 │   │   ├── apply_job_definition.py      # creates or resets a job from either file, idempotent
 │   │   ├── 01_create_schemas.py         # Unity Catalog schema definitions (SQL via %sql cells)
 │   │   ├── 02_create_bronze_volumes.py  # External Volumes per Bronze source
-│   │   └── 03_create_quality_tables.py  # pipeline_run, pipeline_metric and rule_result, DDL generated from the writers
+│   │   ├── 03_create_quality_tables.py  # pipeline_run, pipeline_metric and rule_result, DDL generated from the writers
+│   │   ├── 04_create_configs_volumes.py # external location and External Volume over the configs container
+│   │   └── 05_grant_serving_access.py   # read grants on gold and quality for the bi_readers group
 │   ├── bronze/
 │   │   ├── notebooks/
 │   │   │   ├── 01_pre_run_resolve_urls.py    # resolves every source's URL and release date
@@ -1123,12 +1236,26 @@ uk-property-intelligence-platform/
 │   │   └── test_writer.py               # metric registry, generated DDL, value routing, freshness verdict
 │   └── test_quality_rules/
 │       └── test_evaluator.py           # registry, refused values, DDL, verdict constraint
-├── synapse/                             # (planned) external table definitions
+├── powerbi/
+│   ├── README.md                        # what is committed, how to open, how to refresh
+│   ├── .gitignore                       # excludes the local data cache and any .pbix
+│   ├── property_market/                 # semantic model over the Gold star
+│   │   ├── property_market.pbip
+│   │   ├── property_market.Report/
+│   │   └── property_market.SemanticModel/   # one TMDL file per table, no data
+│   └── pipeline_health/                 # three pages over the quality tables
+│       ├── pipeline_health.pbip
+│       ├── pipeline_health.Report/
+│       └── pipeline_health.SemanticModel/
 └── docs/
     ├── source_discovery_notes.md        # notes on each source's quirks, auth patterns
     ├── DESIGN.md                        # design document of the entire project
     └── screenshots/
-        └── master_orchestrator.png
+        ├── master_orchestrator.png
+        ├── pipeline_health_metric_coverage.png
+        ├── pipeline_health_rules_freshness.png
+        ├── pipeline_health_run_detail_drill.png
+        └── pipeline_health_run_detail_monthly.png
 ```
 
 ---
@@ -1170,6 +1297,10 @@ The download gate then compares that release date against the date the source la
 
 After the downloads, a twelve-task Databricks job runs the six Silver notebooks, the four Gold load notebooks and the cross-source check. A source that failed to download skips exactly the tables built on it, and each skipped stage records what it was waiting on.
 
+![Pipeline health dashboard, run detail page, 01-09-2026 monthly run: 26 stages, all succeeded](docs/screenshots/pipeline_health_run_detail_monthly.png)
+
+*Run detail for the 01-09-2026 monthly run. All 26 stages succeeded (six Bronze copies, nineteen table builds and the cross-source check) in 4,011 seconds of wall clock, about 67 minutes. Police is the long bar on the stage timeline.*
+
 ---
 
 ## Roadmap
@@ -1204,7 +1335,7 @@ After the downloads, a twelve-task Databricks job runs the six Silver notebooks,
 - [x] Silver: ONS private rents (357 geographies, workbook converted before reading)
 - [x] Silver: Police.uk crime (96.1M rows from seven overlapping archives, no natural key)
 - [x] Magic-byte validation for binary inputs (postcode archive, ONS workbook, all seven crime archives)
-- [x] Pipeline audit tables for per-run quality metrics — `quality.pipeline_run` and `quality.pipeline_metric`, written by all six Silver notebooks
+- [x] Pipeline audit tables for per-run quality metrics — `quality.pipeline_run`, `quality.pipeline_metric` and `quality.metric_registry`, written by all six Silver notebooks
 - [x] Freshness value recorded per Silver source, with a per-source bound that aborts the load
 - [x] pytest + chispa harness (SparkSession fixture, cluster runner) across the Silver transforms, the Gold tables, the audit writer and the threshold rules
 
@@ -1213,10 +1344,10 @@ After the downloads, a twelve-task Databricks job runs the six Silver notebooks,
 - [x] Dimensional model design: grain, keys and dimension structure settled against measurement before any transform was written
 - [x] Declared DDL for thirteen tables, four dimensions and nine facts, created on the cluster with informational keys and enforced check constraints
 - [x] All four dimensions loaded: 19,723 calendar days carrying the base rate, 432 published areas, 36,778 small areas with the majority-district assignment for the 82 that straddle a boundary, and 16 crime types across three vocabulary eras
-- [x] Index and rent facts loaded, the two published area panels: 147,453 and 49,248 rows
-- [x] Transaction facts loaded: monthly price by published area at 124,631 rows, the composition breakdown at 1,552,988, and annual price by small area at 1,134,233, all three from one resolution of 31.4M transactions through the postcode directory
+- [x] Index and rent facts loaded, the two published area panels: 147,858 and 49,605 rows
+- [x] Transaction facts loaded from the July 2026 release: monthly price by published area at 124,962 rows, the composition breakdown at 1,552,988, and annual price by small area at 1,134,233, all three from one resolution of 31.4M transactions through the postcode directory
 - [x] Crime facts loaded at both grains, with anti-social behaviour held out of every total by constraint: 25,984,439 and 6,328,185 rows by small area, 736,822 and 61,681 by published area, summed up from the small-area aggregate and checked against a direct count
-- [x] Own-versus-rent monthly cost at the base rate of the day, and rent yield, computed downstream from the facts: 45,346 area-months across 331 areas, a yield for 316 districts at a 3.97% median, and the rate cycle moving the share of area-months where owning costs more from 41.7% to 99.5%
+- [x] Own-versus-rent monthly cost at the base rate of the day, and rent yield, computed downstream from the facts: 45,677 area-months across 331 areas, a yield for 316 districts at a 3.97% median, and the rate cycle moving the share of area-months where owning costs more from 41.7% to 99.5%
 - [x] Join-integrity and referential-coverage checks recorded through the audit writer: every foreign key on all nine facts checked against the loaded dimension after write, and coverage recorded against `dim_area`, `dim_lsoa` and `dim_crime_type`
 - [x] Cross-source reconciliation of a transaction-derived price series against the published index: counts correlating at 0.9998 across 123,375 cells, and the published mix-adjusted average tracking the transaction median to within 1.1%
 
@@ -1236,11 +1367,14 @@ After the downloads, a twelve-task Databricks job runs the six Silver notebooks,
 
 ### Phase 5 — Consumption
 
-- [ ] Synapse Serverless external tables over Gold
-- [ ] Fabric / Power BI dashboards:
-  - Property Market Dashboard, four screens: area profile against regional and national benchmarks; own-versus-rent monthly cost at the base rate of the day; yield map with a crime overlay; and what actually sells in an area by property type, build age, tenure and sale category
-  - Pipeline Health Dashboard (run history, quality scores, anomaly alerts)
+- [x] Serving layer measured and settled. Power BI reaches the Gold star through a serverless Databricks SQL warehouse as a least-privilege service principal, and imports it: the whole star is 148.9 MiB, so DirectQuery buys latency and cost for no live data a monthly pipeline could supply. See Decisions 50, 51 and 52
+- [x] Pipeline Health Dashboard — three pages over the quality tables: run history across all four statuses, the cause recorded against every stage that skipped, quality metrics, and rule results carrying the bounds that were in force when they ran. See Decision 53
+- [x] Semantic model over the Gold star — thirteen tables imported with twenty-one relationships, eighteen of them inherited from the Unity Catalog foreign keys, and roughly twenty measures that blank the aggregations the star cannot support. Held as a Power BI Project, so the model definition is in version control as text. See Decisions 54 to 57
+- [ ] Property Market Dashboard, four screens: area profile against regional and national benchmarks; own-versus-rent monthly cost at the base rate of the day; yield map with a crime overlay; and what actually sells in an area by property type, build age, tenure and sale category
 - [ ] Boundary polygons for the map layers, sourced at dashboard time. The platform holds postcode points, not area shapes, so a choropleth needs geometry the pipeline does not carry
+- [ ] Fabric mirrored Azure Databricks catalog, with one screen rebuilt on Direct Lake and measured against the connector version
+- [ ] Terraform over the serving layer — the warehouse, the service principal, the group and the grants, reconciled from version control instead of asserted by a notebook
+- [x] Synapse Serverless external tables over Gold, removed before it was built. Unity Catalog does not support path-based access to managed tables, so serving Synapse would have meant a second physical copy of the star. See Decision 49
 
 
 ### Future work — held for observation
@@ -1253,4 +1387,4 @@ Both items below are built as mechanism and unset as configuration, so neither i
 Nothing is lost by the wait. Both series have been recorded since the layers that produce them were built, so either bound can be computed retrospectively over everything accumulated by the time it is set.
 ---
 
-*Project status: Phases 1 to 4 complete. Bronze ingestion for all six sources, the Silver layer, the Gold star schema, and the quality, automation and orchestration work, all verified on the cluster. Phase 5 covers consumption: Synapse Serverless and the dashboards. Two bounds sit in Future work, waiting on the publication calendar rather than on code. Last updated 03-09-2026.*
+*Status: Phases 1 to 4 complete and verified on the cluster. Phase 5 is in progress, three of six sub-phases closed: the serving layer is settled, the pipeline health dashboard is live over the quality tables, and the semantic model over the Gold star is built and held in version control as text. The property market dashboard is next. Last updated 02-10-2026.*

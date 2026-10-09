@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "9a84b48d8e0070090513",
+  "position": {
+    "x": 975,
+    "y": 465,
+    "z": 11000,
+    "height": 235,
+    "width": 285,
+    "tabOrder": 11000
+  },
+  "visual": {
+    "visualType": "textbox",
+    "objects": {
+      "general": [
+        {
+          "properties": {
+            "paragraphs": [
+              {
+                "textRuns": [
+                  {
+                    "value": "Stage durations are derived, not recorded. started_ts marks when the notebook started rather than the stage, so a stage after the first in the same notebook would otherwise report time accumulated since the notebook opened. Each stage here is measured from the previous close within its notebook. Bronze is excluded from the timeline: those rows are written after the copies have already finished and measure the recording, not the copying.",
+                    "textStyle": {
+                      "fontSize": "9pt"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

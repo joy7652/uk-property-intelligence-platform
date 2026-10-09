@@ -1,0 +1,28 @@
+table 'Deposit share'
+	lineageTag: 16eb4335-7cdd-425d-a966-09c2323104f8
+
+	measure 'Deposit share Value' = SELECTEDVALUE('Deposit share'[Deposit share], 0.2)
+		lineageTag: bb21d4ed-0d55-4ad2-8ca8-f8c60c1e209a
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column 'Deposit share'
+		lineageTag: b41e0cad-da8f-4214-97f8-a5cb2852cc00
+		summarizeBy: none
+		sourceColumn: [Value]
+
+		extendedProperty ParameterMetadata =
+				{
+				  "version": 0
+				}
+
+		annotation SummarizationSetBy = User
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	partition 'Deposit share' = calculated
+		mode: import
+		source = GENERATESERIES(0, 0.5, 0.05)
+
+	annotation PBI_Id = e97c8c4914924b5ab099516f39b08733
+

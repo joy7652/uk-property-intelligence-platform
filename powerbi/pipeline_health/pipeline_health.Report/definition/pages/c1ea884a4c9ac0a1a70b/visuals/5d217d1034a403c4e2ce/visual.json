@@ -1,0 +1,267 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "5d217d1034a403c4e2ce",
+  "position": {
+    "x": 20,
+    "y": 555,
+    "z": 8000,
+    "height": 145,
+    "width": 940,
+    "tabOrder": 8000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "started_ts"
+                }
+              },
+              "queryRef": "pipeline_run.started_ts",
+              "nativeQueryRef": "started_ts"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "source"
+                }
+              },
+              "queryRef": "pipeline_run.source",
+              "nativeQueryRef": "source"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_metric"
+                    }
+                  },
+                  "Property": "metric"
+                }
+              },
+              "queryRef": "pipeline_metric.metric",
+              "nativeQueryRef": "metric"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_metric"
+                    }
+                  },
+                  "Property": "scope"
+                }
+              },
+              "queryRef": "pipeline_metric.scope",
+              "nativeQueryRef": "scope"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_metric"
+                    }
+                  },
+                  "Property": "value_text"
+                }
+              },
+              "queryRef": "pipeline_metric.value_text",
+              "nativeQueryRef": "value_text"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "pipeline_run"
+                  }
+                },
+                "Property": "started_ts"
+              }
+            },
+            "direction": "Descending"
+          }
+        ]
+      }
+    },
+    "drillFilterOtherVisuals": true
+  },
+  "filterConfig": {
+    "filters": [
+      {
+        "name": "ec872a86d8e0505d0c0d",
+        "ordinal": 0,
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "pipeline_metric"
+              }
+            },
+            "Property": "metric"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "30943bec66100a19e800",
+        "ordinal": 1,
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "pipeline_metric"
+              }
+            },
+            "Property": "scope"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "33681b383071b50c434c",
+        "ordinal": 2,
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "pipeline_run"
+              }
+            },
+            "Property": "source"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "e8ed619cce50dacd9362",
+        "ordinal": 3,
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "pipeline_run"
+              }
+            },
+            "Property": "started_ts"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "235f8fcb0497dd308110",
+        "ordinal": 4,
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "pipeline_metric"
+              }
+            },
+            "Property": "value_text"
+          }
+        },
+        "type": "Categorical"
+      },
+      {
+        "name": "bbfc22d2807e1db5200c",
+        "ordinal": 5,
+        "field": {
+          "Column": {
+            "Expression": {
+              "SourceRef": {
+                "Entity": "metric_registry"
+              }
+            },
+            "Property": "kind"
+          }
+        },
+        "type": "Categorical",
+        "filter": {
+          "Version": 2,
+          "From": [
+            {
+              "Name": "m",
+              "Entity": "metric_registry",
+              "Type": 0
+            }
+          ],
+          "Where": [
+            {
+              "Condition": {
+                "In": {
+                  "Expressions": [
+                    {
+                      "Column": {
+                        "Expression": {
+                          "SourceRef": {
+                            "Source": "m"
+                          }
+                        },
+                        "Property": "kind"
+                      }
+                    }
+                  ],
+                  "Values": [
+                    [
+                      {
+                        "Literal": {
+                          "Value": "'disposition'"
+                        }
+                      }
+                    ],
+                    [
+                      {
+                        "Literal": {
+                          "Value": "'vocabulary'"
+                        }
+                      }
+                    ],
+                    [
+                      {
+                        "Literal": {
+                          "Value": "'artefact'"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "howCreated": "User",
+        "objects": {
+          "general": [
+            {
+              "properties": {}
+            }
+          ]
+        }
+      }
+    ],
+    "filterSortOrder": "Custom"
+  }
+}

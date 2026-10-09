@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "property_market"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "f36093a9-2da3-4d2b-9239-7579c3c0c994"
+  }
+}

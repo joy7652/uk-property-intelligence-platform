@@ -1,0 +1,85 @@
+table fact_area_month_transaction_mix
+	lineageTag: 62102ede-edc5-41ea-876a-106658cac00c
+
+	column area_code
+		dataType: string
+		isHidden
+		lineageTag: 6bf404e8-3eb7-4752-b20f-43513f6a2124
+		summarizeBy: none
+		sourceColumn: area_code
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column month_start_date
+		dataType: dateTime
+		isHidden
+		formatString: Long Date
+		lineageTag: 68237cc2-63a1-41d5-95b6-c930b91bc4f5
+		summarizeBy: none
+		sourceColumn: month_start_date
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column property_type
+		dataType: string
+		lineageTag: 67aaf431-6980-4630-80f4-82ba8aa4887c
+		summarizeBy: none
+		sourceColumn: property_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column old_new
+		dataType: string
+		lineageTag: d26aae21-e85b-40e5-ba52-0ec084b03114
+		summarizeBy: none
+		sourceColumn: old_new
+
+		annotation SummarizationSetBy = Automatic
+
+	column duration
+		dataType: string
+		lineageTag: 112a78a2-d208-4d6c-9a49-ec0e9352b446
+		summarizeBy: none
+		sourceColumn: duration
+
+		annotation SummarizationSetBy = Automatic
+
+	column ppd_category_type
+		dataType: string
+		lineageTag: be21c4ac-e07e-42d8-afaa-fd26972522ac
+		summarizeBy: none
+		sourceColumn: ppd_category_type
+
+		annotation SummarizationSetBy = Automatic
+
+	column transaction_count
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 158aceea-8cb7-4320-aeb3-6435f607d292
+		summarizeBy: sum
+		sourceColumn: transaction_count
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	partition fact_area_month_transaction_mix = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    gold_Schema = uk_property_intel_Database{[Name="gold",Kind="Schema"]}[Data],
+				    fact_area_month_transaction_mix_Table = gold_Schema{[Name="fact_area_month_transaction_mix",Kind="Table"]}[Data]
+				in
+				    fact_area_month_transaction_mix_Table
+
+	annotation PBI_ResultType = Table
+

@@ -1,0 +1,191 @@
+table fact_area_month_rent
+	isHidden
+	lineageTag: 41e26fab-7599-4017-afa9-68c3bfd716f7
+
+	column area_code
+		dataType: string
+		isHidden
+		lineageTag: 1931b9fe-44e4-415a-b4b7-8897f083a36d
+		summarizeBy: none
+		sourceColumn: area_code
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column month_start_date
+		dataType: dateTime
+		isHidden
+		formatString: Long Date
+		lineageTag: c1f0e746-d322-4223-a95c-637019bbf8b3
+		summarizeBy: none
+		sourceColumn: month_start_date
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 80d84a2d-e08f-4a42-a380-7d6694c05673
+		summarizeBy: sum
+		sourceColumn: rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column price_index
+		dataType: double
+		isHidden
+		lineageTag: e8e3e289-17f8-4159-adf3-af36f9c0082f
+		summarizeBy: sum
+		sourceColumn: price_index
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column pct_change_1m
+		dataType: double
+		isHidden
+		lineageTag: 81a8afa2-1b2a-4177-a04c-ffdd32c4b4ab
+		summarizeBy: sum
+		sourceColumn: pct_change_1m
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column pct_change_12m
+		dataType: double
+		isHidden
+		lineageTag: e43afcb8-7427-4864-b750-69370d7a5b8a
+		summarizeBy: sum
+		sourceColumn: pct_change_12m
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column one_bed_rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: de6a6b50-76e7-4dd4-92e0-be10734d4f44
+		summarizeBy: sum
+		sourceColumn: one_bed_rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column two_bed_rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 4e3e18b8-5107-4c41-b601-71589b3b75f6
+		summarizeBy: sum
+		sourceColumn: two_bed_rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column three_bed_rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 5e901412-9d67-4438-86c3-20b7dd26bf32
+		summarizeBy: sum
+		sourceColumn: three_bed_rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column four_or_more_bed_rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: dd17cff1-d817-473e-94d6-22dd08545d48
+		summarizeBy: sum
+		sourceColumn: four_or_more_bed_rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column detached_rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 26c93f99-834b-4a73-9983-2471845f88d7
+		summarizeBy: sum
+		sourceColumn: detached_rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column semi_detached_rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 62a90aaf-04ea-4fde-88fd-e4fa092f5393
+		summarizeBy: sum
+		sourceColumn: semi_detached_rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column terraced_rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 1cee6e2a-e801-40d3-b6b6-f2f80efc764b
+		summarizeBy: sum
+		sourceColumn: terraced_rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	column flat_maisonette_rental_price
+		dataType: int64
+		isHidden
+		formatString: 0
+		lineageTag: 072c806e-c962-46d8-9baa-2b69ed65f9b7
+		summarizeBy: sum
+		sourceColumn: flat_maisonette_rental_price
+
+		changedProperty = IsHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	partition fact_area_month_rent = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    gold_Schema = uk_property_intel_Database{[Name="gold",Kind="Schema"]}[Data],
+				    fact_area_month_rent_Table = gold_Schema{[Name="fact_area_month_rent",Kind="Table"]}[Data]
+				in
+				    fact_area_month_rent_Table
+
+	changedProperty = IsHidden
+
+	annotation PBI_ResultType = Table
+

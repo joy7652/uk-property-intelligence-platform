@@ -1,0 +1,92 @@
+table dim_lsoa
+	lineageTag: 1a53d9bc-ef71-4c89-8d36-914b9e849f9e
+
+	column lsoa_code
+		dataType: string
+		lineageTag: 4fdcd9be-6ef3-401e-b78a-5946f72dc479
+		summarizeBy: none
+		sourceColumn: lsoa_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column lsoa_name
+		dataType: string
+		lineageTag: 7eadeeef-04de-4a20-9118-cee4d1025aed
+		summarizeBy: none
+		sourceColumn: lsoa_name
+
+		annotation SummarizationSetBy = Automatic
+
+	column district_code
+		dataType: string
+		lineageTag: 5d4848cf-b353-4038-8334-c6a67734785d
+		summarizeBy: none
+		sourceColumn: district_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column district_assignment
+		dataType: string
+		lineageTag: 856e02e3-2212-462e-9d9b-acff569dee01
+		summarizeBy: none
+		sourceColumn: district_assignment
+
+		annotation SummarizationSetBy = Automatic
+
+	column majority_share
+		dataType: double
+		lineageTag: 581f3a39-7801-4807-ba7d-648ba2a1e18b
+		summarizeBy: sum
+		sourceColumn: majority_share
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column boundary_vintage
+		dataType: string
+		lineageTag: 0cd9addf-84af-48bf-9226-159e94614e07
+		summarizeBy: none
+		sourceColumn: boundary_vintage
+
+		annotation SummarizationSetBy = Automatic
+
+	column nation_code
+		dataType: string
+		lineageTag: 2e8af158-43f6-4c7a-974e-e9aa63b9a3d9
+		summarizeBy: none
+		sourceColumn: nation_code
+
+		annotation SummarizationSetBy = Automatic
+
+	column has_crime
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 6c55ca07-12e3-462b-98b2-a84e4bb16a25
+		summarizeBy: none
+		sourceColumn: has_crime
+
+		annotation SummarizationSetBy = Automatic
+
+	column has_price
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 6eb90b53-cf74-4f0d-95ab-b60691f47647
+		summarizeBy: none
+		sourceColumn: has_price
+
+		annotation SummarizationSetBy = Automatic
+
+	partition dim_lsoa = m
+		mode: import
+		source =
+				let
+				    Source = DatabricksMultiCloud.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog=null, Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    gold_Schema = uk_property_intel_Database{[Name="gold",Kind="Schema"]}[Data],
+				    dim_lsoa_Table = gold_Schema{[Name="dim_lsoa",Kind="Table"]}[Data]
+				in
+				    dim_lsoa_Table
+
+	annotation PBI_ResultType = Table
+

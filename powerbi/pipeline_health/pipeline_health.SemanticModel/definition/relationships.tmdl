@@ -1,0 +1,16 @@
+relationship 983035d8-d7eb-2bb5-ad47-172c9dbb04f2
+	fromColumn: pipeline_metric.run_id
+	toColumn: pipeline_run.run_id
+
+relationship 8b7ac029-56a3-8fe1-6191-9c54d5bc29c6
+	fromColumn: rule_result.run_id
+	toColumn: pipeline_run.run_id
+
+relationship 931a10b1-e736-b45e-5f48-ef3e2cbf9000
+	fromColumn: skip_cause.run_id
+	toColumn: pipeline_run.run_id
+
+relationship 6c478c65-36dc-13d3-7398-258d3f7ed0b7
+	fromColumn: pipeline_metric.metric
+	toColumn: metric_registry.metric
+

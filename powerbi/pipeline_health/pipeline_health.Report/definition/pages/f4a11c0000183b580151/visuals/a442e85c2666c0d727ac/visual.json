@@ -1,0 +1,112 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.12.0/schema.json",
+  "name": "a442e85c2666c0d727ac",
+  "position": {
+    "x": 795,
+    "y": 165,
+    "z": 9000,
+    "height": 320,
+    "width": 465,
+    "tabOrder": 9000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "source"
+                }
+              },
+              "queryRef": "pipeline_run.source",
+              "nativeQueryRef": "source"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_run"
+                    }
+                  },
+                  "Property": "started_ts"
+                }
+              },
+              "queryRef": "pipeline_run.started_ts",
+              "nativeQueryRef": "started_ts"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_metric"
+                    }
+                  },
+                  "Property": "Newest data date"
+                }
+              },
+              "queryRef": "pipeline_metric.Newest data date",
+              "nativeQueryRef": "Newest data date"
+            },
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "pipeline_metric"
+                    }
+                  },
+                  "Property": "Lag days"
+                }
+              },
+              "queryRef": "pipeline_metric.Lag days",
+              "nativeQueryRef": "Lag days"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "pipeline_run"
+                  }
+                },
+                "Property": "started_ts"
+              }
+            },
+            "direction": "Descending"
+          }
+        ]
+      }
+    },
+    "objects": {
+      "total": [
+        {
+          "properties": {
+            "totals": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "drillFilterOtherVisuals": true
+  }
+}

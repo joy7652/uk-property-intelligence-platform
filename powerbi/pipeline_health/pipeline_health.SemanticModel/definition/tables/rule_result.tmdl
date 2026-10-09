@@ -1,0 +1,160 @@
+table rule_result
+	lineageTag: 6e61fa84-7ec6-4b1a-9a8c-a6278f405a42
+
+	measure 'Rule results' = COALESCE ( COUNTROWS ( rule_result ), 0 )
+		formatString: 0
+		lineageTag: 2cd81353-a854-492c-b9c6-eb58828983c1
+
+	measure 'Rules evaluated' = COALESCE ( DISTINCTCOUNT ( rule_result[rule] ), 0 )
+		formatString: 0
+		lineageTag: 91bd0abd-bee2-4a36-800e-b8bc5af5acc0
+
+	measure 'Check runs' = COALESCE ( DISTINCTCOUNT ( rule_result[run_id] ), 0 )
+		formatString: 0
+		lineageTag: c56b3f59-b20f-493d-b0f2-bf43cb97d3b7
+
+	measure Breached = COALESCE ( CALCULATE ( COUNTROWS ( rule_result ), rule_result[passed] = FALSE ), 0 )
+		formatString: 0
+		lineageTag: 5c013394-8208-4104-8270-337c9cebdfa7
+
+	measure Scopes = COALESCE ( DISTINCTCOUNTNOBLANK ( rule_result[scope] ), 0 )
+		formatString: 0
+		lineageTag: e26d686f-5699-46e2-9f7e-47c40b13295b
+
+	measure 'Observed Avg' = AVERAGE ( rule_result[observed] )
+		lineageTag: aacd1cfc-fe19-4cf8-8b7c-2daf9b47e8fc
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Lower in force' = MIN ( rule_result[lower_bound] )
+		lineageTag: 9ec15bfe-7094-4b4f-9dac-d074a11bf51c
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Upper in force' = MAX ( rule_result[upper_bound] )
+		lineageTag: d25ddb89-ba8b-42a8-ad89-541267cd6f96
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Bound versions' =
+			
+			COALESCE (
+			    COUNTROWS ( SUMMARIZE ( rule_result, rule_result[lower_bound], rule_result[upper_bound] ) ),
+			    0
+			)
+		formatString: 0
+		lineageTag: 99cd8bee-750f-4114-8411-a95a4ad3c6d7
+
+	measure Drift =
+			
+			MAXX (
+			    VALUES ( rule_result[scope] ),
+			    CALCULATE ( MAX ( rule_result[observed] ) - MIN ( rule_result[observed] ) )
+			)
+		lineageTag: af6db3ae-7556-46c4-9551-2a24915fda7a
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Full spread' = MAX ( rule_result[observed] ) - MIN ( rule_result[observed] )
+		lineageTag: a32b79b2-ba4e-4d54-8a27-38a8c86f1736
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	measure 'Years moved' =
+			
+			COUNTROWS (
+			    FILTER (
+			        VALUES ( rule_result[scope] ),
+			        NOT ISBLANK ( rule_result[scope] )
+			            && CALCULATE ( MAX ( rule_result[observed] ) - MIN ( rule_result[observed] ) ) > 0
+			    )
+			)
+		formatString: 0
+		lineageTag: e43fb346-6396-4797-8c24-e96014b0de7e
+
+	column run_id
+		dataType: string
+		lineageTag: 25ef38a7-03c7-43f5-b2a2-2673c309c44f
+		summarizeBy: none
+		sourceColumn: run_id
+
+		annotation SummarizationSetBy = Automatic
+
+	column rule
+		dataType: string
+		lineageTag: c14df8f7-5898-4053-9522-00d75fdd46f3
+		summarizeBy: none
+		sourceColumn: rule
+
+		annotation SummarizationSetBy = Automatic
+
+	column scope
+		dataType: string
+		lineageTag: 6d3c0a3f-5a7f-4d7d-a772-1d8dfda1c24b
+		summarizeBy: none
+		sourceColumn: scope
+
+		annotation SummarizationSetBy = Automatic
+
+	column observed
+		dataType: double
+		lineageTag: 417967ae-1628-4ec0-ab6e-68da2e04382c
+		summarizeBy: sum
+		sourceColumn: observed
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column lower_bound
+		dataType: double
+		lineageTag: 1a0a2cc4-037f-4cd8-af5d-fa692614df5d
+		summarizeBy: sum
+		sourceColumn: lower_bound
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column upper_bound
+		dataType: double
+		lineageTag: 80936caa-d950-4fa9-92c8-3656c83aa234
+		summarizeBy: sum
+		sourceColumn: upper_bound
+
+		annotation SummarizationSetBy = Automatic
+
+		annotation PBI_FormatHint = {"isGeneralNumber":true}
+
+	column passed
+		dataType: boolean
+		formatString: """TRUE"";""TRUE"";""FALSE"""
+		lineageTag: 4ca27805-c625-4255-a83b-30b1532a0dca
+		summarizeBy: none
+		sourceColumn: passed
+
+		annotation SummarizationSetBy = Automatic
+
+	column detail
+		dataType: string
+		lineageTag: 6edf1d50-e18c-42aa-a3e9-2bca9caf4c30
+		summarizeBy: none
+		sourceColumn: detail
+
+		annotation SummarizationSetBy = Automatic
+
+	partition rule_result = m
+		mode: import
+		source =
+				let
+				    Source = Databricks.Catalogs("adb-7405616127577226.6.azuredatabricks.net", "/sql/1.0/warehouses/65e93ffd5f4ef90c", [Catalog="uk_property_intel", Database=null, QueryTags=null, EnableAutomaticProxyDiscovery=null, Implementation="2.0", Protocol=null]),
+				    uk_property_intel_Database = Source{[Name="uk_property_intel",Kind="Database"]}[Data],
+				    quality_Schema = uk_property_intel_Database{[Name="quality",Kind="Schema"]}[Data],
+				    rule_result_Table = quality_Schema{[Name="rule_result",Kind="Table"]}[Data]
+				in
+				    rule_result_Table
+
+	annotation PBI_NavigationStepName = Navigation
+
+	annotation PBI_ResultType = Table
+
