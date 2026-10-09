@@ -19,6 +19,9 @@ from databricks_src.quality.audit.writer import (
     FRESHNESS_BOUND_DAYS,
     GOLD_TABLES,
     KINDS,
+    LAYERS,
+    LAYERS_OF,
+    LAYERS_OF_METRIC,
     MESSAGE_LIMIT,
     METRIC_COLUMNS,
     METRIC_COMMENT,
@@ -54,6 +57,25 @@ SPARK_TO_DDL = {"StringType": "STRING", "DoubleType": "DOUBLE", "DateType": "DAT
 
 def run(source: str = "hpi") -> AuditRun:
     return AuditRun(source=source, layer="silver", ingestion_ts=INGESTION_TS)
+
+
+def gold_run(source: str = "dim_area") -> AuditRun:
+    return AuditRun(source=source, layer="gold", ingestion_ts=INGESTION_TS)
+
+
+# One run name valid at each layer, so a metric can be offered to a run at any of the
+# three. Which name is used does not matter: the layer is what is under test.
+A_RUN_PER_LAYER: dict[str, str] = {
+    "bronze": "pipeline_plan",
+    "silver": "hpi",
+    "gold": "dim_area",
+}
+
+
+def run_at(layer: str) -> AuditRun:
+    return AuditRun(
+        source=A_RUN_PER_LAYER[layer], layer=layer, ingestion_ts=INGESTION_TS
+    )
 
 
 def run_with_job(job_run_id: str, source: str = "hpi") -> AuditRun:
@@ -235,6 +257,128 @@ def test_scope_is_carried():
     times under one run_id and needs the archive to tell them apart."""
     recorded = _as_row_values("rows_out_of_area", 24, "2026-06", None)
     assert recorded.scope == "2026-06"
+
+
+# --------------------------------------------------------------------------- #
+# Metric layers
+# --------------------------------------------------------------------------- #
+
+
+def test_every_metric_is_paired_to_a_layer():
+    """LAYERS_OF_METRIC is projected from the registry groups, so this can only fail
+    where a metric reaches METRICS by some other route."""
+    assert set(METRICS) == set(LAYERS_OF_METRIC)
+
+
+def test_every_layer_a_metric_carries_is_a_declared_layer():
+    assert all(set(layers) <= set(LAYERS) for layers in LAYERS_OF_METRIC.values())
+
+
+def test_every_metric_carries_at_least_one_layer():
+    """A metric admitted at no layer could not be recorded by any run."""
+    assert all(LAYERS_OF_METRIC[name] for name in METRICS)
+
+
+def test_a_gold_metric_is_admitted_at_gold_alone():
+    assert LAYERS_OF_METRIC["gold_rows"] == ("gold",)
+
+
+def test_a_source_metric_is_admitted_where_its_run_names_are():
+    """A source opens a run at bronze and at silver, so its metrics are admitted at
+    both. Narrowing that needs reading what the bronze runs record, which the writer
+    does not state."""
+    assert LAYERS_OF_METRIC["source_rows"] == LAYERS_OF["hpi"]
+
+
+def test_the_plan_metric_is_admitted_where_its_run_name_is():
+    assert LAYERS_OF_METRIC["planned_stage"] == LAYERS_OF["pipeline_plan"]
+
+
+def test_every_metric_is_accepted_at_every_layer_it_is_admitted_at():
+    """Across the whole registry, so a metric paired to a layer nothing records it at
+    fails here rather than on the first load that tries."""
+    for metric, layers in LAYERS_OF_METRIC.items():
+        for layer in layers:
+            assert run_at(layer).measure(metric, 1) == 1, (metric, layer)
+
+
+def test_every_metric_is_refused_at_every_other_layer():
+    for metric, layers in LAYERS_OF_METRIC.items():
+        for layer in set(LAYERS) - set(layers):
+            with pytest.raises(ValueError, match="recorded at"):
+                run_at(layer).measure(metric, 1)
+
+
+def test_a_gold_run_cannot_record_a_source_metric():
+    """The case this exists for. 96 million rows counted by the Gold crime projection
+    recorded under a name that means rows read from Bronze by a Silver transform: a
+    number in the right units, in the wrong series, with nothing to tell them apart."""
+    with pytest.raises(ValueError, match="recorded at"):
+        gold_run("dim_crime_type").measure("source_rows", 96_092_836)
+
+
+def test_a_silver_run_cannot_record_a_gold_metric():
+    with pytest.raises(ValueError, match="recorded at"):
+        run().measure("gold_rows", 432)
+
+
+def test_a_gold_run_cannot_record_the_plan_metric():
+    with pytest.raises(ValueError, match="recorded at"):
+        gold_run().measure("planned_stage", "run", "dim_lsoa")
+
+
+def test_the_wrong_layer_buffers_nothing():
+    """The run has to be left recordable. A refused metric that still appended would
+    flush a row the check was written to prevent."""
+    audit_run = gold_run()
+    with pytest.raises(ValueError):
+        audit_run.measure("source_rows", 1)
+    assert audit_run.buffered == []
+
+
+def test_an_unregistered_name_is_refused_before_the_layer_is_considered():
+    """A free-text name has no pairing to check, so the registry message is the one
+    that has to come back."""
+    with pytest.raises(ValueError, match="registry"):
+        gold_run().measure("rows_without_postcode", 1)
+
+
+def test_a_metric_paired_to_an_unknown_layer_is_caught(monkeypatch):
+    """The registry check runs at import. These three drive it directly, since an
+    import that already succeeded cannot show what it would have refused."""
+    from databricks_src.quality.audit import writer
+
+    monkeypatch.setitem(writer.LAYERS_OF_METRIC, "gold_rows", ("raw",))
+    with pytest.raises(ValueError, match="metrics paired to a layer outside"):
+        writer.assert_registry_consistent()
+
+
+def test_a_metric_paired_to_no_layer_is_caught(monkeypatch):
+    from databricks_src.quality.audit import writer
+
+    monkeypatch.setitem(writer.LAYERS_OF_METRIC, "gold_rows", ())
+    with pytest.raises(ValueError, match="metrics paired to no layer"):
+        writer.assert_registry_consistent()
+
+
+def test_an_unpaired_metric_is_caught(monkeypatch):
+    from databricks_src.quality.audit import writer
+
+    monkeypatch.delitem(writer.LAYERS_OF_METRIC, "gold_rows")
+    with pytest.raises(ValueError, match="metrics with no layer paired"):
+        writer.assert_registry_consistent()
+
+
+def test_the_registry_is_built_from_the_pairing():
+    """_ALL is projected from the same groups, so the two cannot come apart by an edit
+    to one of them. Compared as sets: monkeypatch restores a deleted key by
+    re-inserting it, which moves it to the end of the dict, and an ordered comparison
+    here would pass or fail on which tests ran before it."""
+    from databricks_src.quality.audit.writer import _ALL
+
+    names = [metric.name for metric in _ALL]
+    assert len(names) == len(set(names))
+    assert set(names) == set(LAYERS_OF_METRIC)
 
 
 # --------------------------------------------------------------------------- #

@@ -260,11 +260,36 @@
 # MAGIC series is not. `predecessor_crime_type` records what a type was split out of, which any
 # MAGIC cross-era reconstruction needs.
 # MAGIC
+# MAGIC That comparability is measured rather than assumed, at the England and Wales composite on
+# MAGIC 08-10-2026. The all-types monthly count excluding anti-social behaviour moves 0.969 across
+# MAGIC 2011-09 and 1.054 across 2013-05, which sits at the 57th and 36th percentile of the moves the
+# MAGIC same series makes in other Septembers and Mays. Neither break registers as a step.
+# MAGIC
+# MAGIC `conformance_status` and `reporting_crime_type` carry what can be read across a break. Both
+# MAGIC are derived from the lineage and the measured publication window: a predecessor that ceased
+# MAGIC handed its whole volume over, so it and its successors are one category under several names,
+# MAGIC while one still publishing kept its label and lost contents.
+# MAGIC Five types are `conformed` into two groups, two are `composition_changed`, and nine are
+# MAGIC `stable`. Only the name a group reports under is authored, because a split into two leaves no
+# MAGIC surviving name to resolve to.
+# MAGIC
+# MAGIC `conformed` says the lineage break is clean, not that a group's combined volume is flat.
+# MAGIC Measured the same day: the public order trio moves 1.281 across 2013-05, above 92 percent of
+# MAGIC the May moves in its own series, and `Violent crime` moves 0.861 across 2011-09, which is not
+# MAGIC its own break and is the largest September move it makes. A screen drawing one line across a
+# MAGIC group inherits both.
+# MAGIC
 # MAGIC Anti-social behaviour is held out of the crime fact entirely. `is_anti_social_behaviour`
 # MAGIC documents that absence; it is not the mechanism producing it.
 # MAGIC
-# MAGIC The self-reference on `predecessor_crime_type` is not declared as a foreign key. It is checked
-# MAGIC at load instead.
+# MAGIC The self-reference on `predecessor_crime_type` is not declared as a foreign key. It is
+# MAGIC checked at load instead.
+# MAGIC
+# MAGIC `reporting_crime_type` is not a self-reference and must not be joined back to `crime_type`.
+# MAGIC One group label is the surviving publisher name and the other is assigned here, because a
+# MAGIC split into two leaves none, so three of the sixteen rows report under a name no row carries.
+# MAGIC A foreign key would reject those three, and a semantic-model relationship drawn on this
+# MAGIC column produces a blank member for each of them.
 
 # COMMAND ----------
 
@@ -277,6 +302,8 @@
 # MAGIC   vocabulary_era            TINYINT  NOT NULL COMMENT '1 from 2010-12, 2 from 2011-09, 3 from 2013-05.',
 # MAGIC   predecessor_crime_type    STRING            COMMENT 'Type this one was split out of. Null for types present from the start.',
 # MAGIC   is_anti_social_behaviour  BOOLEAN  NOT NULL COMMENT 'True for anti-social behaviour, which is excluded from every crime total.',
+# MAGIC   conformance_status        STRING   NOT NULL COMMENT 'stable, conformed, or composition_changed. Whether this series can be read across a vocabulary change.',
+# MAGIC   reporting_crime_type      STRING   NOT NULL COMMENT 'Name this type reports under. Its own name unless it sits in a conformed group, whose members all report under one name.',
 # MAGIC   CONSTRAINT dim_crime_type_pk PRIMARY KEY (crime_type)
 # MAGIC )
 # MAGIC USING DELTA
@@ -301,6 +328,21 @@
 # MAGIC ALTER TABLE uk_property_intel.gold.dim_crime_type DROP CONSTRAINT IF EXISTS dim_crime_type_not_own_predecessor;
 # MAGIC ALTER TABLE uk_property_intel.gold.dim_crime_type ADD CONSTRAINT dim_crime_type_not_own_predecessor
 # MAGIC   CHECK (predecessor_crime_type IS NULL OR predecessor_crime_type <> crime_type);
+# MAGIC
+# MAGIC ALTER TABLE uk_property_intel.gold.dim_crime_type DROP CONSTRAINT IF EXISTS dim_crime_type_conformance_values;
+# MAGIC ALTER TABLE uk_property_intel.gold.dim_crime_type ADD CONSTRAINT dim_crime_type_conformance_values
+# MAGIC   CHECK (conformance_status IN ('stable', 'conformed', 'composition_changed'));
+# MAGIC
+# MAGIC -- Only a conformed row reports under a name other than its own. A stable type has nothing to
+# MAGIC -- resolve to and a composition_changed one kept its label, so for both the two agree.
+# MAGIC ALTER TABLE uk_property_intel.gold.dim_crime_type DROP CONSTRAINT IF EXISTS dim_crime_type_reporting_name;
+# MAGIC ALTER TABLE uk_property_intel.gold.dim_crime_type ADD CONSTRAINT dim_crime_type_reporting_name
+# MAGIC   CHECK (conformance_status = 'conformed' OR reporting_crime_type = crime_type);
+# MAGIC
+# MAGIC -- A type whose contents changed kept the label they changed under, so it is still published.
+# MAGIC ALTER TABLE uk_property_intel.gold.dim_crime_type DROP CONSTRAINT IF EXISTS dim_crime_type_composition_is_current;
+# MAGIC ALTER TABLE uk_property_intel.gold.dim_crime_type ADD CONSTRAINT dim_crime_type_composition_is_current
+# MAGIC   CHECK (conformance_status <> 'composition_changed' OR is_current);
 
 # COMMAND ----------
 
@@ -717,3 +759,4 @@
 
 # MAGIC %sql
 # MAGIC DESCRIBE TABLE EXTENDED uk_property_intel.gold.fact_lsoa_month_crime;
+

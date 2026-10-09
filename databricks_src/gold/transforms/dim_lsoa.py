@@ -169,11 +169,21 @@ def nation_code() -> Column:
 
 
 def boundary_vintage() -> Column:
-    """Which census boundary set a code belongs to."""
+    """Which census boundary set a code belongs to.
+
+    Every branch tests a vintage, so a code in neither yields null and the NOT NULL
+    column rejects it. A default would have labelled such a row 2021-only, which is a
+    claim about a code the directory does not carry at all.
+
+    Nothing reaches that branch today, because assert_every_area_has_postcodes aborts
+    first on the missing district the same row carries. That is an ordering inside one
+    function rather than a property of this expression, and this does not rely on it.
+    """
     return (
         F.when(F.col("in_2011") & F.col("in_2021"), F.lit(BOTH))
         .when(F.col("in_2011"), F.lit(ONLY_2011))
-        .otherwise(F.lit(ONLY_2021))
+        .when(F.col("in_2021"), F.lit(ONLY_2021))
+        .cast("string")
     )
 
 

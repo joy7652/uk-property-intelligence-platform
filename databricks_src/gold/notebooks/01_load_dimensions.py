@@ -17,7 +17,12 @@
 # MAGIC Four `AuditRun` instances all the same, one per table. `rows_written` is then a
 # MAGIC real number rather than a total across whatever this notebook happened to write,
 # MAGIC and the existing dashboard query works unchanged with `source = 'dim_lsoa'`.
-# MAGIC #
+# MAGIC
+# MAGIC Each table's count is held under its own name. A count is written in one cell and
+# MAGIC read in another several cells below, so one shared name lets a cell rerun by hand
+# MAGIC put one table's figure on another table's audit row, where it is plausible and
+# MAGIC wrong.
+# MAGIC
 # MAGIC Each of the four is gated on its own rather than the notebook exiting as a whole.
 # MAGIC Fourteen of the sixteen subsets are reachable, so a run writing some of them is the
 # MAGIC ordinary case rather than the exception, and a table that waits records why instead
@@ -122,11 +127,11 @@ if date_run is not None:
             base_rate_df=spark.table(BOE),  # noqa: F821
             end_date=CALENDAR_END,
         )
-        written = overwrite(calendar, DIM_DATE)
-        date_run.measure("gold_rows", written)
+        date_rows = overwrite(calendar, DIM_DATE)
+        date_run.measure("gold_rows", date_rows)
 
-    date_run.succeed(rows_written=written)
-    print(f"{written:,} days written to {DIM_DATE}, through {CALENDAR_END}")
+    date_run.succeed(rows_written=date_rows)
+    print(f"{date_rows:,} days written to {DIM_DATE}, through {CALENDAR_END}")
 
 # COMMAND ----------
 
@@ -157,8 +162,8 @@ if area_run is not None:
         measured_areas.persist(StorageLevel.DISK_ONLY)
 
         areas = transform_dim_area(measured_areas)
-        written = overwrite(areas, DIM_AREA)
-        area_run.measure("gold_rows", written)
+        area_rows = overwrite(areas, DIM_AREA)
+        area_run.measure("gold_rows", area_rows)
 
 # COMMAND ----------
 
@@ -181,8 +186,8 @@ if area_run is not None:
         area_run.measure("derived_area_codes", derived)
 
     _ = measured_areas.unpersist()
-    area_run.succeed(rows_written=written)
-    print(f"{written:,} areas written to {DIM_AREA}")
+    area_run.succeed(rows_written=area_rows)
+    print(f"{area_rows:,} areas written to {DIM_AREA}")
     print(f"{derived} carry a code this project assigned")
     for row in sorted(profile, key=lambda item: item["area_level"]):
         print(f"  {row['area_level']:<20}{row['rows']:>5}")
@@ -246,12 +251,12 @@ if crime_run is not None:
         measured_types.persist(StorageLevel.DISK_ONLY)
 
         crime_types = transform_dim_crime_type(measured_types)
-        written = overwrite(crime_types, DIM_CRIME_TYPE)
-        crime_run.measure("gold_rows", written)
+        crime_type_rows = overwrite(crime_types, DIM_CRIME_TYPE)
+        crime_run.measure("gold_rows", crime_type_rows)
 
     _ = measured_types.unpersist()
-    crime_run.succeed(rows_written=written)
-    print(f"{written} crime types written to {DIM_CRIME_TYPE}")
+    crime_run.succeed(rows_written=crime_type_rows)
+    print(f"{crime_type_rows} crime types written to {DIM_CRIME_TYPE}")
 
 # COMMAND ----------
 
@@ -295,11 +300,11 @@ if lsoa_run is not None:
         measured_areas_small.persist(StorageLevel.DISK_ONLY)
 
         small_areas = transform_dim_lsoa(measured_areas_small)
-        written = overwrite(small_areas, DIM_LSOA)
-        lsoa_run.measure("gold_rows", written)
+        lsoa_rows = overwrite(small_areas, DIM_LSOA)
+        lsoa_run.measure("gold_rows", lsoa_rows)
 
     _ = measured_areas_small.unpersist()
-    print(f"{written:,} small areas written to {DIM_LSOA}")
+    print(f"{lsoa_rows:,} small areas written to {DIM_LSOA}")
 
 # Released here rather than inside either block, because the two consumers are gated
 # apart: dim_crime_type may have built it for a dim_lsoa that then ran, and dim_lsoa may
@@ -352,7 +357,7 @@ if lsoa_run is not None:
         for row in by_vintage:
             lsoa_run.measure("gold_rows", row["rows"], scope=row["boundary_vintage"])
 
-    lsoa_run.succeed(rows_written=written)
+    lsoa_run.succeed(rows_written=lsoa_rows)
     print(f"{totals['majority']:,} of {total:,} areas straddle two districts")
     print(f"{totals['with_crime']:,} carry crime, {totals['with_price']:,} carry a price")
     for row in sorted(by_vintage, key=lambda item: item["boundary_vintage"]):

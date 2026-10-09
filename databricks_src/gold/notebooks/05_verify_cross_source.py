@@ -10,8 +10,11 @@
 # MAGIC run and append to `quality.rule_result`, so the reconciliation is recorded on
 # MAGIC every execution rather than read off a screen once.
 # MAGIC
-# MAGIC Three questions the star was built to answer, asked against the loaded tables
-# MAGIC rather than against a design document. Each closes a phase 3 roadmap item.
+# MAGIC Four questions the star was built to answer, asked against the loaded tables
+# MAGIC rather than against a design document. The first three each close a phase 3
+# MAGIC roadmap item. The fourth arrived in 5.4.1, when the property every cross-era crime
+# MAGIC figure rests on was found to be stated in two docstrings and the Gold DDL and
+# MAGIC measured nowhere.
 # MAGIC
 # MAGIC The first reconciles a price series derived from 29.6 million transactions against
 # MAGIC the published index built from the same registry by a different method. Two
@@ -29,6 +32,13 @@
 # MAGIC point is to establish that the star answers them and over what population, so the
 # MAGIC dashboard inherits a measured coverage figure rather than discovering one.
 # MAGIC
+# MAGIC The fourth asks whether a crime total crosses the two published vocabulary changes
+# MAGIC unmoved. A change splits a category into new ones that sum back to it, so the total
+# MAGIC should be comparable across the whole series while any one category is not. It
+# MAGIC records one result per change, and it gates itself: a crime failure must not close
+# MAGIC the reconciliation, which is the only evidence here that does not come from the
+# MAGIC pipeline.
+# MAGIC
 # MAGIC Owning cost rests on three assumptions that are choices rather than measurements:
 # MAGIC the deposit share, the mortgage term, and the margin a lender adds to the base
 # MAGIC rate. They are named constants here and belong in the dashboard as controls. The
@@ -40,13 +50,17 @@ from datetime import datetime, timezone
 
 from pyspark.sql import functions as F
 
+from databricks_src.gold.transforms.crime import COMPOSITE_AREA_CODE
+from databricks_src.gold.transforms.dim_crime_type import ERA_FIRST_MONTH
 from databricks_src.orchestration import stage
 from databricks_src.quality.rules.evaluator import (
     RULE_TABLE,
+    STEP_WINDOW,
     assert_rules_reported,
     evaluate,
     failures,
     rule_frame,
+    window_step,
 )
 
 CATALOG = "uk_property_intel"
@@ -57,6 +71,7 @@ DIM_DATE = f"{GOLD}.dim_date"
 FACT_PRICE = f"{GOLD}.fact_area_month_price"
 FACT_HPI = f"{GOLD}.fact_area_month_hpi"
 FACT_RENT = f"{GOLD}.fact_area_month_rent"
+FACT_CRIME_TOTAL = f"{GOLD}.fact_area_month_crime_total"
 
 # Assumptions, not measurements. A repayment mortgage on the balance after a deposit,
 # at the base rate in force plus a lender's margin.
@@ -68,11 +83,21 @@ MONTHS = TERM_YEARS * 12
 
 # The rules this run promises to evaluate. Named here rather than derived from what
 # the run happens to produce, because a rule that stops running is the failure no
-# table constraint can catch.
-EXPECTED_RULES = (
+# table constraint can catch. The crime rule joins them only where its fact rebuilt,
+# which the plan cell settles.
+RECONCILIATION_RULES = (
     "ppd_hpi_count_correlation",
     "ppd_hpi_count_ratio_by_year",
     "ppd_hpi_median_ratio_by_year",
+)
+
+STABILITY_RULES = ("crime_total_step_at_vocabulary_change",)
+
+# The months the published vocabulary changed, read off the authored eras rather than
+# written out, so a third change is picked up by adding it there. Era 1 is the original
+# publication and opens no break.
+VOCABULARY_BREAKS = tuple(
+    ERA_FIRST_MONTH[era] for era in sorted(ERA_FIRST_MONTH) if era > 1
 )
 
 # UTC by construction rather than by whatever the driver's clock is set to, as
@@ -110,12 +135,27 @@ if run is None:
 
 RENT_REBUILT = plan.rebuilt_this_run("fact_area_month_rent", "gold")
 CALENDAR_REBUILT = plan.rebuilt_this_run("dim_date", "gold")
+CRIME_REBUILT = plan.rebuilt_this_run("fact_area_month_crime_total", "gold")
+
+# A rule that did not run has to be absent from what the run promised, or the
+# completeness check at the end reports a gate as a fault.
+CRIME_RULES_RUN = CRIME_REBUILT and bool(VOCABULARY_BREAKS)
+EXPECTED_RULES = RECONCILIATION_RULES + (STABILITY_RULES if CRIME_RULES_RUN else ())
 
 print(f"rent yield          : {'runs' if RENT_REBUILT else 'skipped, rent did not rebuild'}")
 print(
     "owning against rent : "
     + ("runs" if RENT_REBUILT and CALENDAR_REBUILT else "skipped, an input did not rebuild")
 )
+print(
+    "crime stability     : "
+    + (
+        f"runs, {len(VOCABULARY_BREAKS)} vocabulary changes"
+        if CRIME_RULES_RUN
+        else "skipped, the crime total did not rebuild"
+    )
+)
+print(f"rules promised      : {len(EXPECTED_RULES)} names")
 
 # COMMAND ----------
 
@@ -463,6 +503,75 @@ if RENT_REBUILT and CALENDAR_REBUILT:
         .orderBy(F.desc("owning_premium"))
         .limit(20)
     )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4. Does a crime total cross the vocabulary changes unmoved
+# MAGIC
+# MAGIC Police.uk changed its categories at 2011-09 and 2013-05, both times by splitting an
+# MAGIC existing type into new ones that sum back to it. A total across every type is
+# MAGIC therefore comparable across the whole series while any one type is not, and that is
+# MAGIC what makes `dim_crime_type` usable at all: the district total three independent
+# MAGIC paths agree on at 67,886,868 spans both changes.
+# MAGIC
+# MAGIC Measured at the England and Wales composite, which is the one composite the crime
+# MAGIC source can fill, and excluding anti-social behaviour, which both type facts refuse
+# MAGIC by check constraint. The code comes from the module that owns area codes, so this
+# MAGIC and the fact load cannot come to disagree about which composite they mean.
+# MAGIC
+# MAGIC 187 rows read and compared in Python. One row per month at one area, so collecting
+# MAGIC it costs less than a second aggregate would.
+# MAGIC
+# MAGIC `window_step` returns nothing where a change falls within three months of either
+# MAGIC end of the series. Those are counted and printed, the same way a year with no
+# MAGIC published volume is handled above.
+
+# COMMAND ----------
+
+if CRIME_RULES_RUN:
+    crime_total = {
+        row["month_start_date"]: row["crime_count_excl_asb"]
+        for row in spark.table(FACT_CRIME_TOTAL)  # noqa: F821
+        .where(F.col("area_code") == F.lit(COMPOSITE_AREA_CODE))
+        .select("month_start_date", "crime_count_excl_asb")
+        .collect()
+    }
+
+    unmeasurable = []
+    measured_steps = []
+    for break_month in VOCABULARY_BREAKS:
+        measured = window_step(crime_total, break_month)
+        if measured is None:
+            unmeasurable.append(str(break_month))
+            continue
+        results.append(
+            evaluate(
+                "crime_total_step_at_vocabulary_change",
+                abs(measured.log_ratio),
+                scope=str(break_month),
+                detail=(
+                    f"ratio {measured.after / measured.before:.4f}, "
+                    f"{measured.before:,.0f} to {measured.after:,.0f} records per month "
+                    f"over {STEP_WINDOW} months either side at {COMPOSITE_AREA_CODE}"
+                ),
+            )
+        )
+        measured_steps.append(
+            {
+                "vocabulary_change": str(break_month),
+                "months_before": round(measured.before),
+                "months_after": round(measured.after),
+                "ratio": round(measured.after / measured.before, 4),
+                "abs_log_ratio": round(abs(measured.log_ratio), 4),
+            }
+        )
+
+    print(f"{len(crime_total)} months at {COMPOSITE_AREA_CODE}, "
+          f"{min(crime_total)} to {max(crime_total)}")
+    print(f"{len(measured_steps)} of {len(VOCABULARY_BREAKS)} changes measurable"
+          f"{', too close to an end: ' + ', '.join(unmeasurable) if unmeasurable else ''}")
+    display(measured_steps)  # noqa: F821
 
 # COMMAND ----------
 

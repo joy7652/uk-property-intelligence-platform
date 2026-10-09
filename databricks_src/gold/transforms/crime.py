@@ -58,6 +58,7 @@ from databricks_src.gold.transforms.conformance import (
     assert_grain_unique,
 )
 from databricks_src.gold.transforms.dim_area import ENGLAND_AND_WALES
+from databricks_src.gold.transforms.dim_crime_type import ANTI_SOCIAL_BEHAVIOUR
 from databricks_src.gold.transforms.dim_lsoa import is_england_or_wales
 
 SUBJECT = "crime resolution"
@@ -70,8 +71,6 @@ SUBJECT = "crime resolution"
 COMPOSITE_AREA_CODE = ENGLAND_AND_WALES
 
 DISTRICT_LEVEL = "district"
-
-ANTI_SOCIAL_BEHAVIOUR = "Anti-social behaviour"
 
 LSOA_COLUMN = "lsoa_code"
 MONTH_COLUMN = "month_start_date"

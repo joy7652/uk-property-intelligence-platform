@@ -30,6 +30,7 @@ from databricks_src.gold.transforms.dim_lsoa import (
     VINTAGES,
     assert_districts_conform,
     assert_maps_consistent,
+    boundary_vintage,
     measure_small_areas,
     transform_dim_lsoa,
 )
@@ -255,6 +256,25 @@ def test_share_and_assignment_agree(spark, code):
 ])
 def test_vintage_follows_which_columns_carry_the_code(spark, code, vintage):
     assert loaded(spark)[code]["boundary_vintage"] == vintage
+
+
+@pytest.mark.parametrize("in_2011, in_2021, vintage", [
+    (True, True, BOTH),
+    (True, False, ONLY_2011),
+    (False, True, ONLY_2021),
+    (False, False, None),
+])
+def test_vintage_is_null_where_neither_column_carries_the_code(
+    spark, in_2011, in_2021, vintage
+):
+    """Asserted on the expression rather than through the transform, because the
+    neither case cannot reach it: such a row also carries no district, and
+    assert_every_area_has_postcodes aborts on that first. Null rather than a default,
+    so the NOT NULL column rejects the row instead of labelling it 2021-only."""
+    frame = spark.createDataFrame(
+        [(in_2011, in_2021)], "in_2011 boolean, in_2021 boolean"
+    )
+    assert frame.select(boundary_vintage()).collect()[0][0] == vintage
 
 
 def test_a_2011_exclusive_code_carries_crime_and_no_price(spark):

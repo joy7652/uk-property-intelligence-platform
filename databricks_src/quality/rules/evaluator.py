@@ -20,13 +20,20 @@ Results key on pipeline_run.run_id, so a rule evaluated inside a load and a rule
 evaluated by a standalone check are recorded the same way and join to the same run
 table.
 
+window_step lives beside the rules it feeds because it is how one rule's observed
+value is obtained, and a measurement defined away from the bound it is compared
+against is free to drift from it. It is pure Python, so it is tested without a
+session and runs in CI on any dialect.
+
 No I/O here. The frame is built and written by the notebook that opened the run.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from pyspark.sql.types import (
     BooleanType,
@@ -142,7 +149,47 @@ _RECONCILIATION = (
     ),
 )
 
-_ALL: tuple[Rule, ...] = _RECONCILIATION
+# A published vocabulary change splits an existing category into new ones that sum back
+# to it, so a total across every category should cross the break unmoved while any one
+# category's series does not. Every cross-era crime figure rests on that, including the
+# district total three independent paths agree on at 67,886,868, and until phase 5.4.1
+# nothing measured it.
+#
+# Measured at the England and Wales composite on 08-10-2026, excluding anti-social
+# behaviour: the three-month mean moves 0.969 across 2011-09 and 1.054 across 2013-05,
+# which is a log ratio of 0.0318 and 0.0525. Those sit at the 57th and 36th percentile of
+# the moves the same series makes in other Septembers and Mays, whose largest are 0.0599
+# and 0.1591. Comparing a September against other Septembers is what makes the figure
+# readable: both breaks fall on seasonal turning points, and against all months rather
+# than the same month the seasonal component dominates.
+#
+# The ceiling is a drift bound and not a seasonal one. Both windows are settled history,
+# so the value moves only if a Silver regression loses records in one era or the
+# publisher restates. 0.10 absorbs a restatement of a few percent and still catches a
+# doubling, and it should tighten toward 0.07 once several runs have reported, as the
+# correlation floor above should.
+#
+# Not registered for the conformed groups, whose own steps run 0.1487 to 0.2475 against
+# same-month ceilings of 0.1981 to 0.2711. A rule sitting that close to its bound on the
+# first run fails for a reason nobody can act on, and the notebook raises on any breach.
+_STABILITY = (
+    Rule(
+        "crime_total_step_at_vocabulary_change",
+        "distribution",
+        None,
+        0.10,
+        True,
+        "absolute log ratio of the three-month mean crime count from a published "
+        "vocabulary change to the three-month mean before it, at the England and Wales "
+        "composite, excluding anti-social behaviour. Scope is the month the change took "
+        "effect. A split moves offences between labels and leaves the total alone, so a "
+        "step here says the eras are not comparable and every series crossing them "
+        "inherits it. Measured 0.0318 at 2011-09 and 0.0525 at 2013-05 against "
+        "same-month maxima of 0.0599 and 0.1591.",
+    ),
+)
+
+_ALL: tuple[Rule, ...] = _RECONCILIATION + _STABILITY
 
 RULES: dict[str, Rule] = {rule.name: rule for rule in _ALL}
 
@@ -198,6 +245,76 @@ def assert_registry_consistent() -> None:
 
 
 assert_registry_consistent()
+
+
+# --------------------------------------------------------------------------- #
+# Measurement
+# --------------------------------------------------------------------------- #
+
+# Periods either side of the point being measured. Three months absorbs one unusual
+# month without spanning enough of the year to carry the season with it.
+STEP_WINDOW = 3
+
+
+class WindowStep(NamedTuple):
+    """The means either side of a point, and the log ratio between them.
+
+    Both means are carried rather than the ratio alone, so a caller can record what the
+    figure was built from without summing the series a second time and arriving at
+    something slightly different.
+    """
+
+    before: float
+    after: float
+    log_ratio: float
+
+
+def window_step(
+    series: dict[dt.date, float], at: dt.date, window: int = STEP_WINDOW
+) -> WindowStep | None:
+    """Compare the `window` periods from `at` against the `window` periods before it.
+
+    A log ratio rather than a difference, so a step is comparable across a series whose
+    level moves, and symmetric: a halving and a doubling are the same distance from
+    unmoved in opposite directions.
+
+    Args:
+        series: period start to value, in any order. Keys are sorted here.
+        at: the first period on the later side. It belongs to `after`, not `before`.
+        window: periods each side.
+
+    Returns:
+        None where the comparison cannot be made rather than a figure standing in for
+        one: `at` absent, fewer than `window` periods either side, or a non-positive
+        value anywhere in either window, which no logarithm describes. A caller counts
+        those and reports them, so a window that stops being measurable is visible.
+
+    Raises:
+        ValueError: where window is below one, which compares nothing against nothing.
+    """
+    if window < 1:
+        raise ValueError(f"rules: window_step needs a window of at least 1, got {window}")
+
+    periods = sorted(series)
+    if at not in series:
+        return None
+
+    index = periods.index(at)
+    if index < window or index + window > len(periods):
+        return None
+
+    before = [series[period] for period in periods[index - window : index]]
+    after = [series[period] for period in periods[index : index + window]]
+    if min(before) <= 0 or min(after) <= 0:
+        return None
+
+    mean_before = sum(before) / window
+    mean_after = sum(after) / window
+    return WindowStep(
+        before=mean_before,
+        after=mean_after,
+        log_ratio=math.log(mean_after / mean_before),
+    )
 
 
 # --------------------------------------------------------------------------- #
