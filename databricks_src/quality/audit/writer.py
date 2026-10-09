@@ -37,6 +37,13 @@ identifies the run. Both vocabularies are closed and each name carries the layer
 belongs to, so a run naming one layer's vocabulary under the other's label fails at
 construction rather than landing a row nothing will find.
 
+Metric names carry a layer too, for the same reason and with the same consequence.
+source_rows means rows read from Bronze by a Silver transform and gold_rows means rows
+a Gold transform produced; either one written under the other layer puts two different
+measurements into one series, and a reader joining to the registry sees a single name
+with one meaning. The pairing is projected from the groups below, so a metric is paired
+by belonging to one, and measure refuses a name its run's layer does not admit.
+
 FRESHNESS_BOUND_DAYS is empty of values by design. Each bound is set from what the
 first recorded runs report, not from a publisher's release calendar. Until a source
 has a bound, its freshness value is recorded and nothing is asserted.
@@ -68,6 +75,7 @@ SCHEMA = "quality"
 
 RUN_TABLE = f"{CATALOG}.{SCHEMA}.pipeline_run"
 METRIC_TABLE = f"{CATALOG}.{SCHEMA}.pipeline_metric"
+REGISTRY_TABLE = f"{CATALOG}.{SCHEMA}.metric_registry"
 
 STARTED = "started"
 SUCCEEDED = "succeeded"
@@ -167,6 +175,11 @@ METRIC_COLUMNS: tuple[str, ...] = (
 
 VALUE_COLUMNS: tuple[str, ...] = ("value_numeric", "value_text", "value_date")
 
+# The registry as a table. kind_meaning is denormalised onto the row: seven values
+# in a table of their own would be a second join for a reader who needs the kind
+# every time they need the name.
+REGISTRY_COLUMNS: tuple[str, ...] = ("metric", "kind", "kind_meaning", "note")
+
 _TIMESTAMP_COLUMNS: frozenset[str] = frozenset(
     {"started_ts", "ended_ts", "ingestion_ts"}
 )
@@ -184,6 +197,10 @@ _RUN_NOT_NULL: frozenset[str] = frozenset(
 )
 
 _METRIC_NOT_NULL: frozenset[str] = frozenset({"run_id", "metric"})
+
+# Every column is populated on every row: the registry cannot hold a name without
+# a kind, and a kind without a meaning fails at import.
+_REGISTRY_NOT_NULL: frozenset[str] = frozenset(REGISTRY_COLUMNS)
 
 
 # --------------------------------------------------------------------------- #
@@ -430,12 +447,43 @@ _ORCHESTRATION = (
     ),
 )
 
-_ALL: tuple[Metric, ...] = (
+# Metrics recorded by a source's own run. Each group above says which source writes
+# it; what they share is that the run writing them names a Bronze source.
+_SOURCE_METRICS: tuple[Metric, ...] = (
     _COMMON + _RELEASE_PANEL + _BOE + _HPI + _PPD + _DOOGAL + _ONS + _POLICE
-    + _COVERAGE + _GOLD + _ORCHESTRATION
+    + _COVERAGE
+)
+
+# Which layer each metric may be recorded at, enforced in AuditRun.measure. LAYERS_OF
+# does this for run names and the reasoning carries over: a Gold run recording
+# source_rows would put a count of Bronze rows into a series that means rows read from
+# Bronze by a Silver transform, and no reader of pipeline_metric could tell the two
+# apart afterwards. Membership in METRICS is all that measure checked, so any
+# registered name could be written by any run.
+#
+# Source metrics take the pairing their run names take, because a source opens a run
+# at both layers. Tightening that to one layer per metric would need reading what the
+# Bronze-layer runs actually record, which is not stated here.
+#
+# Gold covers the checks as well as the loads: cross_source_verification runs at
+# layer gold and records dimension_rows_with_facts like any fact load.
+_METRIC_LAYER_GROUPS: tuple[tuple[tuple[Metric, ...], tuple[str, ...]], ...] = (
+    (_SOURCE_METRICS, ("bronze", "silver")),
+    (_GOLD, ("gold",)),
+    (_ORCHESTRATION, ("bronze",)),
+)
+
+# Projected from the pairing, so a metric added to a group is paired by belonging to
+# one and an unpaired metric cannot exist.
+_ALL: tuple[Metric, ...] = tuple(
+    metric for group, _ in _METRIC_LAYER_GROUPS for metric in group
 )
 
 METRICS: dict[str, Metric] = {metric.name: metric for metric in _ALL}
+
+LAYERS_OF_METRIC: dict[str, tuple[str, ...]] = {
+    metric.name: layers for group, layers in _METRIC_LAYER_GROUPS for metric in group
+}
 
 # Days between the newest date the content carries and the run, above which the load
 # aborts. Every bound starts unset: it is read off what the first runs report, not
@@ -517,6 +565,38 @@ def assert_registry_consistent() -> None:
             f"{layerless}"
         )
 
+    # The same three checks again, for the metric axis. LAYERS_OF_METRIC is projected
+    # from the groups, so the first can only fail if a metric is added to METRICS by
+    # another route; it is asserted rather than assumed for that reason.
+    unpaired_metrics = sorted(set(METRICS) - set(LAYERS_OF_METRIC))
+    if unpaired_metrics:
+        raise ValueError(
+            f"audit: metrics with no layer paired to them: {unpaired_metrics}. Add "
+            "them to a group in _METRIC_LAYER_GROUPS rather than to _ALL."
+        )
+
+    stray_metrics = sorted(
+        {
+            name
+            for name, layers in LAYERS_OF_METRIC.items()
+            for layer in layers
+            if layer not in LAYERS
+        }
+    )
+    if stray_metrics:
+        raise ValueError(
+            f"audit: metrics paired to a layer outside {list(LAYERS)}: {stray_metrics}"
+        )
+
+    layerless_metrics = sorted(
+        name for name, layers in LAYERS_OF_METRIC.items() if not layers
+    )
+    if layerless_metrics:
+        raise ValueError(
+            f"audit: metrics paired to no layer, so no run could record them: "
+            f"{layerless_metrics}"
+        )
+
 
 assert_registry_consistent()
 
@@ -553,11 +633,24 @@ def metric_table_ddl() -> str:
     )
 
 
+def registry_table_ddl() -> str:
+    """Column definitions for metric_registry."""
+    return ",\n    ".join(
+        _column_ddl(name, _REGISTRY_NOT_NULL) for name in REGISTRY_COLUMNS
+    )
+
+
 def status_check() -> str:
     """CHECK expression for the status domain, generated from the same constants the
     writer sets, so the table cannot reject a status the code produces."""
     values = ", ".join(f"'{value}'" for value in STATUSES)
     return f"status IN ({values})"
+
+
+def kind_check() -> str:
+    """CHECK expression for the kind domain, generated from KINDS."""
+    values = ", ".join(f"'{value}'" for value in KINDS)
+    return f"kind IN ({values})"
 
 
 def open_run_check() -> str:
@@ -605,6 +698,16 @@ METRIC_COMMENT = (
     "this module, which carries what each one means."
 )
 
+REGISTRY_COMMENT = (
+    "One row per registered metric name, projected from the registry in "
+    "databricks_src/quality/audit/writer.py and replaced whole on every setup run. It "
+    "carries no history: a name dropped from the registry leaves here while its "
+    "recorded values stay in pipeline_metric, which is what lets a reader tell a "
+    "series that was discontinued from one that was never written. kind is carried "
+    "here rather than on the metric rows so it joins at read time and applies to "
+    "everything already recorded."
+)
+
 
 def sql_literal(value: str) -> str:
     """A single-quoted SQL string literal.
@@ -626,6 +729,8 @@ METRIC_CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("exactly_one_value", one_value_check()),
     ("denominator_needs_a_count", denominator_check()),
 )
+
+REGISTRY_CONSTRAINTS: tuple[tuple[str, str], ...] = (("kind_known", kind_check()),)
 
 
 # --------------------------------------------------------------------------- #
@@ -655,6 +760,9 @@ def _as_row_values(
 
     bool is rejected rather than routed. It is a subclass of int, so a flag would
     land in value_numeric as 0 or 1 and read as a count.
+
+    The layer is not checked here. It belongs to the run rather than to the value, so
+    AuditRun.measure holds that check, where self.layer already is.
     """
     if metric not in METRICS:
         raise ValueError(
@@ -780,7 +888,20 @@ class AuditRun:
         scope: str | None = None,
         denominator: float | None = None,
     ) -> object:
-        """Buffer a metric and return the value, so a print can wrap the call."""
+        """Buffer a metric and return the value, so a print can wrap the call.
+
+        Raises:
+            ValueError: where the metric is not registered, the value has no column,
+                or the metric is not recorded at this run's layer.
+        """
+        if metric in LAYERS_OF_METRIC and self.layer not in LAYERS_OF_METRIC[metric]:
+            raise ValueError(
+                f"audit: {metric!r} is recorded at "
+                f"{list(LAYERS_OF_METRIC[metric])}, not {self.layer!r}. A Gold run "
+                "records gold_rows and a Silver run records silver_rows; writing one "
+                "under the other layer puts two different measurements into one "
+                "series."
+            )
         self.buffered.append(_as_row_values(metric, value, scope, denominator))
         return value
 
@@ -959,6 +1080,26 @@ def metric_frame_schema() -> StructType:
             StructField("value_date", DateType(), nullable=True),
             StructField("denominator", DoubleType(), nullable=True),
         ]
+    )
+
+
+def registry_rows() -> list[tuple[str, str, str, str]]:
+    """The registry as rows, in REGISTRY_COLUMNS order."""
+    return [
+        (metric.name, metric.kind, KINDS[metric.kind], metric.note)
+        for metric in METRICS.values()
+    ]
+
+
+def registry_frame_schema() -> StructType:
+    """Write schema for the registry, in REGISTRY_COLUMNS order.
+
+    Generated rather than declared column by column, unlike the metric schema: every
+    column is a string and every column is populated, so there is nothing per-column
+    to state.
+    """
+    return StructType(
+        [StructField(name, StringType(), nullable=False) for name in REGISTRY_COLUMNS]
     )
 
 

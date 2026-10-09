@@ -18,11 +18,19 @@ from pyspark.sql.types import DateType, StringType, StructField, StructType
 
 from databricks_src.gold.transforms.dim_crime_type import (
     ANTI_SOCIAL_BEHAVIOUR,
+    COMPOSITION_CHANGED,
+    CONFORMANCE_STATUSES,
+    CONFORMED,
     CRIME_TYPES,
     ERA_FIRST_MONTH,
     GOLD_COLUMNS,
+    GROUP_LABEL,
     MEASURED_COLUMNS,
+    PREDECESSOR_CEASED_COLUMN,
+    STABLE,
+    STATUS_FLAG_COLUMNS,
     CrimeTypeEntry,
+    assert_groups_labelled,
     assert_map_consistent,
     crime_types,
     era_months,
@@ -41,6 +49,28 @@ LATEST_MONTH = date(2026, 6, 1)
 
 # Recorded in the phase 3.1 exploration notebook as crime_distinct_types.
 MEASURED_TYPE_COUNT = 16
+
+# The conformance answer for all sixteen rows, written out rather than derived from the
+# map. The derivation is what is under test, and this is the figure phase 5.4 is owed.
+COMPOSITION_CHANGED_TYPES = {"Other crime", "Other theft"}
+CONFORMED_TYPES = {
+    "Violent crime",
+    "Violence and sexual offences",
+    "Public disorder and weapons",
+    "Public order",
+    "Possession of weapons",
+}
+STABLE_TYPE_COUNT = 9
+
+# What each conformed group reports under, and which rows sit in it.
+REPORTING_GROUPS: dict[str, set[str]] = {
+    "Violence and sexual offences": {"Violent crime", "Violence and sexual offences"},
+    "Public order and weapons": {
+        "Public disorder and weapons",
+        "Public order",
+        "Possession of weapons",
+    },
+}
 
 CRIME_SCHEMA = StructType(
     [
@@ -136,6 +166,23 @@ def test_eras_open_in_order():
     assert months == sorted(months)
 
 
+def test_group_labels_are_consistent():
+    """Runs at import too, for the same reason assert_map_consistent is tested here."""
+    assert_groups_labelled()
+
+
+def test_conformance_vocabulary_matches_the_table():
+    """Constrained in the DDL, so a value here the table rejects aborts the write
+    rather than this module."""
+    assert set(CONFORMANCE_STATUSES) == {"stable", "conformed", "composition_changed"}
+
+
+def test_the_fixture_ceases_exactly_the_types_the_labels_root():
+    """What every conformance test below rests on. A label rooted at a type that never
+    ceases is never exercised, and a ceased type with no label aborts them all."""
+    assert set(CEASED) == set(GROUP_LABEL)
+
+
 def test_derived_maps_cover_the_literal():
     vocabulary = ((1, date(2010, 12, 1), None, ("A", "B")),)
     assert crime_types(vocabulary) == {
@@ -214,6 +261,16 @@ def test_predecessor_newer_than_its_successor_is_rejected():
         assert_map_consistent(vocabulary)
 
 
+def test_a_label_for_an_unmapped_type_is_rejected():
+    with pytest.raises(ValueError, match="not a type in the map"):
+        assert_groups_labelled(labels={"Cyber fraud": "Fraud"})
+
+
+def test_a_label_for_a_type_nothing_was_split_out_of_is_rejected():
+    with pytest.raises(ValueError, match="nothing was split out of"):
+        assert_groups_labelled(labels={"Burglary": "Burglary and theft"})
+
+
 # --------------------------------------------------------------------------- #
 # The dimension
 # --------------------------------------------------------------------------- #
@@ -288,6 +345,75 @@ def test_ceased_predecessors_end_before_their_successors_begin(spark):
 
 
 # --------------------------------------------------------------------------- #
+# Conformance
+# --------------------------------------------------------------------------- #
+
+
+def test_every_row_carries_the_status_its_lineage_implies(spark):
+    rows = loaded(spark)
+    for name, row in rows.items():
+        if name in COMPOSITION_CHANGED_TYPES:
+            expected = COMPOSITION_CHANGED
+        elif name in CONFORMED_TYPES:
+            expected = CONFORMED
+        else:
+            expected = STABLE
+        assert row["conformance_status"] == expected, name
+
+
+def test_a_predecessor_that_still_publishes_changed_composition(spark):
+    """Its label survived both breaks and its contents did not, which is the case no
+    grouping repairs. Measured at the composite in 5.4.1: the two together lose 58
+    percent of their volume across 2011-09, against a total that does not move."""
+    rows = loaded(spark)
+    changed = {n for n, r in rows.items() if r["conformance_status"] == COMPOSITION_CHANGED}
+    assert changed == COMPOSITION_CHANGED_TYPES
+    for name in changed:
+        assert rows[name]["is_current"], name
+
+
+def test_a_predecessor_that_ceased_and_its_successors_are_conformed(spark):
+    """A predecessor that stopped handed its whole volume over, so it and its
+    successors are one category under several names."""
+    rows = loaded(spark)
+    conformed = {n for n, r in rows.items() if r["conformance_status"] == CONFORMED}
+    assert conformed == CONFORMED_TYPES
+
+
+def test_the_rest_are_stable(spark):
+    rows = loaded(spark)
+    stable = {n for n, r in rows.items() if r["conformance_status"] == STABLE}
+    assert len(stable) == STABLE_TYPE_COUNT
+    assert stable == set(CRIME_TYPES) - CONFORMED_TYPES - COMPOSITION_CHANGED_TYPES
+
+
+def test_a_conformed_group_reports_under_one_name(spark):
+    rows = loaded(spark)
+    for label, members in REPORTING_GROUPS.items():
+        under = {n for n, r in rows.items() if r["reporting_crime_type"] == label}
+        assert under == members, label
+
+
+def test_only_a_conformed_row_reports_under_another_name(spark):
+    """The table's own constraint, asserted on the frame."""
+    for name, row in loaded(spark).items():
+        if row["reporting_crime_type"] != name:
+            assert row["conformance_status"] == CONFORMED, name
+
+
+def test_neither_conformance_column_is_null(spark):
+    """Both are NOT NULL, and a null would reach DISTINCTCOUNT as a blank member."""
+    for name, row in loaded(spark).items():
+        assert row["conformance_status"] is not None, name
+        assert row["reporting_crime_type"] is not None, name
+
+
+def test_the_join_scaffolding_does_not_reach_the_output(spark):
+    columns = set(dimension(spark).columns)
+    assert not columns & {PREDECESSOR_CEASED_COLUMN, *STATUS_FLAG_COLUMNS}
+
+
+# --------------------------------------------------------------------------- #
 # Guards
 # --------------------------------------------------------------------------- #
 
@@ -346,3 +472,35 @@ def test_continued_predecessor_may_overlap_its_successors(spark):
         rows["Other crime"]["last_published_month"]
         > rows["Shoplifting"]["first_published_month"]
     )
+
+
+def test_a_ceased_group_with_no_label_aborts(spark):
+    """Which types have ceased is measured, so a release retiring one GROUP_LABEL does
+    not cover puts its whole group under null, into a NOT NULL column."""
+    source = spark.createDataFrame(
+        crime_rows(ceased={**CEASED, "Other theft": date(2013, 4, 1)}), CRIME_SCHEMA
+    )
+    with pytest.raises(ValueError, match="no authored label"):
+        dimension_from(source)
+
+
+def test_a_type_that_both_ceased_and_kept_splitting_aborts(spark):
+    """Other crime ceasing in 2011-08 leaves Other theft carved out of something that
+    stopped and still the parent of a 2013 split. Two conditions, and the branch order
+    would pick one of them silently."""
+    source = spark.createDataFrame(
+        crime_rows(ceased={**CEASED, "Other crime": date(2011, 8, 1)}), CRIME_SCHEMA
+    )
+    with pytest.raises(ValueError, match="more than one conformance condition"):
+        dimension_from(source)
+
+
+def test_a_stale_cease_aborts_before_the_derivation_reads_it(spark):
+    """The derivation reads is_current, which one thin release could move. The overlap
+    guard runs first for exactly that reason: Other crime absent from the newest month
+    alone is not a complete split, and its successors opened in 2011."""
+    source = spark.createDataFrame(
+        crime_rows(ceased={**CEASED, "Other crime": date(2026, 5, 1)}), CRIME_SCHEMA
+    )
+    with pytest.raises(ValueError, match="ceased predecessors overlap"):
+        dimension_from(source)

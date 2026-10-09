@@ -8,9 +8,12 @@
 # MAGIC
 # MAGIC Run after `01_create_schemas`. Independent of `02_create_bronze_volumes`.
 # MAGIC
-# MAGIC Three tables. `pipeline_run` takes one row per notebook execution whatever the
+# MAGIC Four tables. `pipeline_run` takes one row per notebook execution whatever the
 # MAGIC outcome; `pipeline_metric` takes one row per measured value, keyed on that run;
 # MAGIC `rule_result` takes one row per threshold rule evaluated, keyed the same way.
+# MAGIC `metric_registry` is the metric name registry as a table, so a reader of the
+# MAGIC recorded data can join to what a name means, and so a registered name that has
+# MAGIC never been written is visible as an absence rather than as nothing at all.
 # MAGIC The first two are written by `quality/audit/writer.py`, which every Silver
 # MAGIC notebook imports and every Gold notebook does. The third is defined by
 # MAGIC `quality/rules/evaluator.py`, which also holds the bounds each rule is checked
@@ -33,6 +36,10 @@
 # MAGIC `IF NOT EXISTS` will not alter a table that already exists. A column change
 # MAGIC needs the table dropped first, by hand: a bare `DROP` committed in a
 # MAGIC re-runnable script destroys the history on every run.
+# MAGIC
+# MAGIC `metric_registry` is the exception and is replaced whole. It holds only what
+# MAGIC the registry currently declares, so a replace destroys no history, and a copy
+# MAGIC left behind by an earlier edit would be worse than no copy at all.
 
 # COMMAND ----------
 
@@ -43,10 +50,16 @@ from databricks_src.quality.audit.writer import (
     METRIC_CONSTRAINTS,
     METRIC_TABLE,
     METRICS,
+    REGISTRY_COMMENT,
+    REGISTRY_CONSTRAINTS,
+    REGISTRY_TABLE,
     RUN_COMMENT,
     RUN_CONSTRAINTS,
     RUN_TABLE,
     metric_table_ddl,
+    registry_frame_schema,
+    registry_rows,
+    registry_table_ddl,
     run_table_ddl,
     sql_literal,
 )
@@ -74,6 +87,7 @@ from databricks_src.quality.rules.evaluator import (
 # MAGIC DROP TABLE uk_property_intel.quality.pipeline_run;
 # MAGIC DROP TABLE uk_property_intel.quality.pipeline_metric;
 # MAGIC DROP TABLE uk_property_intel.quality.rule_result;
+# MAGIC DROP TABLE uk_property_intel.quality.metric_registry;
 # MAGIC ```
 
 # COMMAND ----------
@@ -112,6 +126,27 @@ print(f"{RUN_TABLE}\n{METRIC_TABLE}\n{RULE_TABLE}")
 
 # COMMAND ----------
 
+# Replaced rather than created, since the table is a projection of the registry in
+# the writer and holds nothing a run recorded. A name dropped from the registry has
+# to leave here while the values recorded under it stay in pipeline_metric.
+spark.sql(  # noqa: F821
+    f"""
+    CREATE OR REPLACE TABLE {REGISTRY_TABLE} (
+    {registry_table_ddl()}
+    )
+    USING DELTA
+    COMMENT {sql_literal(REGISTRY_COMMENT)}
+    """
+)
+
+spark.createDataFrame(  # noqa: F821
+    registry_rows(), schema=registry_frame_schema()
+).write.mode("append").saveAsTable(REGISTRY_TABLE)
+
+print(f"{REGISTRY_TABLE}: {len(registry_rows())} names")
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Apply CHECK constraints
 # MAGIC
@@ -130,6 +165,7 @@ TABLES = (
     (RUN_TABLE, RUN_CONSTRAINTS),
     (METRIC_TABLE, METRIC_CONSTRAINTS),
     (RULE_TABLE, RULE_CONSTRAINTS),
+    (REGISTRY_TABLE, REGISTRY_CONSTRAINTS),
 )
 
 for table, constraints in TABLES:
@@ -236,7 +272,7 @@ for kind, meaning in RULE_KINDS.items():
 # MAGIC %md
 # MAGIC ## Read shape
 # MAGIC
-# MAGIC Empty on first run. These are the two queries the Phase 5 dashboard is built
+# MAGIC Empty on first run. These are the queries the Phase 5 dashboard is built
 # MAGIC from, kept here so the table is verified against its intended read rather than
 # MAGIC against its definition alone.
 
@@ -305,3 +341,21 @@ for kind, meaning in RULE_KINDS.items():
 # MAGIC JOIN uk_property_intel.quality.pipeline_run r USING (run_id)
 # MAGIC WHERE m.metric = 'newest_data_date'
 # MAGIC ORDER BY r.source, r.started_ts DESC;
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Registered against recorded. A name at zero runs is the case no query
+# MAGIC -- over pipeline_metric alone can show, because the row that would carry it
+# MAGIC -- was never written.
+# MAGIC SELECT g.kind,
+# MAGIC        g.metric,
+# MAGIC        count(DISTINCT m.run_id) AS runs,
+# MAGIC        max(r.started_ts) AS last_recorded
+# MAGIC FROM uk_property_intel.quality.metric_registry g
+# MAGIC LEFT JOIN uk_property_intel.quality.pipeline_metric m
+# MAGIC        ON m.metric = g.metric
+# MAGIC LEFT JOIN uk_property_intel.quality.pipeline_run r
+# MAGIC        ON r.run_id = m.run_id
+# MAGIC GROUP BY g.kind, g.metric
+# MAGIC ORDER BY runs, g.kind, g.metric;

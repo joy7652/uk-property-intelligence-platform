@@ -13,6 +13,7 @@ is the only place the two declarations can be shown to match.
 from __future__ import annotations
 
 import math
+from datetime import date
 
 import pytest
 
@@ -22,6 +23,7 @@ from databricks_src.quality.rules.evaluator import (
     RULE_COLUMNS,
     RULE_CONSTRAINTS,
     RULES,
+    STEP_WINDOW,
     assert_registry_consistent,
     assert_rules_reported,
     bounds_present_check,
@@ -30,12 +32,14 @@ from databricks_src.quality.rules.evaluator import (
     rule_frame_schema,
     rule_table_ddl,
     verdict_check,
+    window_step,
 )
 
 SPARK_TO_DDL = {"StringType": "STRING", "DoubleType": "DOUBLE", "BooleanType": "BOOLEAN"}
 
 A_RULE = "ppd_hpi_count_correlation"
 A_SCOPED_RULE = "ppd_hpi_count_ratio_by_year"
+A_STABILITY_RULE = "crime_total_step_at_vocabulary_change"
 
 
 # --------------------------------------------------------------------------- #
@@ -76,6 +80,177 @@ def test_every_bound_is_a_finite_number():
         for bound in (rule.lower, rule.upper)
         if bound is not None
     )
+
+
+# --------------------------------------------------------------------------- #
+# The windowed step
+# --------------------------------------------------------------------------- #
+
+# The monthly crime count at the England and Wales composite, excluding anti-social
+# behaviour, around both published vocabulary changes. Read off the cluster on
+# 08-10-2026. The gap between 2011-12 and 2012-11 is deliberate: the window is
+# positional over the sorted keys, so this doubles as the fixture for that.
+CRIME_MONTHS: dict[date, float] = {
+    date(2011, 3, 1): 336_582,
+    date(2011, 4, 1): 328_447,
+    date(2011, 5, 1): 343_523,
+    date(2011, 6, 1): 329_038,
+    date(2011, 7, 1): 336_997,
+    date(2011, 8, 1): 330_958,
+    date(2011, 9, 1): 312_785,
+    date(2011, 10, 1): 329_192,
+    date(2011, 11, 1): 323_844,
+    date(2011, 12, 1): 299_803,
+    date(2012, 11, 1): 303_468,
+    date(2012, 12, 1): 281_236,
+    date(2013, 1, 1): 281_478,
+    date(2013, 2, 1): 267_140,
+    date(2013, 3, 1): 282_165,
+    date(2013, 4, 1): 283_001,
+    date(2013, 5, 1): 287_292,
+    date(2013, 6, 1): 287_906,
+    date(2013, 7, 1): 301_973,
+    date(2013, 8, 1): 296_804,
+    date(2013, 9, 1): 280_324,
+    date(2013, 10, 1): 294_765,
+}
+
+# What the cluster reported for each change: the mean either side and the absolute log
+# ratio between them. The bound was set from these, so they are the figures a drift in
+# the measurement would move.
+MEASURED_STEPS: dict[date, tuple[int, int, float]] = {
+    date(2011, 9, 1): (332_331, 321_940, 0.0318),
+    date(2013, 5, 1): (277_435, 292_390, 0.0525),
+}
+
+
+def flat(value: float = 100.0, months: int = 8) -> dict[date, float]:
+    return {date(2020, month, 1): value for month in range(1, months + 1)}
+
+
+def stepped(before: float, after: float) -> dict[date, float]:
+    """Three months at one level, then three at another."""
+    return {
+        **{date(2020, month, 1): before for month in range(1, 4)},
+        **{date(2020, month, 1): after for month in range(4, 7)},
+    }
+
+
+@pytest.mark.parametrize("at", sorted(MEASURED_STEPS))
+def test_the_step_reproduces_what_the_cluster_measured(at):
+    """The bound and the measurement were set from each other. A change to either that
+    left them disagreeing would pass every run while measuring something else."""
+    before, after, step = MEASURED_STEPS[at]
+    measured = window_step(CRIME_MONTHS, at)
+    assert round(measured.before) == before
+    assert round(measured.after) == after
+    assert round(abs(measured.log_ratio), 4) == step
+
+
+def test_the_point_belongs_to_the_later_window():
+    """`at` is the first period after the change, never the last before it. Off by one
+    carries a whole month across the boundary being measured."""
+    measured = window_step(stepped(100.0, 200.0), date(2020, 4, 1))
+    assert (measured.before, measured.after) == (100.0, 200.0)
+
+
+def test_a_flat_series_has_no_step():
+    assert window_step(flat(), date(2020, 4, 1)).log_ratio == 0.0
+
+
+def test_a_halving_and_a_doubling_are_the_same_distance():
+    """A log ratio and not a difference, so one ceiling bounds both directions and a
+    fall of half reads as far from unmoved as a rise of double."""
+    up = window_step(stepped(100.0, 200.0), date(2020, 4, 1)).log_ratio
+    down = window_step(stepped(200.0, 100.0), date(2020, 4, 1)).log_ratio
+    assert up == -down
+
+
+def test_the_window_counts_periods_rather_than_calendar_months():
+    """Positional over the sorted keys, so a gap widens what is compared. The crime
+    total is 187 contiguous months and a hole in it is a fault the fact load raises on
+    first, which is why this is a property and not a defect."""
+    measured = window_step(CRIME_MONTHS, date(2013, 1, 1))
+    assert measured.before == pytest.approx(
+        (299_803 + 303_468 + 281_236) / 3
+    )
+
+
+@pytest.mark.parametrize(
+    "series, at",
+    [
+        (CRIME_MONTHS, date(2026, 6, 1)),
+        (flat(), date(2020, 2, 1)),
+        (flat(), date(2020, 7, 1)),
+        ({**flat(), date(2020, 2, 1): 0.0}, date(2020, 5, 1)),
+        ({**flat(), date(2020, 5, 1): -1.0}, date(2020, 5, 1)),
+    ],
+    ids=["absent", "near_the_start", "near_the_end", "a_zero", "a_negative"],
+)
+def test_an_unmeasurable_window_returns_nothing(series, at):
+    """Nothing rather than a figure standing in for one. No logarithm describes a
+    non-positive mean, and a caller counts these so a window that stops being
+    measurable is visible."""
+    assert window_step(series, at) is None
+
+
+def test_a_window_below_one_is_rejected():
+    with pytest.raises(ValueError, match="at least 1"):
+        window_step(CRIME_MONTHS, date(2011, 9, 1), window=0)
+
+
+def test_the_window_is_three_periods():
+    """Declared, because both the bound and the figures above were measured at it."""
+    assert STEP_WINDOW == 3
+
+
+# --------------------------------------------------------------------------- #
+# The stability rule against the steps it was set from
+# --------------------------------------------------------------------------- #
+
+
+def test_the_stability_rule_is_a_ceiling_and_is_scoped():
+    """A step of zero is the ideal, so there is no floor. One result per change, so a
+    scope is required."""
+    registered = RULES[A_STABILITY_RULE]
+    assert registered.lower is None
+    assert registered.upper is not None
+    assert registered.scoped
+
+
+def test_the_ceiling_admits_both_measured_steps():
+    """A bound rejecting a step already observed would fire on every ordinary run."""
+    for at, (_, _, step) in MEASURED_STEPS.items():
+        assert evaluate(A_STABILITY_RULE, step, scope=str(at)).passed
+
+
+def test_the_ceiling_leaves_room_beyond_the_measured_steps():
+    """A bound sitting on an observed value is one already reached."""
+    worst = max(step for _, _, step in MEASURED_STEPS.values())
+    assert RULES[A_STABILITY_RULE].upper > worst
+
+
+def test_a_doubled_step_breaches():
+    """What the ceiling is for: a Silver regression losing records in one era, or a
+    publisher restatement of the months either side."""
+    worst = max(step for _, _, step in MEASURED_STEPS.values())
+    assert not evaluate(A_STABILITY_RULE, worst * 2, scope="2013-05-01").passed
+
+
+def test_the_stability_rule_without_a_scope_is_rejected():
+    """Two changes under one run would be indistinguishable afterwards."""
+    with pytest.raises(ValueError, match="no scope"):
+        evaluate(A_STABILITY_RULE, 0.0318)
+
+
+@pytest.mark.parametrize("at", sorted(MEASURED_STEPS))
+def test_the_step_feeds_the_rule_end_to_end(at):
+    """The measurement and the verdict in one assertion, which is the path the
+    notebook takes."""
+    measured = window_step(CRIME_MONTHS, at)
+    assert evaluate(
+        A_STABILITY_RULE, abs(measured.log_ratio), scope=str(at)
+    ).passed
 
 
 # --------------------------------------------------------------------------- #

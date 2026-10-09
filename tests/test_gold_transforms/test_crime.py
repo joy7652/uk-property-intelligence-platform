@@ -1,7 +1,9 @@
 """Tests for the shared Gold crime resolution.
 
-Every test needs a session. The module is joins, a labelled case expression and an
-explode, so there is no pure-Python half to check separately.
+Every test but one needs a session. The module is joins, a labelled case expression
+and an explode, so there is no pure-Python half to check separately. The exception
+reads the Gold DDL notebook off disk: the string both type facts refuse is a Python
+constant on one side and a SQL literal on the other, and nothing else ties them.
 
 The fixtures are a miniature country: one English small area carrying a region, one
 Welsh one carrying none, one Scottish data zone, one England and Wales code the
@@ -22,6 +24,7 @@ callers that override one of them.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 from chispa import assert_df_equality
@@ -104,6 +107,20 @@ AGGREGATE_SCHEMA = (
     "region_code string, nation_code string, crime_count int"
 )
 
+# The Gold contract is declared in SQL, which cannot import a Python constant. These two
+# constraints are what holds anti-social behaviour out of the type facts, and a
+# misspelling in either attaches cleanly and then refuses nothing, because no row ever
+# equals it.
+GOLD_DDL = (
+    Path(__file__).resolve().parents[2]
+    / "databricks_src"
+    / "gold"
+    / "notebooks"
+    / "00_create_gold_tables.py"
+)
+
+ASB_CONSTRAINTS: tuple[str, ...] = ("fact_area_crime_no_asb", "fact_lsoa_crime_no_asb")
+
 
 def crime_row(**overrides):
     """One Silver crime record: a Hartlepool small area, burglary, June 2015."""
@@ -155,6 +172,39 @@ def aggregate(spark, rows, *measures):
         .groupBy(LSOA_COLUMN, MONTH_COLUMN)
         .agg(*measures)
     )
+
+
+# --------------------------------------------------------------------------- #
+# The literal the DDL refuses
+# --------------------------------------------------------------------------- #
+
+
+def constraint_body(name: str) -> str:
+    """One ADD CONSTRAINT statement from the Gold DDL notebook, as plain SQL.
+
+    Raises rather than skipping where the notebook is not where this expects it. A
+    check that quietly stops running looks exactly like one that keeps passing, so a
+    moved file has to move this path.
+    """
+    if not GOLD_DDL.is_file():
+        raise AssertionError(
+            f"the Gold DDL notebook is not at {GOLD_DDL}, so this check did not run."
+        )
+    sql = GOLD_DDL.read_text(encoding="utf-8").replace("# MAGIC ", "")
+    start = sql.find(f"ADD CONSTRAINT {name}")
+    if start < 0:
+        raise AssertionError(f"{name} is no longer declared in {GOLD_DDL.name}")
+    end = sql.find(";", start)
+    if end < 0:
+        raise AssertionError(f"{name} is declared with no terminating semicolon")
+    return sql[start:end]
+
+
+@pytest.mark.parametrize("constraint", ASB_CONSTRAINTS)
+def test_the_ddl_refuses_the_string_this_module_names(constraint):
+    """Renaming the constant without touching the DDL leaves a constraint that
+    attaches, passes every row, and refuses the type it was written to refuse."""
+    assert f"'{ANTI_SOCIAL_BEHAVIOUR}'" in constraint_body(constraint)
 
 
 # --------------------------------------------------------------------------- #

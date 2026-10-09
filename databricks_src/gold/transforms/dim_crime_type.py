@@ -26,6 +26,20 @@ the predecessor's own last_published_month and needs no column here, but the ord
 it implies is checked: a predecessor that ceased must close before its successors
 open, or the split double counts across the boundary.
 
+Conformance is derived rather than authored. A predecessor that ceased handed its
+whole volume to its successors, so it and they are one category under two or three
+names whose combined series runs the length of the table. One that is still
+publishing kept its label and lost contents, which no grouping repairs. That
+difference is is_current on the predecessor's own row, already measured here, so
+conformance_status is a function of the lineage and the measured window rather than a
+second copy of either. Only the name a group reports under is authored, because a
+split into two leaves no surviving name to resolve to.
+
+The derivation is safe against a release that drops a type from its newest month only
+because assert_ceased_predecessors_close_first runs before it. A predecessor that
+appears to have ceased while its successors opened years earlier is an overlap, and
+the load stops rather than quietly reclassifying the row as conformed.
+
 Anti-social behaviour is flagged rather than filtered. The flag documents why the type
 is absent from fact_lsoa_month_crime; the exclusion happens in the fact load.
 
@@ -52,6 +66,35 @@ ERA_DDL = "tinyint"
 
 ANTI_SOCIAL_BEHAVIOUR = "Anti-social behaviour"
 
+# What happened to a type's label over the series. The table constrains the same three.
+# A boolean would be two short: it collapses a category that can be reported across a
+# break with one that cannot, which is the distinction these columns exist to carry.
+STABLE = "stable"
+CONFORMED = "conformed"
+COMPOSITION_CHANGED = "composition_changed"
+CONFORMANCE_STATUSES: tuple[str, ...] = (STABLE, CONFORMED, COMPOSITION_CHANGED)
+
+# What a conformed group reports under, keyed on the ceased predecessor that roots it.
+# Authored because it cannot be derived: a one-into-one rename leaves a surviving name
+# and a one-into-two split leaves none, so the second has to be given one. Phase 5.4.1
+# measured both groups at the composite and neither loses volume across its break.
+GROUP_LABEL: dict[str, str] = {
+    "Violent crime": "Violence and sexual offences",
+    "Public disorder and weapons": "Public order and weapons",
+}
+
+# Join scaffolding, dropped before the projection. Named rather than written inline
+# because three functions read them and a fourth creates them.
+PREDECESSOR_CEASED_COLUMN = "_predecessor_ceased"
+GROUP_ROOT_COLUMN = "_is_group_root"
+IN_GROUP_COLUMN = "_in_group"
+COMPOSITION_COLUMN = "_changed_composition"
+STATUS_FLAG_COLUMNS: tuple[str, ...] = (
+    GROUP_ROOT_COLUMN,
+    IN_GROUP_COLUMN,
+    COMPOSITION_COLUMN,
+)
+
 
 class CrimeTypeEntry(NamedTuple):
     """Era a type entered the vocabulary, and the type it was split out of."""
@@ -76,7 +119,7 @@ _VOCABULARY: Vocabulary = (
         date(2010, 12, 1),
         None,
         (
-            "Anti-social behaviour",
+            ANTI_SOCIAL_BEHAVIOUR,
             "Burglary",
             "Other crime",
             "Robbery",
@@ -111,6 +154,7 @@ _VOCABULARY: Vocabulary = (
     ),
 )
 
+
 def era_months(vocabulary: Vocabulary) -> dict[int, date]:
     """Era to the month it opened. A repeated era keeps its last declared month."""
     return {era: first for era, first, _, _ in vocabulary}
@@ -129,6 +173,12 @@ ERA_FIRST_MONTH: dict[int, date] = era_months(_VOCABULARY)
 
 CRIME_TYPES: dict[str, CrimeTypeEntry] = crime_types(_VOCABULARY)
 
+# Types something else was split out of. Authored, in the sense that it is read off the
+# map rather than off the data, so it cannot disagree with predecessor_crime_type.
+PREDECESSORS: frozenset[str] = frozenset(
+    entry.predecessor for entry in CRIME_TYPES.values() if entry.predecessor is not None
+)
+
 GOLD_COLUMNS: tuple[str, ...] = (
     "crime_type",
     "first_published_month",
@@ -137,6 +187,8 @@ GOLD_COLUMNS: tuple[str, ...] = (
     "vocabulary_era",
     "predecessor_crime_type",
     "is_anti_social_behaviour",
+    "conformance_status",
+    "reporting_crime_type",
 )
 
 KEY_COLUMNS: tuple[str, ...] = ("crime_type",)
@@ -213,20 +265,61 @@ def assert_map_consistent(vocabulary: Vocabulary = _VOCABULARY) -> None:
 assert_map_consistent()
 
 
-def _mapped_to(values: dict[str, object], data_type: str) -> Column:
-    """Chained when over a crime-type keyed map, cast to the target type.
+def assert_groups_labelled(
+    vocabulary: Vocabulary = _VOCABULARY,
+    labels: dict[str, str] | None = None,
+) -> None:
+    """Fail on a group label that names something no group can be rooted at.
+
+    Separate from assert_map_consistent, which every broken-vocabulary test calls with
+    a two-entry map these labels do not appear in. Only half the pairing is checkable
+    here: which types can root a group is authored, and which of them actually ceased
+    is measured, so the other half is assert_every_group_is_labelled on the frame.
+    """
+    labels = GROUP_LABEL if labels is None else labels
+    types = crime_types(vocabulary)
+
+    unknown = sorted(set(labels) - set(types))
+    if unknown:
+        raise ValueError(
+            f"dim_crime_type labels a group rooted at {unknown}, which is not a type "
+            "in the map."
+        )
+
+    parents = {
+        entry.predecessor for entry in types.values() if entry.predecessor is not None
+    }
+    childless = sorted(set(labels) - parents)
+    if childless:
+        raise ValueError(
+            f"dim_crime_type labels a group rooted at {childless}, which nothing was "
+            "split out of, so there is no group for the label to name."
+        )
+
+
+assert_groups_labelled()
+
+
+def _mapped_to(
+    values: dict[str, object], data_type: str, key: str = "crime_type"
+) -> Column:
+    """Chained when over a map keyed on one column, cast to the target type.
 
     The cast is not optional. A branch holding None is untyped, so a column whose
-    every branch is null resolves to void and fails the insert.
+    every branch is null resolves to void and fails the insert. An empty map is the
+    same case with no branches at all, which is why it returns a typed null rather
+    than falling off the end.
     """
     expr: Column | None = None
-    for crime_type, value in values.items():
-        condition = F.col("crime_type") == F.lit(crime_type)
+    for mapped_from, value in values.items():
+        condition = F.col(key) == F.lit(mapped_from)
         expr = (
             F.when(condition, F.lit(value))
             if expr is None
             else expr.when(condition, F.lit(value))
         )
+    if expr is None:
+        return F.lit(None).cast(data_type)
     return expr.cast(data_type)
 
 
@@ -366,6 +459,113 @@ def assert_ceased_predecessors_close_first(attributed: DataFrame) -> DataFrame:
     return attributed
 
 
+def is_a_predecessor() -> Column:
+    """True for a type something else was split out of, read off the authored map."""
+    if not PREDECESSORS:
+        return F.lit(False)
+    return F.col("crime_type").isin(*sorted(PREDECESSORS))
+
+
+def group_label(key: str) -> Column:
+    """The name the group rooted at the type in `key` reports under."""
+    return _mapped_to(dict(GROUP_LABEL), "string", key=key)
+
+
+def attach_conformance(attributed: DataFrame) -> DataFrame:
+    """Add conformance_status and reporting_crime_type, plus the flags they rest on.
+
+    Three conditions, each a column so the guards below read the same values the
+    output does rather than recomputing them:
+
+    - the row ceased and something was split out of it, so it roots a group
+    - the row's own predecessor ceased, so the row sits inside that group
+    - the row is still published and something was split out of it, so its label
+      survived and its contents did not
+
+    Whether a predecessor ceased is on that predecessor's row, so this joins the frame
+    to itself on predecessor_crime_type, as assert_ceased_predecessors_close_first
+    does. Sixteen rows either side.
+    """
+    parents = attributed.select(
+        F.col("crime_type").alias("predecessor_crime_type"),
+        (~F.col("is_current")).alias(PREDECESSOR_CEASED_COLUMN),
+    )
+
+    flagged = (
+        attributed.join(parents, "predecessor_crime_type", "left")
+        .withColumn(GROUP_ROOT_COLUMN, (~F.col("is_current")) & is_a_predecessor())
+        .withColumn(
+            IN_GROUP_COLUMN,
+            F.coalesce(F.col(PREDECESSOR_CEASED_COLUMN), F.lit(False)),
+        )
+        .withColumn(COMPOSITION_COLUMN, F.col("is_current") & is_a_predecessor())
+    )
+
+    return flagged.withColumn(
+        "conformance_status",
+        F.when(
+            F.col(GROUP_ROOT_COLUMN) | F.col(IN_GROUP_COLUMN), F.lit(CONFORMED)
+        )
+        .when(F.col(COMPOSITION_COLUMN), F.lit(COMPOSITION_CHANGED))
+        .otherwise(F.lit(STABLE)),
+    ).withColumn(
+        "reporting_crime_type",
+        F.when(F.col(GROUP_ROOT_COLUMN), group_label("crime_type"))
+        .when(F.col(IN_GROUP_COLUMN), group_label("predecessor_crime_type"))
+        .otherwise(F.col("crime_type")),
+    )
+
+
+def assert_status_is_unambiguous(flagged: DataFrame) -> DataFrame:
+    """Fail where a type satisfies more than one of the three conditions.
+
+    They are exclusive on the measured vocabulary: a type that ceased handed its whole
+    volume over and so cannot also have changed composition, and nothing carved out of
+    a type that ceased is itself the parent of a later split. A map that produced one
+    would take its status from the order of the branches above rather than from what
+    the row means, and the wrong one would be indistinguishable from the right one.
+    """
+    satisfied = sum(
+        (F.col(name).cast("int") for name in STATUS_FLAG_COLUMNS),
+        F.lit(0),
+    )
+    offenders = (
+        flagged.filter(satisfied > F.lit(1))
+        .select("crime_type", "is_current", "predecessor_crime_type", *STATUS_FLAG_COLUMNS)
+        .limit(5)
+        .collect()
+    )
+    if offenders:
+        raise ValueError(
+            "dim_crime_type types satisfy more than one conformance condition, so the "
+            f"status would come from branch order: {[row.asDict() for row in offenders]}"
+        )
+    return flagged
+
+
+def assert_every_group_is_labelled(shaped: DataFrame) -> DataFrame:
+    """Fail where a group has no authored label.
+
+    Which types have ceased is measured, so a release that retires one GROUP_LABEL
+    does not cover leaves its whole group reporting under null, into a NOT NULL
+    column. assert_groups_labelled cannot see this: it knows which types could root a
+    group and not which of them have stopped publishing.
+    """
+    offenders = (
+        shaped.filter(F.col("reporting_crime_type").isNull())
+        .select("crime_type", "predecessor_crime_type", "last_published_month")
+        .limit(5)
+        .collect()
+    )
+    if offenders:
+        raise ValueError(
+            "dim_crime_type groups have no authored label, so the types in them would "
+            f"report under null: {[row.asDict() for row in offenders]}. Add the group "
+            "root to GROUP_LABEL."
+        )
+    return shaped
+
+
 def measure_publication_window(crime_df: DataFrame) -> DataFrame:
     """One row per published crime type, with the months it first and last appears.
 
@@ -379,8 +579,8 @@ def measure_publication_window(crime_df: DataFrame) -> DataFrame:
     Note:
         Separate from the transform because this is the expensive half. It shuffles
         the whole crime table, while everything downstream of it works on sixteen
-        rows, and the transform runs three actions over its input before the write
-        runs a fourth. The caller persists this frame so that shuffle happens once.
+        rows, and the transform runs five actions over its input before the write
+        runs a sixth. The caller persists this frame so that shuffle happens once.
     """
     assert_source_columns(crime_df)
     return crime_df.groupBy("crime_type").agg(
@@ -418,5 +618,12 @@ def transform_dim_crime_type(measured: DataFrame) -> DataFrame:
         )
     )
     assert_eras_match_first_month(attributed)
+    # Before the derivation, not merely before the write. A predecessor that looks
+    # ceased because one release dropped it from its newest month would otherwise be
+    # read as a complete split and its successors grouped under it.
     assert_ceased_predecessors_close_first(attributed)
-    return attributed.select(*GOLD_COLUMNS)
+
+    shaped = attach_conformance(attributed)
+    assert_status_is_unambiguous(shaped)
+    assert_every_group_is_labelled(shaped)
+    return shaped.select(*GOLD_COLUMNS)
