@@ -1,0 +1,196 @@
+version: 2
+
+models:
+  - name: mart_district_month_market
+    description: >-
+      One row per district and month, carrying the house price index, the private rent
+      series, the transaction median and the crime total side by side. Districts only:
+      gold.dim_area holds six levels, and an additive measure summed across them counts
+      one sale or crime at every level it rolls up to. A row exists where any of the four
+      sources has one, so each measure is null outside its own coverage. The index starts
+      in 1995 in England and Wales, 2004 in Scotland and 2005 in Northern Ireland; rent
+      starts in 2015; transactions start in 1995 and crime in December 2010, both in
+      England and Wales only.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [district_code, month_start_date]
+      - dbt_utils.expression_is_true:
+          name: mart_district_month_market_row_carries_a_measure
+          arguments:
+            expression: >-
+              avg_price is not null or hpi_price_index is not null
+              or hpi_pct_change_12m is not null or rental_price is not null
+              or rent_price_index is not null or rent_pct_change_12m is not null
+              or median_price is not null or crime_count_excl_asb is not null
+    columns:
+      - name: district_code
+        data_type: string
+        description: Local authority district code. Joins gold.dim_area.area_code.
+        data_tests:
+          - not_null
+          - dbt_utils.relationships_where:
+              arguments:
+                to: source('gold', 'dim_area')
+                field: area_code
+                to_condition: "area_level = 'district'"
+      - name: district_name
+        data_type: string
+        description: Name as gold.dim_area carries it.
+      - name: region_code
+        data_type: string
+        description: English region. Null in Wales, Scotland and Northern Ireland, which are not divided into regions.
+      - name: nation_code
+        data_type: string
+        description: Nation the district sits in.
+      - name: month_start_date
+        data_type: date
+        description: First of the month. Joins gold.dim_date.date_key.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: source('gold', 'dim_date')
+                field: date_key
+      - name: avg_price
+        data_type: decimal(18,6)
+        description: Published mix-adjusted average price from the house price index, pounds.
+      - name: hpi_price_index
+        data_type: decimal(18,6)
+        description: House price index, 100 at January 2015.
+      - name: hpi_pct_change_12m
+        data_type: decimal(18,6)
+        description: Twelve-month change in the house price index, as published.
+      - name: rental_price
+        data_type: int
+        description: Average monthly private rent, pounds.
+      - name: rent_price_index
+        data_type: decimal(18,6)
+        description: Private rent index, 100 at January 2015.
+      - name: rent_pct_change_12m
+        data_type: decimal(18,6)
+        description: Twelve-month change in the private rent index, as published.
+      - name: median_price
+        data_type: int
+        description: Median transaction price, pounds, over category A sales.
+      - name: transaction_count
+        data_type: int
+        description: Category A transactions behind median_price.
+      - name: crime_count_excl_asb
+        data_type: int
+        description: >-
+          Recorded crime excluding anti-social behaviour, summed from the small areas
+          assigned to the district. Comparable across the 2011-09 and 2013-05 category
+          changes, which split types without changing what is counted. The cross-source
+          verification measures that at the England and Wales composite.
+
+  - name: mart_district_yield
+    description: >-
+      Gross rental yield by district and month: twelve months of average rent over the
+      published mix-adjusted average price. A row exists only where both are published for
+      the same district and month, and a test holds that population equal to the districts
+      gold.dim_area flags with both a price index and a rent. A month with rent published
+      and the index not yet has no row.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [district_code, month_start_date]
+    columns:
+      - name: district_code
+        data_type: string
+        description: Local authority district code. Joins gold.dim_area.area_code.
+        data_tests:
+          - not_null
+          - dbt_utils.relationships_where:
+              arguments:
+                to: source('gold', 'dim_area')
+                field: area_code
+                to_condition: "area_level = 'district'"
+      - name: district_name
+        data_type: string
+        description: Name as gold.dim_area carries it.
+      - name: region_code
+        data_type: string
+        description: English region. Null in Wales, the only other nation with a yield.
+      - name: nation_code
+        data_type: string
+        description: Nation the district sits in.
+      - name: month_start_date
+        data_type: date
+        description: First of the month. Joins gold.dim_date.date_key.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: source('gold', 'dim_date')
+                field: date_key
+      - name: rental_price
+        data_type: int
+        description: Average monthly private rent, pounds.
+      - name: avg_price
+        data_type: decimal(18,6)
+        description: Published mix-adjusted average price from the house price index, pounds.
+      - name: gross_yield_pct
+        data_type: decimal(7,4)
+        description: Twelve times rental_price over avg_price, as a percentage.
+        data_tests:
+          - not_null
+
+  - name: mart_lsoa_year_crime_price
+    description: >-
+      Annual recorded crime beside the annual transaction price, by small area. Only small
+      areas whose code is the same in the 2011 and 2021 boundaries: a code changed in 2021
+      carries its crime under two codes through the 2021-01 to 2023-06 transition while its
+      price sits under the 2021 code throughout. Only years for which the crime table holds
+      all twelve months, which excludes 2010 and the year in progress. A small area with
+      sales and nothing recorded in a complete year reads zero, since the crime facts carry
+      a row only where something was recorded. Completeness is judged across the release,
+      so a force missing a month would read as zero for its areas.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [lsoa_code, year_start_date]
+    columns:
+      - name: lsoa_code
+        data_type: string
+        description: Small-area code, identical in the 2011 and 2021 boundaries. Joins gold.dim_lsoa.lsoa_code.
+        data_tests:
+          - not_null
+          - dbt_utils.relationships_where:
+              arguments:
+                to: source('gold', 'dim_lsoa')
+                field: lsoa_code
+                to_condition: "boundary_vintage = 'both'"
+      - name: lsoa_name
+        data_type: string
+        description: Name for the 2021 boundaries.
+      - name: district_code
+        data_type: string
+        description: District the small area is counted under. Joins gold.dim_area.area_code.
+      - name: district_assignment
+        data_type: string
+        description: exact where every postcode falls in one district, majority where the area straddles districts and takes the one holding most of its postcodes.
+      - name: year_start_date
+        data_type: date
+        description: First of January. Joins gold.dim_date.date_key.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: source('gold', 'dim_date')
+                field: date_key
+      - name: median_price
+        data_type: int
+        description: Median transaction price, pounds, over category A sales.
+      - name: transaction_count
+        data_type: int
+        description: Category A transactions behind median_price.
+      - name: crime_count_excl_asb
+        data_type: int
+        description: >-
+          Recorded crime in the year, anti-social behaviour excluded. Comparable across
+          the 2011-09 and 2013-05 category changes, which split types without changing
+          what is counted. The cross-source verification measures that at the England
+          and Wales composite.
+        data_tests:
+          - not_null

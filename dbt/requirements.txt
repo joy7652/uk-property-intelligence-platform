@@ -1,0 +1,4 @@
+# dbt-databricks 1.12.6 caps dbt-core below 1.12.6, so the two move together. The
+# marts_build task in databricks_src/setup/job_definition.json installs the same pins.
+dbt-core==1.12.5
+dbt-databricks==1.12.6

@@ -1,0 +1,31 @@
+version: 2
+
+sources:
+  - name: gold
+    description: >-
+      The Gold star, declared in databricks_src/gold/notebooks/00_create_gold_tables.py
+      and each replaced whole when a pipeline run rebuilds it.
+    database: uk_property_intel
+    schema: gold
+    # No freshness block. dbt reports freshness only against a threshold, and the
+    # platform leaves its freshness bounds unset until observed runs set them.
+    tables:
+      - name: dim_area
+      - name: dim_date
+      - name: dim_lsoa
+      - name: fact_area_month_crime_total
+      - name: fact_area_month_hpi
+      - name: fact_area_month_price
+      - name: fact_area_month_rent
+      - name: fact_lsoa_month_crime_total
+      - name: fact_lsoa_year_price
+
+  - name: quality
+    description: >-
+      The audit layer. Read here for the verdict the latest cross-source verification
+      recorded, never to recompute it.
+    database: uk_property_intel
+    schema: quality
+    tables:
+      - name: pipeline_run
+      - name: rule_result
