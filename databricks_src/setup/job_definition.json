@@ -1,11 +1,13 @@
 {
-  "_description": "Source-of-truth definition for the monthly Silver and Gold job. Hand-maintained; applied with 'databricks jobs create --json @job_definition.json' or reset against an existing job id. ADF triggers it through a Web activity against /api/2.1/jobs/run-now after its ForEach closes, because no native ADF activity runs an existing Databricks job.",
+  "_description": "Source-of-truth definition for the monthly job: Silver, Gold, the cross-source check, then the dbt marts over Gold. Hand-maintained and applied with apply_job_definition.py, which resets the existing job in place so its id, and ADF's reference to it, never change. ADF runs it with a Databricks Job activity after its ForEach closes.",
 
-  "_why_a_chain": "One node, four cores, and Police extracts 4.4 GB to cluster-local disk, so parallel Silver tasks would contend for both. A chain also makes the dependency graph correct by construction rather than by authoring a twelve-way fan-in correctly. Silver is ordered cheapest first, which only decides how early a problem shows in the log.",
+  "_why_a_chain": "One node, four cores, and Police extracts 4.4 GB to cluster-local disk, so parallel Silver tasks would contend for both. A chain also makes the dependency graph correct by construction rather than by authoring a thirteen-way fan-in correctly. Silver is ordered cheapest first, which only decides how early a problem shows in the log.",
 
-  "_timeouts": "Job level is a failsafe against a hung run, not a target: the first measured end-to-end run was 1h 11m 27s, so 4h is 3.4x it. Per-task caps are roughly 3x each task's measured duration, floored at 10 minutes, and they matter more than the job cap. A job timeout cancels the run, leaving the executing task open at 'started' and every later task with no row at all. A task timeout marks that task failed, which records, cascades, and lets ALL_DONE carry the rest of the run. Police hanging to its 90m cap still lands 1h 48m inside the job cap, so the task cap fires first. Remeasure when a source grows.",
+  "_timeouts": "Job level is a failsafe against a hung run, not a target: the first measured end-to-end run was 1h 11m 27s, so 4h is 3.4x it. Per-task caps are roughly 3x each task's measured duration, floored at 10 minutes, and they matter more than the job cap. A job timeout cancels the run, leaving the executing task open at 'started' and every later task with no row at all. A task timeout marks that task failed, which records, cascades, and lets ALL_DONE carry the rest of the run. Police hanging to its 90m cap still lands 1h 48m inside the job cap, so the task cap fires first. Remeasure when a source grows. marts_build is capped at 15 minutes on an estimate of five, until its first run is measured.",
 
   "_why_all_done": "Skipping happens inside each notebook, so a task that waits still reports success and the chain continues on its own. What ALL_DONE is for is a task that genuinely fails: the default ALL_SUCCESS would block every task after it, no Gold notebook would execute, no plan would be recomputed, and the whole in-notebook cascade would be dead code. record_bronze_state is the one exception and keeps success semantics, because if it fails no Bronze failures are recorded at all and every stage would read an empty failure set and load against files that never landed.",
+
+  "_why_marts_build": "marts_build builds and tests the dbt project in dbt/ as a dbt task: the dbt process runs on this job's cluster and its SQL on the serverless SQL warehouse, authenticated as the job's owner through the token Databricks injects. The views need no rebuild when Gold changes, but the tests check data, so they run after every Gold rebuild. It is the one task outside the stage plan: a dbt task cannot open an AuditRun, so it records nothing in pipeline_run and the job run is its record.",
 
   "name": "ukpropertyintel-silver-gold",
   "max_concurrent_runs": 1,
@@ -186,6 +188,27 @@
       "notebook_task": {
         "notebook_path": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/databricks_src/gold/notebooks/05_verify_cross_source",
         "base_parameters": { "job_run_id": "{{job.run_id}}" }
+      }
+    },
+
+    {
+      "task_key": "marts_build",
+      "depends_on": [{ "task_key": "verify_cross_source" }],
+      "run_if": "ALL_DONE",
+      "job_cluster_key": "pipeline",
+      "max_retries": 0,
+      "timeout_seconds": 900,
+      "libraries": [
+        { "pypi": { "package": "dbt-core==1.12.5" } },
+        { "pypi": { "package": "dbt-databricks==1.12.6" } }
+      ],
+      "dbt_task": {
+        "source": "WORKSPACE",
+        "project_directory": "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform/dbt",
+        "commands": ["dbt deps", "dbt build"],
+        "warehouse_id": "65e93ffd5f4ef90c",
+        "catalog": "uk_property_intel",
+        "schema": "marts"
       }
     }
   ]

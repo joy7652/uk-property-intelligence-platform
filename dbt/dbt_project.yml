@@ -1,0 +1,22 @@
+name: uk_property_intel
+version: "1.0.0"
+profile: uk_property_intel
+
+# dbt-databricks 1.12.6 accepts dbt-core up to 1.12.5. requirements.txt pins the pair.
+require-dbt-version: [">=1.12.0", "<1.13.0"]
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  uk_property_intel:
+    # Views only. The marts schema is declared without a managed location, so a table
+    # built here would be written to the catalog's own location, which is kept empty.
+    +materialized: view
+    +persist_docs:
+      relation: true
+      columns: true
+    +contract:
+      enforced: true
