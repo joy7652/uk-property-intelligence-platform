@@ -1,11 +1,12 @@
 import json
+import re
 
 import requests
 
 # --- fill these two -------------------------------------------------------------
 DEFINITION = (
     "/Workspace/Users/kiitkkat@gmail.com/uk-property-intelligence-platform"
-    "/databricks_src/setup/job_definition_pre_run.json"
+    "/databricks_src/setup/job_definition.json"
 )
 MANAGED_IDENTITY_CLIENT_ID = "7fb707ce-1e9e-4ad0-b452-922d76395756"
 # --------------------------------------------------------------------------------
@@ -22,6 +23,12 @@ with open(DEFINITION, encoding="utf-8") as handle:
 # out of the file.
 settings = {key: value for key, value in settings.items() if not key.startswith("_")}
 name = settings["name"]
+
+# A placeholder applies without complaint and fails only when the task reading it runs,
+# which on the monthly job can be weeks later. Refused here instead.
+placeholders = sorted(set(re.findall(r"REPLACE_WITH_[A-Z_]+", json.dumps(settings))))
+if placeholders:
+    raise RuntimeError(f"{DEFINITION} still carries {placeholders}. Fill them in first.")
 
 # Create makes a new job every time it is called, so a second run would leave two jobs
 # with the same name and ADF pointing at whichever id was recorded first. Look first.

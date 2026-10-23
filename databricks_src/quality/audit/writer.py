@@ -37,6 +37,12 @@ identifies the run. Both vocabularies are closed and each name carries the layer
 belongs to, so a run naming one layer's vocabulary under the other's label fails at
 construction rather than landing a row nothing will find.
 
+Two layers are recorded by a notebook that did not do the work. 02 carries Bronze across
+from ADF's markers. The marts build is dbt's, which runs as a task of its own and cannot
+open a run, so the notebook after it opens one on its behalf once the build has finished.
+That run is the only one given the work's own start and end; every other run closes on
+the clock.
+
 Metric names carry a layer too, for the same reason and with the same consequence.
 source_rows means rows read from Bronze by a Silver transform and gold_rows means rows
 a Gold transform produced; either one written under the other layer puts two different
@@ -122,9 +128,14 @@ CHECKS: tuple[str, ...] = ("cross_source_verification",)
 # one that ran and waited. Without it the plan would live only in a printed cell.
 ORCHESTRATION: tuple[str, ...] = ("pipeline_plan",)
 
-LAYERS: tuple[str, ...] = ("bronze", "silver", "gold")
+# The dbt build over Gold. One name for the whole build rather than one per view, because
+# the task is what the job runs and times out, and dbt builds the views and runs the tests
+# inside it as one invocation. The views and tests are measured under it.
+MARTS: tuple[str, ...] = ("marts_build",)
 
-RUN_NAMES: tuple[str, ...] = SOURCES + GOLD_TABLES + CHECKS + ORCHESTRATION
+LAYERS: tuple[str, ...] = ("bronze", "silver", "gold", "marts")
+
+RUN_NAMES: tuple[str, ...] = SOURCES + GOLD_TABLES + CHECKS + ORCHESTRATION + MARTS
 
 # Which layer each run name belongs to. The pairing is total: a Bronze source name is
 # only ever loaded to Silver and a Gold table name is only ever produced by Gold, so a
@@ -140,6 +151,9 @@ LAYERS_OF: dict[str, tuple[str, ...]] = {
     **{name: ("gold",) for name in CHECKS},
     # The plan is computed once Bronze has closed and before any Silver task opens.
     **{name: ("bronze",) for name in ORCHESTRATION},
+    # The views sit in a schema of their own and are built by a different tool, so they
+    # are a layer of their own rather than more Gold.
+    **{name: ("marts",) for name in MARTS},
 }
 
 # Police error text carries row samples and the transform reports every failing rule
@@ -447,6 +461,46 @@ _ORCHESTRATION = (
     ),
 )
 
+# Recorded by the marts build, read off the run_results.json dbt leaves behind. dbt
+# builds the views and runs the tests in one task, so both are measured under that one
+# run rather than opening runs of their own.
+#
+# The test shares take every test the build ran as their base, so a test added to the
+# project moves the base and leaves the share where it was. mart_rows is gold_rows one
+# layer up, scoped by view. mart_node_status keeps what dbt said about each node, since a
+# warning leaves the build succeeded and would otherwise leave no trace of which test
+# raised it.
+_MARTS = (
+    Metric(
+        "marts_built",
+        "share",
+        "views dbt built this run, against the views the build attempted",
+    ),
+    Metric(
+        "mart_tests_passed",
+        "share",
+        "tests that passed, against every test the build ran, generic and singular",
+    ),
+    Metric(
+        "mart_tests_warned",
+        "share",
+        "tests that returned rows under severity warn, which leaves the build "
+        "succeeded, against every test the build ran",
+    ),
+    Metric(
+        "mart_rows",
+        "volume",
+        "rows a built view returns, counted once the build has finished, scoped by view",
+    ),
+    Metric(
+        "mart_node_status",
+        "disposition",
+        "what dbt recorded for the node named in scope: success or error for a view, "
+        "pass, warn, fail or error for a test, and skipped for either when something "
+        "it depends on failed",
+    ),
+)
+
 # Metrics recorded by a source's own run. Each group above says which source writes
 # it; what they share is that the run writing them names a Bronze source.
 _SOURCE_METRICS: tuple[Metric, ...] = (
@@ -466,11 +520,13 @@ _SOURCE_METRICS: tuple[Metric, ...] = (
 # Bronze-layer runs actually record, which is not stated here.
 #
 # Gold covers the checks as well as the loads: cross_source_verification runs at
-# layer gold and records dimension_rows_with_facts like any fact load.
+# layer gold and records dimension_rows_with_facts like any fact load. The marts
+# metrics belong to the one run at that layer.
 _METRIC_LAYER_GROUPS: tuple[tuple[tuple[Metric, ...], tuple[str, ...]], ...] = (
     (_SOURCE_METRICS, ("bronze", "silver")),
     (_GOLD, ("gold",)),
     (_ORCHESTRATION, ("bronze",)),
+    (_MARTS, ("marts",)),
 )
 
 # Projected from the pairing, so a metric added to a group is paired by belonging to
@@ -524,8 +580,8 @@ def assert_registry_consistent() -> None:
         for name in RUN_NAMES:
             counted[name] = counted.get(name, 0) + 1
         raise ValueError(
-            "audit: a run name is defined in more than one of SOURCES, GOLD_TABLES "
-            "and CHECKS and ORCHESTRATION, so its layer would be decided by "
+            "audit: a run name is defined in more than one of SOURCES, GOLD_TABLES, "
+            "CHECKS, ORCHESTRATION and MARTS, so its layer would be decided by "
             "declaration order: "
             f"{sorted(name for name, n in counted.items() if n > 1)}"
         )
@@ -840,6 +896,39 @@ def freshness_verdict(
     )
 
 
+def recorded_end(
+    source: str, started_ts: dt.datetime, ended_ts: dt.datetime | None
+) -> dt.datetime | None:
+    """The end a run recorded after the fact closes at, checked against its start.
+
+    None for a run recorded live, which closes when it closes. A run recorded after the
+    work it describes has to close when the work did, or the recorder's own start-up
+    lands in the duration of what it records.
+
+    Both timestamps must carry a timezone. Everything this module stamps itself is UTC,
+    and comparing a naive value against an aware one raises, so the check would fail on
+    the cluster for a reason that has nothing to do with the run.
+
+    Raises:
+        ValueError: where either timestamp is naive, or the end falls before the start.
+    """
+    if ended_ts is None:
+        return None
+    if ended_ts.tzinfo is None or started_ts.tzinfo is None:
+        raise ValueError(
+            f"audit: {source!r} was given an end, which is checked against its start, "
+            "so both have to carry a timezone. Pass UTC, which is what this module "
+            "stamps everywhere else."
+        )
+    if ended_ts < started_ts:
+        raise ValueError(
+            f"audit: {source!r} ends at {ended_ts.isoformat()}, before it starts at "
+            f"{started_ts.isoformat()}. The two were read from different places or "
+            "passed the wrong way round."
+        )
+    return ended_ts
+
+
 class AuditRun:
     """One notebook execution's audit record.
 
@@ -855,12 +944,14 @@ class AuditRun:
         ingestion_ts: dt.datetime,
         started_ts: dt.datetime | None = None,
         job_run_id: str | None = None,
+        ended_ts: dt.datetime | None = None,
     ) -> None:
         if source not in RUN_NAMES:
             raise ValueError(
                 f"audit: source {source!r} is not a Bronze source {list(SOURCES)}, a "
-                f"Gold table {list(GOLD_TABLES)}, a check {list(CHECKS)}, or an "
-                f"orchestration step {list(ORCHESTRATION)}."
+                f"Gold table {list(GOLD_TABLES)}, a check {list(CHECKS)}, an "
+                f"orchestration step {list(ORCHESTRATION)}, or the marts build "
+                f"{list(MARTS)}."
             )
         if layer not in LAYERS:
             raise ValueError(f"audit: layer {layer!r} is not one of {list(LAYERS)}.")
@@ -868,7 +959,8 @@ class AuditRun:
             raise ValueError(
                 f"audit: {source!r} runs at {list(LAYERS_OF[source])}, not {layer!r}. "
                 "A Bronze run names the source ADF landed, a Silver run names the "
-                "source it read, and a Gold run names the table it builds."
+                "source it read, a Gold run names the table it builds, and the marts "
+                "build is the only run at marts."
             )
         self.run_id = str(uuid.uuid4())
         self.source = source
@@ -878,6 +970,10 @@ class AuditRun:
         # describes agree on when the run happened.
         self.started_ts = started_ts or ingestion_ts
         self.job_run_id = job_run_id
+        # Set only for a run recorded after the work with the work's own end in hand,
+        # which today is the marts build. Every close, a failure caught by step
+        # included, then lands at the end of the work rather than at the recorder's.
+        self.ended_ts = recorded_end(source, self.started_ts, ended_ts)
         self.buffered: list[Recorded] = []
         self.closed = False
 
@@ -1035,7 +1131,7 @@ class AuditRun:
              WHERE run_id = :run_id
             """,
             args={
-                "ended_ts": dt.datetime.now(dt.timezone.utc),
+                "ended_ts": self.ended_ts or dt.datetime.now(dt.timezone.utc),
                 "status": status,
                 "rows_written": rows_written,
                 "error_type": error_type,

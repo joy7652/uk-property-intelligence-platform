@@ -1,0 +1,116 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/run-results/v6.json",
+    "dbt_version": "1.12.5",
+    "generated_at": "2026-10-16T22:32:30.045651Z",
+    "invocation_id": "e50ee1f9-9610-4672-9b4e-97b07f617fb8",
+    "invocation_started_at": "2026-10-16T22:32:27.449318Z"
+  },
+  "results": [
+    {
+      "unique_id": "model.fixture.mart_alpha",
+      "status": "success",
+      "execution_time": 0.08283519744873047,
+      "failures": null,
+      "message": "OK",
+      "relation_name": "\"fixture\".\"main\".\"mart_alpha\"",
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:29.818746Z",
+          "completed_at": "2026-10-16T22:32:29.825227Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:29.825830Z",
+          "completed_at": "2026-10-16T22:32:29.899367Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "test.fixture.assert_alpha_warns",
+      "status": "warn",
+      "execution_time": 0.036147356033325195,
+      "failures": 1,
+      "message": "Got 1 result, configured to warn if != 0",
+      "relation_name": null,
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:29.907739Z",
+          "completed_at": "2026-10-16T22:32:29.910898Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:29.911482Z",
+          "completed_at": "2026-10-16T22:32:29.940306Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "test.fixture.not_null_mart_alpha_id.fa84ebf1a9",
+      "status": "pass",
+      "execution_time": 0.027454376220703125,
+      "failures": 0,
+      "message": null,
+      "relation_name": null,
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:29.945885Z",
+          "completed_at": "2026-10-16T22:32:29.960015Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:29.960733Z",
+          "completed_at": "2026-10-16T22:32:29.970624Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "test.fixture.unique_mart_alpha_id.8117d0ad99",
+      "status": "pass",
+      "execution_time": 0.022983074188232422,
+      "failures": 0,
+      "message": null,
+      "relation_name": null,
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:29.975928Z",
+          "completed_at": "2026-10-16T22:32:29.986246Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:29.986849Z",
+          "completed_at": "2026-10-16T22:32:29.996129Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "model.fixture.mart_beta",
+      "status": "success",
+      "execution_time": 0.03399300575256348,
+      "failures": null,
+      "message": "OK",
+      "relation_name": "\"fixture\".\"main\".\"mart_beta\"",
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:30.002046Z",
+          "completed_at": "2026-10-16T22:32:30.004683Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:30.005258Z",
+          "completed_at": "2026-10-16T22:32:30.034072Z"
+        }
+      ]
+    }
+  ],
+  "elapsed_time": 0.3334188461303711,
+  "args": {
+    "which": "build",
+    "invocation_command": "dbt build --exclude mart_broken mart_after_broken assert_beta_fails"
+  }
+}

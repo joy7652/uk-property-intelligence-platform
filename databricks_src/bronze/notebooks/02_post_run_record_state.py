@@ -35,7 +35,7 @@ import datetime as dt
 import json
 
 from databricks_src.bronze.watermark_library import registry, source_dependency
-from databricks_src.quality.audit.writer import AuditRun
+from databricks_src.quality.audit.writer import MARTS, AuditRun
 
 VOLUME = "/Volumes/uk_property_intel/configs/watermark"
 WATERMARK_PATH = f"{VOLUME}/watermark.json"
@@ -237,9 +237,14 @@ else:
 # MAGIC
 # MAGIC This is also the only row saying `02` itself ran. The six above name sources.
 # MAGIC
-# MAGIC The plan covers the nineteen stages the chain carries. The cross-source check is
-# MAGIC not among them: it gates on evidence that no stage has produced yet at Bronze
-# MAGIC close, so anything recorded for it here would be a guess.
+# MAGIC The plan covers the nineteen stages the chain carries and the marts build after
+# MAGIC them. The build gates on nothing: its task runs on ALL_DONE after the check, so it
+# MAGIC runs whatever happened above, and `run` is what will happen rather than a forecast.
+# MAGIC Recording it is what makes its absence readable, since only a job that stopped
+# MAGIC short leaves the build without a row.
+# MAGIC
+# MAGIC The cross-source check is not among them: it gates on evidence that no stage has
+# MAGIC produced yet at Bronze close, so anything recorded for it here would be a guess.
 # MAGIC
 # MAGIC Comparing what was planned against what the stages went on to record is what
 # MAGIC shows where a run degraded after this point: planned `run` against an actual
@@ -269,8 +274,16 @@ with plan_run.step():
         plan_run.measure(
             "planned_stage", "run" if stage in running else "skip", scope=stage
         )
+    for stage in MARTS:
+        plan_run.measure("planned_stage", "run", scope=stage)
 
 plan_run.succeed()
+
+chain_stages = (
+    len(source_dependency.SOURCES)
+    + len(source_dependency.DIMENSIONS)
+    + len(source_dependency.FACTS)
+)
 
 print(f"plan run {plan_run.run_id}")
 print(f"failed at bronze : {sorted(failed_now) or 'none'}")
@@ -279,5 +292,9 @@ if inert:
 print(f"silver           : {plan['silver']}")
 print(f"dimensions       : {plan['dimensions']}")
 print(f"facts            : {plan['facts']}")
-print(f"\n{len(running)} of 19 stages will run, recorded as planned_stage")
+print(f"marts            : {list(MARTS)}")
+print(
+    f"\n{len(running) + len(MARTS)} of {chain_stages + len(MARTS)} stages will run, "
+    "recorded as planned_stage"
+)
 print(f"finished in {(dt.datetime.now() - RUN_STARTED).total_seconds():.1f}s")
