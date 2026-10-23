@@ -396,11 +396,18 @@ _COVERAGE = (
 )
 
 # Recorded by Gold loads. gold_rows is the counterpart to silver_rows and is the one
-# metric every Gold run records. Two more are recorded by every fact, and the rest
-# belong to a single dimension each. There is no Gold equivalent of source_rows or
-# source_bytes, because a Gold run reads Silver tables whose own runs already recorded
-# what they hold; where a fact needs a base for a share it carries it as the
-# denominator rather than as a metric of its own.
+# metric every Gold run records. dimension_rows_with_facts is recorded by every fact and
+# rows_without_a_measure by the two panel facts. The two resolution metrics belong to
+# the seven facts that resolve their source's geography, and the rest to a single
+# dimension each.
+#
+# There is no Gold equivalent of source_rows or source_bytes, because a Gold run reads
+# Silver tables whose own runs already recorded what they hold. What the transaction and
+# crime loads add is where each row they read resolved to, which Silver cannot know, so
+# that has names of its own: resolution_rows, one scope per outcome, and excluded_rows
+# for what a fact's own rule then leaves out, carrying the resolved rows as its
+# denominator rather than as a metric of its own. Under source_rows, both would sit in a
+# series that means rows read from Bronze by a Silver transform.
 #
 # Breakdowns ride on gold_rows through scope rather than earning their own names:
 # dim_area records it once per area level and dim_lsoa once per boundary vintage, so
@@ -422,6 +429,20 @@ _GOLD = (
         "rows of the dimension named in scope that this fact reaches, against all of "
         "its rows. Coverage rather than integrity: a dimension row no fact reaches is "
         "ordinary, while a fact key with no dimension row aborts the load",
+    ),
+    Metric(
+        "resolution_rows",
+        "volume",
+        "rows a fact load read from Silver, one scope per outcome of resolving their "
+        "geography. The scopes partition what was read, so their sum is the base and "
+        "none is carried",
+    ),
+    Metric(
+        "excluded_rows",
+        "share",
+        "resolved rows a fact leaves out under its own rule, the rule named in scope, "
+        "against all resolved rows. Category B sales in both price facts, and category "
+        "A sales with no small-area code in the small-area one",
     ),
     Metric(
         "derived_area_codes",

@@ -111,7 +111,23 @@ run("tests/test_quality_audit/test_writer.py")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4. Quality rules
+# MAGIC ## 4. What the notebooks record
+# MAGIC
+# MAGIC Every metric name a load notebook passes to `measure` as a literal, read from the
+# MAGIC notebook source without running it and checked against the layer its folder opens
+# MAGIC runs at. The writer refuses a name its layer does not admit only when the notebook
+# MAGIC runs, which for a Gold fact load is once a month, so a pairing change that strands a
+# MAGIC notebook fails here first. Notebooks are found with or without the `.py` extension,
+# MAGIC so the read does not depend on how the workspace lists them.
+
+# COMMAND ----------
+
+run("tests/test_quality_audit/test_notebook_metrics.py")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 5. Quality rules
 # MAGIC
 # MAGIC The threshold registry, the evaluator, and the `rule_result` table. Bounds live on
 # MAGIC the rule rather than at the call site and are copied onto every result, so widening

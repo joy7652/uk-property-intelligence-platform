@@ -17,7 +17,7 @@
 # MAGIC
 # MAGIC Three `AuditRun` instances, one per table. `rows_written` is then a real number
 # MAGIC rather than a total across whatever this notebook happened to write.
-# MAGIC #
+# MAGIC
 # MAGIC Each is gated on its own. All three stand behind `dim_area` and `dim_lsoa` and
 # MAGIC behind nothing else, so they are planned together or not at all, which is what
 # MAGIC lets the join below sit inside the first run and be read by the other two. That
@@ -25,11 +25,11 @@
 # MAGIC later sections would raise on a name the first never bound, which is loud.
 # MAGIC
 # MAGIC The resolution is measured before it is filtered. Each run records the same six
-# MAGIC population counts under `source_rows`, scoped by population, so a run row says
+# MAGIC population counts under `resolution_rows`, scoped by population, so a run row says
 # MAGIC what its source was reduced to without a reader cross-referencing another run.
 # MAGIC Those six partition the rows read and carry no denominator. The two further
-# MAGIC reductions do carry one, against the resolved population rather than the whole
-# MAGIC read, since that is the base each was applied to.
+# MAGIC reductions are `excluded_rows` and do carry one, against the resolved population
+# MAGIC rather than the whole read, since that is the base each was applied to.
 # MAGIC
 # MAGIC No DDL here. The Gold contract is declared once in `00_create_gold_tables.py`, and
 # MAGIC the column order every write depends on is read back off the created table.
@@ -69,6 +69,7 @@ from databricks_src.gold.transforms.fact_lsoa_year_price import (
 )
 from databricks_src.gold.transforms.transactions import (
     POPULATION_COLUMN,
+    POPULATIONS,
     RESOLVED,
     is_full_market_value,
     is_resolved,
@@ -123,10 +124,10 @@ for _fact in (
 # MAGIC %md
 # MAGIC ## Shared helpers
 # MAGIC
-# MAGIC `record_populations` writes the same six counts to whichever run is passed. They
-# MAGIC are measured once, on the frame every fact reads, and recorded three times because
-# MAGIC a run that cannot say what its source was reduced to is a run someone has to join
-# MAGIC to another one to understand.
+# MAGIC `record_populations` writes the same six counts to whichever run is passed, a zero
+# MAGIC for any outcome that did not occur. They are measured once, on the frame every
+# MAGIC fact reads, and recorded three times because a run that cannot say what its
+# MAGIC source was reduced to is a run someone has to join to another one to understand.
 # MAGIC
 # MAGIC `record_area_conformance` mirrors the panel load: both foreign keys checked, then
 # MAGIC coverage recorded against the geography dimension only. The calendar is daily and
@@ -138,6 +139,23 @@ for _fact in (
 # COMMAND ----------
 
 
+def every_population(counts: list) -> dict[str, int]:
+    """Rows per declared population, with a zero for any that did not occur.
+
+    The group-by behind counts reports only the outcomes that occurred, and a zero
+    nobody measured is worth less than a zero someone did. A label POPULATIONS does
+    not declare raises rather than going unrecorded.
+    """
+    measured = {row[POPULATION_COLUMN]: row["rows"] for row in counts}
+    undeclared = sorted(set(measured) - set(POPULATIONS))
+    if undeclared:
+        raise ValueError(
+            f"transaction resolution produced {undeclared}, which POPULATIONS does "
+            "not declare, so their rows would go unrecorded"
+        )
+    return {population: measured.get(population, 0) for population in POPULATIONS}
+
+
 def record_populations(audit_run, counts: list) -> None:
     """Record the resolution breakdown on one run, one scope per population.
 
@@ -145,10 +163,8 @@ def record_populations(audit_run, counts: list) -> None:
     and a denominator equal to that sum would state it six more times. Matches how the
     dimension load scopes `gold_rows` by area level and by boundary vintage.
     """
-    for row in counts:
-        audit_run.measure(
-            "source_rows", row["rows"], scope=row[POPULATION_COLUMN]
-        )
+    for population, rows in every_population(counts).items():
+        audit_run.measure("resolution_rows", rows, scope=population)
 
 
 def record_area_conformance(audit_run, fact_table: str, fact_name: str) -> None:
@@ -223,7 +239,7 @@ if price_run is not None:
             .agg(F.count(F.lit(1)).alias("rows"))
             .collect()
         )
-        source_rows = sum(row["rows"] for row in population_counts)
+        rows_read = sum(row["rows"] for row in population_counts)
         resolved_rows = next(
             row["rows"]
             for row in population_counts
@@ -233,9 +249,11 @@ if price_run is not None:
 
         resolved = labelled.filter(is_resolved())
 
-    for row in sorted(population_counts, key=lambda item: -item["rows"]):
-        print(f"{row['rows']:>12,}  {row[POPULATION_COLUMN]}")
-    print(f"{source_rows:>12,}  read")
+    for population, rows in sorted(
+        every_population(population_counts).items(), key=lambda item: -item[1]
+    ):
+        print(f"{rows:>12,}  {population}")
+    print(f"{rows_read:>12,}  read")
 
 # COMMAND ----------
 
@@ -255,7 +273,7 @@ if price_run is not None:
     with price_run.step():
         excluded = resolved.filter(~is_full_market_value()).count()
         price_run.measure(
-            "source_rows",
+            "excluded_rows",
             excluded,
             scope="excluded_category_b",
             denominator=resolved_rows,
@@ -335,7 +353,7 @@ if lsoa_run is not None:
     with lsoa_run.step():
         record_populations(lsoa_run, population_counts)
         lsoa_run.measure(
-            "source_rows",
+            "excluded_rows",
             excluded,
             scope="excluded_category_b",
             denominator=resolved_rows,
@@ -343,7 +361,7 @@ if lsoa_run is not None:
 
         unlocated = resolved.filter(no_small_area() & is_full_market_value()).count()
         lsoa_run.measure(
-            "source_rows", unlocated, scope="no_small_area", denominator=resolved_rows
+            "excluded_rows", unlocated, scope="no_small_area", denominator=resolved_rows
         )
 
         facts = transform_fact_lsoa_year_price(resolved)

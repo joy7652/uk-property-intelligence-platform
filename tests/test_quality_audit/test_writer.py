@@ -319,6 +319,29 @@ def test_a_gold_run_cannot_record_a_source_metric():
         gold_run("dim_crime_type").measure("source_rows", 96_092_836)
 
 
+def test_a_resolving_fact_records_its_populations_under_a_gold_name():
+    """What the transaction and crime loads read, broken down by where each row
+    resolved to. Silver cannot know that, so it has a Gold series of its own rather
+    than a place in source_rows."""
+    audit_run = gold_run("fact_lsoa_month_crime")
+    assert audit_run.measure("resolution_rows", 92_352_547, scope="resolved") == 92_352_547
+    assert [(row.metric, row.scope, row.denominator) for row in audit_run.buffered] == [
+        ("resolution_rows", "resolved", None)
+    ]
+
+
+def test_an_exclusion_carries_the_resolved_rows_as_its_base():
+    """A fact's own rule applies to the resolved rows, not to everything read, so that
+    is the denominator the share is recorded against."""
+    audit_run = gold_run("fact_area_month_price")
+    audit_run.measure(
+        "excluded_rows", 1_000, scope="excluded_category_b", denominator=31_378_089
+    )
+    assert [(row.metric, row.scope, row.denominator) for row in audit_run.buffered] == [
+        ("excluded_rows", "excluded_category_b", 31_378_089.0)
+    ]
+
+
 def test_a_silver_run_cannot_record_a_gold_metric():
     with pytest.raises(ValueError, match="recorded at"):
         run().measure("gold_rows", 432)
