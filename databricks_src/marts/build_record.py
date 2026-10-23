@@ -39,8 +39,9 @@ TASK_KEY = "marts_build"
 # an outcome it had not reached.
 TERMINAL_STATES = frozenset({"TERMINATED", "SKIPPED", "INTERNAL_ERROR"})
 
-# Result states a task reaches without executing. EXCLUDED is a run-now that named other
-# tasks, DISABLED a task switched off in the job, and the two upstream states a run that
+# Result states a task reaches without executing. DISABLED is a task switched off in the
+# job, and is also what a task left out of a run-now naming other tasks reports. EXCLUDED
+# is a task whose run conditions were not met, and the two upstream states a run that
 # stopped before this task opened. None of them leaves a build to record.
 NEVER_RAN = frozenset({"EXCLUDED", "DISABLED", "UPSTREAM_CANCELED", "UPSTREAM_FAILED"})
 

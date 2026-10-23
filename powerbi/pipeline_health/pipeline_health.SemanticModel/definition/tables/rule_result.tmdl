@@ -9,7 +9,7 @@ table rule_result
 		formatString: 0
 		lineageTag: 91bd0abd-bee2-4a36-800e-b8bc5af5acc0
 
-	measure 'Check runs' = COALESCE ( DISTINCTCOUNT ( rule_result[run_id] ), 0 )
+	measure 'Runs with rules' = COALESCE ( DISTINCTCOUNT ( rule_result[run_id] ), 0 )
 		formatString: 0
 		lineageTag: c56b3f59-b20f-493d-b0f2-bf43cb97d3b7
 

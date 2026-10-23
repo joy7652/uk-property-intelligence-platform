@@ -1,4 +1,8 @@
 # Runner versions track DBR 17.3 LTS: Ubuntu 24.04, Zulu Java 17, Python 3.12.
+#
+# Actions are pinned to full commit SHAs, with the release each one resolved to beside
+# it. A tag can be moved to different code after it was reviewed and a commit cannot,
+# which matters here because dbt-build can mint a token that reaches the workspace.
 name: tests
 
 on:
@@ -20,9 +24,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
@@ -42,7 +46,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -88,7 +92,7 @@ jobs:
     outputs:
       suites: ${{ steps.list.outputs.suites }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: List suite directories
         id: list
@@ -131,14 +135,14 @@ jobs:
       # resolution.
       SPARK_LOCAL_IP: 127.0.0.1
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: zulu
           java-version: "17"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
           cache: pip
@@ -166,30 +170,206 @@ jobs:
             | sed -E 's|^.*\.py:[0-9]+: ||' \
             | sort | uniq -c | sort -rn | head -40
 
+  # The dbt project compiled with no warehouse and no credential: every ref, source,
+  # macro, test and contract has to resolve. The docs site is generated from what parsed
+  # and kept as an artifact.
+  dbt-parse:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: dbt
+    env:
+      DBT_PROFILES_DIR: ${{ github.workspace }}/dbt/ci
+      DBT_SEND_ANONYMOUS_USAGE_STATS: "false"
+      # Nothing here connects. The adapter refuses a profile with these unset, and
+      # .invalid is a reserved name that resolves nowhere.
+      DATABRICKS_HOST: offline.invalid
+      DATABRICKS_HTTP_PATH: /sql/1.0/warehouses/offline
+      DATABRICKS_CLIENT_ID: offline
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: dbt/requirements.txt
+
+      # The pins the monthly job's marts_build task installs.
+      - name: Install dbt
+        run: pip install -r requirements.txt
+
+      - name: Install packages
+        run: dbt deps
+
+      # Warnings fail here. A parse warning is a config that applies to nothing or a
+      # deprecation, and neither is worth merging. The build below keeps dbt's own
+      # severities, so a test declared as a warning still warns.
+      - name: Parse
+        run: dbt parse --warn-error
+
+      # One self-contained page, no warehouse catalog behind it, so it describes the
+      # project as declared rather than the relations as built.
+      - name: Generate the docs site
+        run: dbt docs generate --no-compile --empty-catalog --static
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dbt-docs
+          path: dbt/target/static_index.html
+          if-no-files-found: error
+          retention-days: 30
+
+  # The marts built and tested on the warehouse, into marts_ci, as the dbt-ci service
+  # principal. No secret is stored anywhere: GitHub signs a token naming this repository
+  # and the databricks-ci environment, and Databricks exchanges it for a short-lived one
+  # under the federation policy on that principal.
+  dbt-build:
+    needs: [changes, dbt-parse]
+    # A pull request from a fork runs code nobody here has reviewed, and GitHub gives it
+    # no token to exchange.
+    if: >-
+      needs.changes.outputs.code == 'true'
+      && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: databricks-ci
+    # The one job allowed to request a token.
+    permissions:
+      contents: read
+      id-token: write
+    # One schema serves every branch, so builds from different branches queue instead of
+    # replacing each other's views part-way through a test.
+    concurrency:
+      group: dbt-marts-ci
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: dbt
+    env:
+      DBT_PROFILES_DIR: ${{ github.workspace }}/dbt/ci
+      DBT_SEND_ANONYMOUS_USAGE_STATS: "false"
+      DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+      DATABRICKS_HTTP_PATH: ${{ vars.DATABRICKS_HTTP_PATH }}
+      DATABRICKS_CLIENT_ID: ${{ vars.DATABRICKS_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: dbt/requirements.txt
+
+      - name: Install dbt
+        run: pip install -r requirements.txt
+
+      - name: Install packages
+        run: dbt deps
+
+      # The token is requested, exchanged and spent inside this one step, so no later
+      # step, no file and no other process on the runner ever holds it.
+      #
+      # The audience is the Databricks account id, which is what Databricks recommends
+      # the federation policy expects, so the token names the one service it is for.
+      - name: Build and test the marts
+        shell: bash
+        env:
+          AUDIENCE: ${{ vars.DATABRICKS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+
+          missing=""
+          for name in DATABRICKS_HOST DATABRICKS_HTTP_PATH DATABRICKS_CLIENT_ID AUDIENCE; do
+            [ -n "${!name:-}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not set in the databricks-ci environment:$missing"
+            exit 1
+          fi
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::No token endpoint. The job needs id-token: write."
+            exit 1
+          fi
+
+          response=$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE")
+          token=$(python -c 'import json, sys; print(json.load(sys.stdin)["value"])' \
+            <<< "$response")
+          echo "::add-mask::$token"
+
+          # The claim the federation policy matches exactly, printed so a mismatch can
+          # be read off the log. Passed through the environment rather than an argument,
+          # which any process on the runner could list.
+          TOKEN="$token" python - <<'PY'
+          import base64, json, os
+          payload = os.environ["TOKEN"].split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+          print(f"subject {claims['sub']}")
+          PY
+
+          DATABRICKS_OIDC_TOKEN="$token" dbt build
+
+      - name: Keep the run results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dbt-build-results
+          path: |
+            dbt/target/run_results.json
+            dbt/logs/dbt.log
+          if-no-files-found: ignore
+          retention-days: 30
+
   # One stable check name to require in branch protection. Matrix leg names change
   # whenever a suite directory is added or renamed; this one does not.
   tests-passed:
-    needs: [changes, tests]
+    needs: [changes, tests, dbt-parse, dbt-build]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Verify the suites passed or were legitimately skipped
+      - name: Verify every check passed or was legitimately skipped
         shell: bash
+        env:
+          CODE: ${{ needs.changes.outputs.code }}
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          SUITES: ${{ needs.tests.result }}
+          DBT_PARSE: ${{ needs.dbt-parse.result }}
+          DBT_BUILD: ${{ needs.dbt-build.result }}
         run: |
-          result="${{ needs.tests.result }}"
-          echo "suites: $result"
-          case "$result" in
-            success)
-              ;;
-            skipped)
-              # Only a documentation-only change may skip. A skip from an upstream
-              # failure reaches here with code still true and fails.
-              if [ "${{ needs.changes.outputs.code }}" != "false" ]; then
-                echo "::error::Suites were skipped without a documentation-only diff"
-                exit 1
-              fi
-              echo "Documentation only, suites not required." ;;
-            *)
-              exit 1 ;;
-          esac
+          # A check may skip only for a documentation-only diff, and the warehouse build
+          # also for a pull request from a fork. A skip caused by an upstream failure
+          # reaches here with neither true and fails.
+          docs_only=false
+          [ "$CODE" = "false" ] && docs_only=true
+          build_may_skip=$docs_only
+          [ "$FORK" = "true" ] && build_may_skip=true
+
+          failed=0
+          check() {
+            echo "$1: $2"
+            case "$2" in
+              success) ;;
+              skipped)
+                if [ "$3" != "true" ]; then
+                  echo "::error::$1 was skipped, and nothing about this run allows it to be"
+                  failed=1
+                fi ;;
+              *) failed=1 ;;
+            esac
+          }
+
+          check suites "$SUITES" "$docs_only"
+          check dbt-parse "$DBT_PARSE" "$docs_only"
+          check dbt-build "$DBT_BUILD" "$build_may_skip"
+
+          if [ "$docs_only" = "true" ]; then
+            echo "Documentation only, suites not required."
+          fi
+          exit $failed

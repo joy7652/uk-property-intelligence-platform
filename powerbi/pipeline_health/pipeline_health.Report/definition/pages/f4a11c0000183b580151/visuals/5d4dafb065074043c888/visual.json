@@ -23,11 +23,11 @@
                       "Entity": "rule_result"
                     }
                   },
-                  "Property": "Check runs"
+                  "Property": "Runs with rules"
                 }
               },
-              "queryRef": "rule_result.Check runs",
-              "nativeQueryRef": "Check runs"
+              "queryRef": "rule_result.Runs with rules",
+              "nativeQueryRef": "Runs with rules"
             }
           ]
         }
@@ -42,7 +42,7 @@
                     "Entity": "rule_result"
                   }
                 },
-                "Property": "Check runs"
+                "Property": "Runs with rules"
               }
             },
             "direction": "Descending"

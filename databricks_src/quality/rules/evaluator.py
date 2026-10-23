@@ -169,6 +169,11 @@ _RECONCILIATION = (
 # doubling, and it should tighten toward 0.07 once several runs have reported, as the
 # correlation floor above should.
 #
+# Evaluated by the crime load before it writes, on the small-area totals summed by month,
+# which are the composite exactly. A breach stops all four crime facts and leaves Gold as
+# it was, where a check after the writes would find the step only once the marts and the
+# semantic model could already read it.
+#
 # Not registered for the conformed groups, whose own steps run 0.1487 to 0.2475 against
 # same-month ceilings of 0.1981 to 0.2711. A rule sitting that close to its bound on the
 # first run fails for a reason nobody can act on, and the notebook raises on any breach.

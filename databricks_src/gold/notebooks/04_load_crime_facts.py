@@ -23,7 +23,7 @@
 # MAGIC Four `AuditRun` instances, one per table, so `rows_written` is a real number
 # MAGIC rather than a total across whatever this notebook wrote. All four names are
 # MAGIC already in `GOLD_TABLES`.
-# MAGIC #
+# MAGIC
 # MAGIC Each is gated on its own, and this is the notebook where that matters. The two
 # MAGIC small-area tables stand behind `dim_lsoa` and `dim_crime_type`; the two area
 # MAGIC tables stand behind `dim_area` as well, because the levels above a small area are
@@ -31,6 +31,14 @@
 # MAGIC and not the second two. Skipping them saves nothing at runtime, since both
 # MAGIC aggregates are built for the small-area tables regardless: the gate is there for
 # MAGIC correctness, not for time.
+# MAGIC
+# MAGIC One registered rule stands in front of all four writes.
+# MAGIC `crime_total_step_at_vocabulary_change` measures whether the total crosses each
+# MAGIC published vocabulary change unmoved, which is what makes any crime series
+# MAGIC comparable across eras. It is evaluated on the aggregate before the first table is
+# MAGIC written and recorded under the first run, so a breach leaves its results in
+# MAGIC `quality.rule_result` and stops the notebook with all four tables holding what they
+# MAGIC held before.
 # MAGIC
 # MAGIC Anti-social behaviour never reaches the two type tables. It is dropped in the
 # MAGIC shared aggregate and refused by check constraint as well, so a row arriving there
@@ -58,12 +66,16 @@ from databricks_src.gold.transforms.conformance import (
     measure_dimension_coverage,
 )
 from databricks_src.gold.transforms.crime import (
+    COMPOSITE_AREA_CODE,
+    EXCLUDING_ASB_COLUMN,
+    MONTH_COLUMN,
     POPULATION_COLUMN,
     is_resolved,
     resolve_crime,
     small_area_totals,
     small_area_type_counts,
 )
+from databricks_src.gold.transforms.dim_crime_type import ERA_FIRST_MONTH
 from databricks_src.gold.transforms.fact_area_month_crime import (
     transform_fact_area_month_crime,
 )
@@ -77,6 +89,15 @@ from databricks_src.gold.transforms.fact_lsoa_month_crime_total import (
     transform_fact_lsoa_month_crime_total,
 )
 from databricks_src.orchestration import stage
+from databricks_src.quality.rules.evaluator import (
+    RULE_TABLE,
+    STEP_WINDOW,
+    assert_rules_reported,
+    evaluate,
+    failures,
+    rule_frame,
+    window_step,
+)
 from databricks_src.utils.gold_write import overwrite
 
 CATALOG = "uk_property_intel"
@@ -91,6 +112,18 @@ FACT_LSOA_CRIME = f"{CATALOG}.gold.fact_lsoa_month_crime"
 FACT_LSOA_TOTAL = f"{CATALOG}.gold.fact_lsoa_month_crime_total"
 FACT_AREA_CRIME = f"{CATALOG}.gold.fact_area_month_crime"
 FACT_AREA_TOTAL = f"{CATALOG}.gold.fact_area_month_crime_total"
+
+# The rule this load promises to evaluate before it writes. Named here rather than
+# derived from what the load produces, because a rule that stops running looks exactly
+# like one that keeps passing.
+STABILITY_RULES = ("crime_total_step_at_vocabulary_change",)
+
+# The months the published vocabulary changed, read off the authored eras rather than
+# written out, so a third change is picked up by adding it there. Era 1 is the original
+# publication and opens no break.
+VOCABULARY_BREAKS = tuple(
+    ERA_FIRST_MONTH[era] for era in sorted(ERA_FIRST_MONTH) if era > 1
+)
 
 # One timestamp for the whole notebook, carried on all four audit rows so a single load
 # reads as one event even though it is four runs.
@@ -292,6 +325,101 @@ if lsoa_crime_run is not None:
         totals.persist(StorageLevel.DISK_ONLY)
         print(f"{type_counts.count():>12,}  small-area type counts")
         print(f"{totals.count():>12,}  small-area totals")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Before any write: does the total cross the vocabulary changes unmoved
+# MAGIC
+# MAGIC Police.uk changed its categories at 2011-09 and 2013-05, both times by splitting an
+# MAGIC existing type into new ones that sum back to it. A total across every type is
+# MAGIC therefore comparable across the whole series while any one type is not, and every
+# MAGIC cross-era figure these four tables feed rests on that.
+# MAGIC
+# MAGIC Evaluated here because nothing downstream waits for a check. The marts are views
+# MAGIC over Gold and the semantic model reads it directly, so a step found after the
+# MAGIC writes would already be in front of both.
+# MAGIC
+# MAGIC The small-area totals summed by month are the England and Wales composite exactly,
+# MAGIC because every small area rolls up into it, so this measures what
+# MAGIC `fact_area_month_crime_total` is about to hold at that code. Anti-social behaviour
+# MAGIC is excluded, as both type tables exclude it. One row per month, collected and
+# MAGIC compared in Python.
+# MAGIC
+# MAGIC Results are written before the verdict is read, so a breach leaves its evidence
+# MAGIC behind. `window_step` returns nothing where a change cannot be measured: its month
+# MAGIC is absent, it falls within three months of either end of the series, or a month in
+# MAGIC either window holds nothing. Those are counted and printed rather than passed, and a
+# MAGIC load where no change is measurable fails, because a rule that stops reporting looks
+# MAGIC exactly like one that keeps passing.
+# MAGIC
+# MAGIC Expected: a series opening at 2010-12-01, both changes measurable, 0.0318 at
+# MAGIC 2011-09 and 0.0525 at 2013-05 on ratios of 0.9687 and 1.0539, both inside the 0.10
+# MAGIC ceiling, and two rows in `quality.rule_result` under this run.
+
+# COMMAND ----------
+
+if lsoa_crime_run is not None:
+    with lsoa_crime_run.step():
+        composite = {
+            row[MONTH_COLUMN]: row["records"]
+            for row in totals.groupBy(MONTH_COLUMN)
+            .agg(F.sum(EXCLUDING_ASB_COLUMN).alias("records"))
+            .collect()
+        }
+
+        steps = []
+        unmeasurable = []
+        for break_month in VOCABULARY_BREAKS:
+            measured = window_step(composite, break_month)
+            if measured is None:
+                unmeasurable.append(str(break_month))
+            else:
+                steps.append((break_month, measured))
+
+        stability = tuple(
+            evaluate(
+                "crime_total_step_at_vocabulary_change",
+                abs(measured.log_ratio),
+                scope=str(break_month),
+                detail=(
+                    f"ratio {measured.after / measured.before:.4f}, "
+                    f"{measured.before:,.0f} to {measured.after:,.0f} records per month "
+                    f"over {STEP_WINDOW} months either side at {COMPOSITE_AREA_CODE}"
+                ),
+            )
+            for break_month, measured in steps
+        )
+
+        rule_frame(spark, lsoa_crime_run.run_id, stability).write.mode(  # noqa: F821
+            "append"
+        ).saveAsTable(RULE_TABLE)
+
+        print(
+            f"{len(composite)} months at {COMPOSITE_AREA_CODE}, "
+            f"{min(composite)} to {max(composite)}"
+        )
+        print(
+            f"{len(steps)} of {len(VOCABULARY_BREAKS)} changes measurable"
+            + (f", not measurable: {', '.join(unmeasurable)}" if unmeasurable else "")
+        )
+        for (break_month, measured), result in zip(steps, stability):
+            print(
+                f"{break_month}  ratio {measured.after / measured.before:.4f}  "
+                f"abs log ratio {result.observed:.4f}  ceiling {result.upper_bound}  "
+                + ("passed" if result.passed else "BREACHED")
+            )
+
+        assert_rules_reported(stability, STABILITY_RULES if VOCABULARY_BREAKS else ())
+
+        breached = failures(stability)
+        if breached:
+            raise ValueError(
+                f"{len(breached)} of {len(stability)} vocabulary changes moved the crime "
+                "total past its ceiling, so the eras are not comparable and none of the "
+                "four tables was written: "
+                f"{[(r.scope, round(r.observed, 4), r.upper_bound) for r in breached]}"
+            )
 
 # COMMAND ----------
 
@@ -571,3 +699,20 @@ if lsoa_crime_run is not None:
 # MAGIC   'fact_area_month_crime', 'fact_area_month_crime_total'
 # MAGIC )
 # MAGIC ORDER BY r.started_ts DESC, r.source, m.metric, m.scope
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC The rule results, newest first. Each load adds one per vocabulary change under
+# MAGIC `fact_lsoa_month_crime`, and both should read passed.
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT r.source, r.status, r.started_ts, x.scope, round(x.observed, 4) AS observed,
+# MAGIC        x.upper_bound, x.passed, x.detail
+# MAGIC FROM uk_property_intel.quality.rule_result x
+# MAGIC JOIN uk_property_intel.quality.pipeline_run r USING (run_id)
+# MAGIC WHERE x.rule = 'crime_total_step_at_vocabulary_change'
+# MAGIC ORDER BY r.started_ts DESC, x.scope
+# MAGIC LIMIT 6
