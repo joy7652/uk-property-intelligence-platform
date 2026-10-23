@@ -380,8 +380,9 @@ if lsoa_run is not None:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Every straddling area should sit well clear of a half. The measured floor is 80
-# MAGIC percent, so a row near 0.5 means the postcode counts have moved.
+# MAGIC Every straddling area should sit well clear of a half, and `weakest` on the
+# MAGIC majority row is the floor. A value near 0.5 there means the postcode counts have
+# MAGIC moved.
 
 # COMMAND ----------
 

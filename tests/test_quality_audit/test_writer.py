@@ -22,6 +22,7 @@ from databricks_src.quality.audit.writer import (
     LAYERS,
     LAYERS_OF,
     LAYERS_OF_METRIC,
+    MARTS,
     MESSAGE_LIMIT,
     METRIC_COLUMNS,
     METRIC_COMMENT,
@@ -64,11 +65,12 @@ def gold_run(source: str = "dim_area") -> AuditRun:
 
 
 # One run name valid at each layer, so a metric can be offered to a run at any of the
-# three. Which name is used does not matter: the layer is what is under test.
+# four. Which name is used does not matter: the layer is what is under test.
 A_RUN_PER_LAYER: dict[str, str] = {
     "bronze": "pipeline_plan",
     "silver": "hpi",
     "gold": "dim_area",
+    "marts": "marts_build",
 }
 
 
@@ -744,9 +746,146 @@ def test_a_planned_stage_carries_its_disposition_as_text():
 
 
 def test_the_plan_is_recorded_once_per_stage_through_scope():
-    """One registry entry serves nineteen stages, the same way gold_rows serves
-    every area level."""
+    """One registry entry serves every stage the plan names, the marts build among
+    them, the same way gold_rows serves every area level."""
     assert METRICS["planned_stage"].kind in KINDS
+
+
+# --------------------------------------------------------------------------- #
+# The marts build
+# --------------------------------------------------------------------------- #
+
+# Aware, as the recorder builds them from the job run's epoch milliseconds. INGESTION_TS
+# above is naive, as 02's RUN_STARTED is, and the difference is under test below.
+BUILD_STARTED = dt.datetime(2026, 10, 9, 0, 10, 4, tzinfo=dt.timezone.utc)
+BUILD_ENDED = dt.datetime(2026, 10, 9, 0, 11, 50, tzinfo=dt.timezone.utc)
+
+
+def build_run(ended_ts: dt.datetime | None = BUILD_ENDED) -> AuditRun:
+    return AuditRun(
+        source="marts_build",
+        layer="marts",
+        ingestion_ts=BUILD_STARTED,
+        job_run_id="941",
+        ended_ts=ended_ts,
+    )
+
+
+def test_the_marts_build_opens_at_marts():
+    assert build_run().layer == "marts"
+
+
+def test_the_marts_build_does_not_open_at_gold():
+    """The views read Gold and are not Gold. Recorded there, the build would join the
+    Gold stages and read as one more table that rebuilt."""
+    with pytest.raises(ValueError, match=r"runs at \['marts'\]"):
+        AuditRun(source="marts_build", layer="gold", ingestion_ts=BUILD_STARTED)
+
+
+def test_nothing_else_opens_at_marts():
+    from databricks_src.quality.audit.writer import RUN_NAMES
+
+    for name in sorted(set(RUN_NAMES) - set(MARTS)):
+        with pytest.raises(ValueError, match="runs at"):
+            AuditRun(source=name, layer="marts", ingestion_ts=INGESTION_TS)
+
+
+def test_the_marts_name_is_shared_with_no_other_vocabulary():
+    others = set(SOURCES) | set(GOLD_TABLES) | set(CHECKS) | set(ORCHESTRATION)
+    assert not set(MARTS) & others
+
+
+def test_the_mart_metrics_are_admitted_where_the_build_runs():
+    admitted = sorted(name for name, layers in LAYERS_OF_METRIC.items() if "marts" in layers)
+    assert admitted == [
+        "mart_node_status",
+        "mart_rows",
+        "mart_tests_passed",
+        "mart_tests_warned",
+        "marts_built",
+    ]
+    assert all(LAYERS_OF_METRIC[name] == LAYERS_OF["marts_build"] for name in admitted)
+
+
+def test_the_marts_build_cannot_record_gold_rows():
+    """mart_rows exists to keep the series apart. A view's row count under gold_rows
+    would sit in one line with the tables the view reads."""
+    with pytest.raises(ValueError, match="recorded at"):
+        build_run().measure("gold_rows", 131_947)
+
+
+def test_a_gold_run_cannot_record_a_mart_metric():
+    with pytest.raises(ValueError, match="recorded at"):
+        gold_run().measure("mart_rows", 131_947, scope="mart_district_month_market")
+
+
+def test_a_node_status_carries_its_verdict_as_text():
+    recorded = _as_row_values(
+        "mart_node_status", "warn", "assert_rent_and_index_end_within_two_months", None
+    )
+    assert (recorded.value_text, recorded.value_numeric) == ("warn", None)
+
+
+def test_a_live_run_carries_no_end():
+    """A run recorded live closes on the clock, so nothing is set before it does."""
+    assert run().ended_ts is None
+
+
+def test_a_recorded_run_carries_the_end_it_was_given():
+    assert build_run().ended_ts == BUILD_ENDED
+
+
+def test_an_end_before_the_start_is_refused():
+    with pytest.raises(ValueError, match="before it starts"):
+        build_run(ended_ts=BUILD_STARTED - dt.timedelta(seconds=1))
+
+
+def test_an_end_equal_to_the_start_is_accepted():
+    """A task that failed before executing anything can have a window of one instant,
+    and that is still a window."""
+    assert build_run(ended_ts=BUILD_STARTED).ended_ts == BUILD_STARTED
+
+
+def test_a_naive_end_is_refused():
+    with pytest.raises(ValueError, match="timezone"):
+        build_run(ended_ts=BUILD_ENDED.replace(tzinfo=None))
+
+
+def test_an_end_against_a_naive_start_is_refused():
+    """Comparing the two would raise a TypeError deep in a notebook, which says nothing
+    about which value was wrong."""
+    with pytest.raises(ValueError, match="timezone"):
+        AuditRun(
+            source="hpi", layer="silver", ingestion_ts=INGESTION_TS, ended_ts=BUILD_ENDED
+        )
+
+
+def test_close_writes_the_recorded_end(monkeypatch):
+    session = stub_session(monkeypatch)
+    build_run().succeed()
+    statement, args = session.statements[-1]
+    assert "UPDATE" in statement
+    assert (args["ended_ts"], args["status"]) == (BUILD_ENDED, SUCCEEDED)
+
+
+def test_a_failure_caught_by_step_closes_at_the_recorded_end(monkeypatch):
+    """The recorder raises inside step when the build failed. Closing on the clock
+    would make a failed build read as long as the recorder took to notice it."""
+    session = stub_session(monkeypatch)
+    audit_run = build_run()
+    with pytest.raises(RuntimeError):
+        with audit_run.step():
+            raise RuntimeError("2 of 27 nodes failed")
+    _, args = session.statements[-1]
+    assert (args["ended_ts"], args["status"]) == (BUILD_ENDED, FAILED)
+
+
+def test_a_live_run_still_closes_on_the_clock(monkeypatch):
+    session = stub_session(monkeypatch)
+    before = dt.datetime.now(dt.timezone.utc)
+    run().succeed()
+    _, args = session.statements[-1]
+    assert before <= args["ended_ts"] <= dt.datetime.now(dt.timezone.utc)
 
 
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/run-results/v6.json",
+    "dbt_version": "1.12.5",
+    "generated_at": "2026-10-16T22:32:37.075269Z",
+    "invocation_id": "ec4aa161-839c-4272-82bf-cf4ab2eaa984",
+    "invocation_started_at": "2026-10-16T22:32:36.111712Z"
+  },
+  "results": [
+    {
+      "unique_id": "model.fixture.mart_alpha",
+      "status": "success",
+      "execution_time": 0.08932161331176758,
+      "failures": null,
+      "message": "OK",
+      "relation_name": "\"fixture\".\"main\".\"mart_alpha\"",
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:36.975005Z",
+          "completed_at": "2026-10-16T22:32:36.983052Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:36.983696Z",
+          "completed_at": "2026-10-16T22:32:37.061853Z"
+        }
+      ]
+    }
+  ],
+  "elapsed_time": 0.23177862167358398,
+  "args": {
+    "which": "run",
+    "invocation_command": "dbt run --select mart_alpha"
+  }
+}

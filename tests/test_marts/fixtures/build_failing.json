@@ -1,0 +1,174 @@
+{
+  "metadata": {
+    "dbt_schema_version": "https://schemas.getdbt.com/dbt/run-results/v6.json",
+    "dbt_version": "1.12.5",
+    "generated_at": "2026-10-16T22:32:33.798084Z",
+    "invocation_id": "591fdd91-027d-4573-b43f-4c326bbecf3a",
+    "invocation_started_at": "2026-10-16T22:32:32.539794Z"
+  },
+  "results": [
+    {
+      "unique_id": "model.fixture.mart_alpha",
+      "status": "success",
+      "execution_time": 0.11118125915527344,
+      "failures": null,
+      "message": "OK",
+      "relation_name": "\"fixture\".\"main\".\"mart_alpha\"",
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:33.492790Z",
+          "completed_at": "2026-10-16T22:32:33.501570Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:33.502707Z",
+          "completed_at": "2026-10-16T22:32:33.601212Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "model.fixture.mart_broken",
+      "status": "error",
+      "execution_time": 0.02089405059814453,
+      "failures": null,
+      "message": "Runtime Error in model mart_broken (models/mart_broken.sql)\n  Catalog Error: Table with name table_that_does_not_exist does not exist!\n  Did you mean \"information_schema.tables\"?\n  \n  LINE 5:     select * from table_that_does_not_exist\n                            ^",
+      "relation_name": "\"fixture\".\"main\".\"mart_broken\"",
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:33.607836Z",
+          "completed_at": "2026-10-16T22:32:33.609632Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:33.610215Z",
+          "completed_at": "2026-10-16T22:32:33.620868Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "test.fixture.assert_alpha_warns",
+      "status": "warn",
+      "execution_time": 0.03781604766845703,
+      "failures": 1,
+      "message": "Got 1 result, configured to warn if != 0",
+      "relation_name": null,
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:33.632294Z",
+          "completed_at": "2026-10-16T22:32:33.637266Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:33.637950Z",
+          "completed_at": "2026-10-16T22:32:33.667170Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "test.fixture.not_null_mart_alpha_id.fa84ebf1a9",
+      "status": "pass",
+      "execution_time": 0.026473283767700195,
+      "failures": 0,
+      "message": null,
+      "relation_name": null,
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:33.672895Z",
+          "completed_at": "2026-10-16T22:32:33.686420Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:33.687106Z",
+          "completed_at": "2026-10-16T22:32:33.696355Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "test.fixture.unique_mart_alpha_id.8117d0ad99",
+      "status": "pass",
+      "execution_time": 0.023448705673217773,
+      "failures": 0,
+      "message": null,
+      "relation_name": null,
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:33.701796Z",
+          "completed_at": "2026-10-16T22:32:33.712236Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:33.712984Z",
+          "completed_at": "2026-10-16T22:32:33.722555Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "model.fixture.mart_after_broken",
+      "status": "skipped",
+      "execution_time": 0,
+      "failures": null,
+      "message": null,
+      "relation_name": "\"fixture\".\"main\".\"mart_after_broken\"",
+      "timing": []
+    },
+    {
+      "unique_id": "model.fixture.mart_beta",
+      "status": "success",
+      "execution_time": 0.03236961364746094,
+      "failures": null,
+      "message": "OK",
+      "relation_name": "\"fixture\".\"main\".\"mart_beta\"",
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:33.731678Z",
+          "completed_at": "2026-10-16T22:32:33.734427Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:33.735074Z",
+          "completed_at": "2026-10-16T22:32:33.762240Z"
+        }
+      ]
+    },
+    {
+      "unique_id": "test.fixture.not_null_mart_after_broken_id.f50e524cd0",
+      "status": "skipped",
+      "execution_time": 0,
+      "failures": null,
+      "message": null,
+      "relation_name": null,
+      "timing": []
+    },
+    {
+      "unique_id": "test.fixture.assert_beta_fails",
+      "status": "fail",
+      "execution_time": 0.01736617088317871,
+      "failures": 2,
+      "message": "Got 2 results, configured to fail if != 0",
+      "relation_name": null,
+      "timing": [
+        {
+          "name": "compile",
+          "started_at": "2026-10-16T22:32:33.770391Z",
+          "completed_at": "2026-10-16T22:32:33.772867Z"
+        },
+        {
+          "name": "execute",
+          "started_at": "2026-10-16T22:32:33.774058Z",
+          "completed_at": "2026-10-16T22:32:33.784835Z"
+        }
+      ]
+    }
+  ],
+  "elapsed_time": 0.42292070388793945,
+  "args": {
+    "which": "build",
+    "invocation_command": "dbt build"
+  }
+}
