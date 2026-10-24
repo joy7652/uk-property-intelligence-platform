@@ -136,8 +136,10 @@ EXPECTED = {
 
 missing, unexpected = [], []
 for view, wanted in EXPECTED.items():
+    # information_schema spells a privilege with underscores, USE_SCHEMA, where GRANT
+    # writes USE SCHEMA. Read back in GRANT's spelling so the two compare.
     held = {
-        tuple(row)
+        (*row[:-1], row[-1].replace("_", " "))
         for row in spark.sql(  # noqa: F821
             f"SELECT {COLUMNS[view]} FROM {CATALOG}.information_schema.{view} "
             f"WHERE grantee = '{GROUP}'"
