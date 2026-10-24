@@ -1,6 +1,8 @@
 -- The most recent cross-source verification verdict is a pass. It covers the transaction
--- series against the published index, and the crime total across the published category
--- changes, which between them are what the marts' price and crime series rest on.
+-- series against the published index, which the marts' price series rest on. The crime
+-- series rest on the total crossing the published category changes unmoved, and that is
+-- not read here: the crime load evaluates it before writing, so a crime fact in Gold has
+-- already passed it.
 --
 -- Read, never recomputed. A run that breaches writes its results and then fails, and so
 -- does a run whose rules all passed but one never reported; neither is a pass. A run the

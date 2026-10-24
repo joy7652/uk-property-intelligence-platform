@@ -1,10 +1,10 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Create Unity Catalog schemas
-# MAGIC One schema per medallion layer, bronze, silver, gold and quality, plus configs for orchestration state and marts for the dbt views over Gold.
+# MAGIC One schema per medallion layer, bronze, silver, gold and quality, plus configs for orchestration state, marts for the dbt views over Gold, and marts_ci, where continuous integration builds the same views from the commit under test.
 # MAGIC Run this before `02_create_bronze_volumes`, and before the first `dbt build`: dbt is configured never to create a schema.
 # MAGIC
-# MAGIC Bronze, configs and marts take no managed location. Bronze and configs hold External Volumes only and marts holds views, so none of them has managed objects to place.
+# MAGIC Bronze, configs, marts and marts_ci take no managed location. Bronze and configs hold External Volumes only and the two mart schemas hold views, so none of them has managed objects to place.
 
 # COMMAND ----------
 
@@ -29,6 +29,9 @@
 # MAGIC
 # MAGIC CREATE SCHEMA IF NOT EXISTS uk_property_intel.marts
 # MAGIC   COMMENT 'Views over the Gold star, built by dbt from the dbt/ folder and each fixed to one grain for direct SQL readers. Created here, never by dbt. No managed location by design: a view stores nothing.';
+# MAGIC
+# MAGIC CREATE SCHEMA IF NOT EXISTS uk_property_intel.marts_ci
+# MAGIC   COMMENT 'The marts views as continuous integration builds them from the commit under test, read by nothing. The only schema the CI service principal can create objects in. Created here, never by dbt. No managed location by design: a view stores nothing.';
 
 # COMMAND ----------
 
@@ -70,3 +73,8 @@
 
 # MAGIC %sql
 # MAGIC DESCRIBE SCHEMA EXTENDED uk_property_intel.marts;
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC DESCRIBE SCHEMA EXTENDED uk_property_intel.marts_ci;

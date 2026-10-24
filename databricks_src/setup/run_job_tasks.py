@@ -4,7 +4,7 @@ import requests
 
 # --- fill these two -------------------------------------------------------------
 JOB_NAME = "ukpropertyintel-silver-gold"
-TASKS = ["marts_build"]
+TASKS = ["marts_build", "record_marts_build"]
 # --------------------------------------------------------------------------------
 
 POLL_SECONDS = 30
@@ -68,6 +68,10 @@ for task in run.get("tasks", []):
     print(f"\n{task['task_key']}  {outcome(task['state'])}  {seconds}s")
     if output.get("error"):
         print(output["error"])
+    # A notebook task returns what it passed to dbutils.notebook.exit rather than a log.
+    returned = (output.get("notebook_output") or {}).get("result")
+    if returned:
+        print(returned)
     if output.get("logs"):
         if output.get("logs_truncated"):
             print("log truncated by the API; the full log is on the run page")

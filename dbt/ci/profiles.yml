@@ -1,0 +1,26 @@
+# The profile the dbt jobs in .github/workflows/tests.yml run on, and nothing else. The
+# monthly job's marts_build task runs on a profile Databricks generates for it,
+# authenticated as the job's owner, and never reads this folder.
+#
+# No credential appears here or in the repository's settings. The build job requests an
+# OIDC token from GitHub and hands it to the adapter as DATABRICKS_OIDC_TOKEN, and
+# Databricks exchanges it for a short-lived token belonging to the dbt-ci service
+# principal, under a federation policy that names this repository and its databricks-ci
+# environment.
+#
+# No defaults on the env_var calls. A variable missing from the environment stops the run
+# when the profile is read, instead of connecting somewhere nobody chose.
+uk_property_intel:
+  target: ci
+  outputs:
+    ci:
+      type: databricks
+      catalog: uk_property_intel
+      # Never marts. A pull request builds views from code nobody has merged yet, so it
+      # builds them where nothing reads, and the principal holds no privilege on marts.
+      schema: marts_ci
+      host: "{{ env_var('DATABRICKS_HOST') }}"
+      http_path: "{{ env_var('DATABRICKS_HTTP_PATH') }}"
+      auth_type: env-oidc
+      client_id: "{{ env_var('DATABRICKS_CLIENT_ID') }}"
+      threads: 8

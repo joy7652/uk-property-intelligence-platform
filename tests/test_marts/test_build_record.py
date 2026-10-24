@@ -99,7 +99,7 @@ def task(
     }
 
 
-def never_ran(result: str = "EXCLUDED", life: str = "TERMINATED") -> dict:
+def never_ran(result: str = "DISABLED", life: str = "TERMINATED") -> dict:
     return {
         "task_key": TASK_KEY,
         "run_id": 7002,

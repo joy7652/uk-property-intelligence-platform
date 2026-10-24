@@ -23,7 +23,7 @@
 # MAGIC Four `AuditRun` instances, one per table, so `rows_written` is a real number
 # MAGIC rather than a total across whatever this notebook wrote. All four names are
 # MAGIC already in `GOLD_TABLES`.
-# MAGIC #
+# MAGIC
 # MAGIC Each is gated on its own, and this is the notebook where that matters. The two
 # MAGIC small-area tables stand behind `dim_lsoa` and `dim_crime_type`; the two area
 # MAGIC tables stand behind `dim_area` as well, because the levels above a small area are
@@ -31,6 +31,14 @@
 # MAGIC and not the second two. Skipping them saves nothing at runtime, since both
 # MAGIC aggregates are built for the small-area tables regardless: the gate is there for
 # MAGIC correctness, not for time.
+# MAGIC
+# MAGIC One registered rule stands in front of all four writes.
+# MAGIC `crime_total_step_at_vocabulary_change` measures whether the total crosses each
+# MAGIC published vocabulary change unmoved, which is what makes any crime series
+# MAGIC comparable across eras. It is evaluated on the aggregate before the first table
+# MAGIC is written and recorded under the first run, so a breach leaves its results in
+# MAGIC `quality.rule_result` and stops the notebook with all four tables holding what
+# MAGIC they held before.
 # MAGIC
 # MAGIC Anti-social behaviour never reaches the two type tables. It is dropped in the
 # MAGIC shared aggregate and refused by check constraint as well, so a row arriving there
@@ -58,12 +66,17 @@ from databricks_src.gold.transforms.conformance import (
     measure_dimension_coverage,
 )
 from databricks_src.gold.transforms.crime import (
+    COMPOSITE_AREA_CODE,
+    EXCLUDING_ASB_COLUMN,
+    MONTH_COLUMN,
     POPULATION_COLUMN,
+    POPULATIONS,
     is_resolved,
     resolve_crime,
     small_area_totals,
     small_area_type_counts,
 )
+from databricks_src.gold.transforms.dim_crime_type import ERA_FIRST_MONTH
 from databricks_src.gold.transforms.fact_area_month_crime import (
     transform_fact_area_month_crime,
 )
@@ -77,6 +90,15 @@ from databricks_src.gold.transforms.fact_lsoa_month_crime_total import (
     transform_fact_lsoa_month_crime_total,
 )
 from databricks_src.orchestration import stage
+from databricks_src.quality.rules.evaluator import (
+    RULE_TABLE,
+    STEP_WINDOW,
+    assert_rules_reported,
+    evaluate,
+    failures,
+    rule_frame,
+    window_step,
+)
 from databricks_src.utils.gold_write import overwrite
 
 CATALOG = "uk_property_intel"
@@ -92,6 +114,18 @@ FACT_LSOA_TOTAL = f"{CATALOG}.gold.fact_lsoa_month_crime_total"
 FACT_AREA_CRIME = f"{CATALOG}.gold.fact_area_month_crime"
 FACT_AREA_TOTAL = f"{CATALOG}.gold.fact_area_month_crime_total"
 
+# The rule this load promises to evaluate before it writes. Named here rather than
+# derived from what the load produces, because a rule that stops running looks exactly
+# like one that keeps passing.
+STABILITY_RULES = ("crime_total_step_at_vocabulary_change",)
+
+# The months the published vocabulary changed, read off the authored eras rather than
+# written out, so a third change is picked up by adding it there. Era 1 is the original
+# publication and opens no break.
+VOCABULARY_BREAKS = tuple(
+    ERA_FIRST_MONTH[era] for era in sorted(ERA_FIRST_MONTH) if era > 1
+)
+
 # One timestamp for the whole notebook, carried on all four audit rows so a single load
 # reads as one event even though it is four runs.
 INGESTION_TS = datetime.now(timezone.utc)
@@ -101,11 +135,11 @@ INGESTION_TS = datetime.now(timezone.utc)
 # MAGIC %md
 # MAGIC ## Shared helpers
 # MAGIC
-# MAGIC `record_populations` writes the same counts to whichever run is passed. They are
-# MAGIC measured once, on the frame every fact reads, and recorded four times because a
-# MAGIC run that cannot say what its source was reduced to is a run someone has to join
-# MAGIC to another one to understand. No denominator: the scopes partition the records
-# MAGIC read, so the base is their sum.
+# MAGIC `record_populations` writes the same five counts to whichever run is passed, a
+# MAGIC zero for any outcome that did not occur. They are measured once, on the frame
+# MAGIC every fact reads, and recorded four times because a run that cannot say what its
+# MAGIC source was reduced to is a run someone has to join to another one to understand.
+# MAGIC No denominator: the scopes partition the records read, so the base is their sum.
 # MAGIC
 # MAGIC `record_conformance` takes the dimension a table keys on, because the two grains
 # MAGIC key on different ones. Coverage is recorded against that dimension only. The
@@ -116,12 +150,27 @@ INGESTION_TS = datetime.now(timezone.utc)
 # COMMAND ----------
 
 
+def every_population(counts: list) -> dict[str, int]:
+    """Records per declared population, with a zero for any that did not occur.
+
+    The group-by behind counts reports only the outcomes that occurred, and a zero
+    nobody measured is worth less than a zero someone did. A label POPULATIONS does
+    not declare raises rather than going unrecorded.
+    """
+    measured = {row[POPULATION_COLUMN]: row["records"] for row in counts}
+    undeclared = sorted(set(measured) - set(POPULATIONS))
+    if undeclared:
+        raise ValueError(
+            f"crime resolution produced {undeclared}, which POPULATIONS does not "
+            "declare, so their records would go unrecorded"
+        )
+    return {population: measured.get(population, 0) for population in POPULATIONS}
+
+
 def record_populations(audit_run, counts: list) -> None:
     """Record the resolution breakdown on one run, one scope per population."""
-    for row in counts:
-        audit_run.measure(
-            "source_rows", row["records"], scope=row[POPULATION_COLUMN]
-        )
+    for population, records in every_population(counts).items():
+        audit_run.measure("resolution_rows", records, scope=population)
 
 
 def record_conformance(
@@ -261,14 +310,16 @@ if lsoa_crime_run is not None:
             .agg(F.count(F.lit(1)).alias("records"))
             .collect()
         )
-        source_rows = sum(row["records"] for row in population_counts)
+        rows_read = sum(row["records"] for row in population_counts)
         record_populations(lsoa_crime_run, population_counts)
 
         resolved = labelled.filter(is_resolved())
 
-    for row in sorted(population_counts, key=lambda item: -item["records"]):
-        print(f"{row['records']:>12,}  {row[POPULATION_COLUMN]}")
-    print(f"{source_rows:>12,}  read")
+    for population, records in sorted(
+        every_population(population_counts).items(), key=lambda item: -item[1]
+    ):
+        print(f"{records:>12,}  {population}")
+    print(f"{rows_read:>12,}  read")
 
 # COMMAND ----------
 
@@ -296,11 +347,107 @@ if lsoa_crime_run is not None:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Before any write: does the total cross the vocabulary changes unmoved
+# MAGIC
+# MAGIC Police.uk changed its categories at 2011-09 and 2013-05, both times by splitting
+# MAGIC an existing type into new ones that sum back to it. A total across every type is
+# MAGIC therefore comparable across the whole series while any one type is not, and
+# MAGIC every cross-era figure these four tables feed rests on that.
+# MAGIC
+# MAGIC Evaluated here because nothing downstream waits for a check. The marts are views
+# MAGIC over Gold and the semantic model reads it directly, so a step found after the
+# MAGIC writes would already be in front of both.
+# MAGIC
+# MAGIC The small-area totals summed by month are the England and Wales composite
+# MAGIC exactly, because every small area rolls up into it, so this measures what
+# MAGIC `fact_area_month_crime_total` is about to hold at that code. Anti-social
+# MAGIC behaviour is excluded, as both type tables exclude it. One row per month,
+# MAGIC collected and compared in Python.
+# MAGIC
+# MAGIC Results are written before the verdict is read, so a breach leaves its evidence
+# MAGIC behind. `window_step` returns nothing where a change cannot be measured: its
+# MAGIC month is absent, it falls within three months of either end of the series, or a
+# MAGIC month in either window holds nothing. Those are counted and printed rather than
+# MAGIC passed, and a load where no change is measurable fails, because a rule that
+# MAGIC stops reporting looks exactly like one that keeps passing.
+# MAGIC
+# MAGIC Expected: a series opening at 2010-12-01, both changes measurable, 0.0318 at
+# MAGIC 2011-09 and 0.0525 at 2013-05 on ratios of 0.9687 and 1.0539, both inside the
+# MAGIC 0.10 ceiling, and two rows in `quality.rule_result` under this run.
+
+# COMMAND ----------
+
+if lsoa_crime_run is not None:
+    with lsoa_crime_run.step():
+        composite = {
+            row[MONTH_COLUMN]: row["records"]
+            for row in totals.groupBy(MONTH_COLUMN)
+            .agg(F.sum(EXCLUDING_ASB_COLUMN).alias("records"))
+            .collect()
+        }
+
+        steps = []
+        unmeasurable = []
+        for break_month in VOCABULARY_BREAKS:
+            measured = window_step(composite, break_month)
+            if measured is None:
+                unmeasurable.append(str(break_month))
+            else:
+                steps.append((break_month, measured))
+
+        stability = tuple(
+            evaluate(
+                "crime_total_step_at_vocabulary_change",
+                abs(measured.log_ratio),
+                scope=str(break_month),
+                detail=(
+                    f"ratio {measured.after / measured.before:.4f}, "
+                    f"{measured.before:,.0f} to {measured.after:,.0f} records per month "
+                    f"over {STEP_WINDOW} months either side at {COMPOSITE_AREA_CODE}"
+                ),
+            )
+            for break_month, measured in steps
+        )
+
+        rule_frame(spark, lsoa_crime_run.run_id, stability).write.mode(  # noqa: F821
+            "append"
+        ).saveAsTable(RULE_TABLE)
+
+        print(
+            f"{len(composite)} months at {COMPOSITE_AREA_CODE}, "
+            f"{min(composite)} to {max(composite)}"
+        )
+        print(
+            f"{len(steps)} of {len(VOCABULARY_BREAKS)} changes measurable"
+            + (f", not measurable: {', '.join(unmeasurable)}" if unmeasurable else "")
+        )
+        for (break_month, measured), result in zip(steps, stability):
+            print(
+                f"{break_month}  ratio {measured.after / measured.before:.4f}  "
+                f"abs log ratio {result.observed:.4f}  ceiling {result.upper_bound}  "
+                + ("passed" if result.passed else "BREACHED")
+            )
+
+        assert_rules_reported(stability, STABILITY_RULES if VOCABULARY_BREAKS else ())
+
+        breached = failures(stability)
+        if breached:
+            raise ValueError(
+                f"{len(breached)} of {len(stability)} vocabulary changes moved the crime "
+                "total past its ceiling, so the eras are not comparable and none of the "
+                "four tables was written: "
+                f"{[(r.scope, round(r.observed, 4), r.upper_bound) for r in breached]}"
+            )
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## 1. fact_lsoa_month_crime
 # MAGIC
-# MAGIC Expected: 25,984,439 rows over 36,751 small areas. `CLUSTER BY (month_start_date,
-# MAGIC lsoa_code)`, the first liquid-clustered table this project writes, so the write
-# MAGIC time here is a new measurement rather than something inherited from phase 3.4.
+# MAGIC Expected: 25,984,439 rows over 36,751 small areas. `CLUSTER BY
+# MAGIC (month_start_date, lsoa_code)`, the first liquid-clustered table this project
+# MAGIC writes, so the write time here is a new measurement rather than something
+# MAGIC inherited from phase 3.4.
 
 # COMMAND ----------
 
@@ -571,3 +718,20 @@ if lsoa_crime_run is not None:
 # MAGIC   'fact_area_month_crime', 'fact_area_month_crime_total'
 # MAGIC )
 # MAGIC ORDER BY r.started_ts DESC, r.source, m.metric, m.scope
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC The rule results, newest first. Each load adds one per vocabulary change under
+# MAGIC `fact_lsoa_month_crime`, and both should read passed.
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC SELECT r.source, r.status, r.started_ts, x.scope,
+# MAGIC        round(x.observed, 4) AS observed, x.upper_bound, x.passed, x.detail
+# MAGIC FROM uk_property_intel.quality.rule_result x
+# MAGIC JOIN uk_property_intel.quality.pipeline_run r USING (run_id)
+# MAGIC WHERE x.rule = 'crime_total_step_at_vocabulary_change'
+# MAGIC ORDER BY r.started_ts DESC, x.scope
+# MAGIC LIMIT 6
