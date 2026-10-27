@@ -1,0 +1,22 @@
+# Keeps the action pins in .github/workflows current. Every action there is pinned to a
+# full commit SHA, which nothing else moves, and GitHub retires the Node runtime older
+# releases run on to its own schedule.
+#
+# GitHub Actions only. requirements-dev.txt pins PySpark and pytest to what DBR 17.3 LTS
+# ships, and dbt/requirements.txt pins dbt-core to the cap dbt-databricks sets, so an
+# automatic bump to either would break the pairing those pins exist to hold.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # A release is proposed once it is a week old, which gives a compromised one time to
+    # be found and withdrawn before it reaches a pin.
+    cooldown:
+      default-days: 7
+    # Every action that moved, in one pull request.
+    groups:
+      actions:
+        patterns:
+          - "*"

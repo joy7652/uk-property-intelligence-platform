@@ -3,6 +3,7 @@
 # Actions are pinned to full commit SHAs, with the release each one resolved to beside
 # it. A tag can be moved to different code after it was reviewed and a commit cannot,
 # which matters here because dbt-build can mint a token that reaches the workspace.
+# .github/dependabot.yml proposes new pins as pull requests.
 name: tests
 
 on:
@@ -230,11 +231,14 @@ jobs:
   dbt-build:
     needs: [changes, dbt-parse]
     # A pull request from a fork runs code nobody here has reviewed, and GitHub gives it
-    # no token to exchange.
+    # no token to exchange. A Dependabot pull request changes action pins and nothing
+    # else, and those pins are the code nobody has reviewed yet, so the one job holding a
+    # token waits for them to merge and runs them on the push to main.
     if: >-
       needs.changes.outputs.code == 'true'
       && (github.event_name != 'pull_request'
-          || github.event.pull_request.head.repo.full_name == github.repository)
+          || (github.event.pull_request.head.repo.full_name == github.repository
+              && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: databricks-ci
@@ -339,17 +343,19 @@ jobs:
         env:
           CODE: ${{ needs.changes.outputs.code }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          DEPENDABOT: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]' }}
           SUITES: ${{ needs.tests.result }}
           DBT_PARSE: ${{ needs.dbt-parse.result }}
           DBT_BUILD: ${{ needs.dbt-build.result }}
         run: |
           # A check may skip only for a documentation-only diff, and the warehouse build
-          # also for a pull request from a fork. A skip caused by an upstream failure
-          # reaches here with neither true and fails.
+          # also for a pull request from a fork or from Dependabot. A skip caused by an
+          # upstream failure reaches here with none of those true and fails.
           docs_only=false
           [ "$CODE" = "false" ] && docs_only=true
           build_may_skip=$docs_only
           [ "$FORK" = "true" ] && build_may_skip=true
+          [ "$DEPENDABOT" = "true" ] && build_may_skip=true
 
           failed=0
           check() {
