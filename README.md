@@ -3,7 +3,7 @@ Built by Md. Rais Al Kabir Joy · [GitHub](https://github.com/joy7652)
 
 An Azure data platform built around HM Land Registry's 31.4M residential transactions since 1995 (July 2026 release), joined with five more official UK datasets covering house prices, private rents, postcodes, the Bank of England base rate and street-level crime. The pipelines run off a single JSON config file, so adding a source means editing config, not writing code. Loads are incremental from a per-source watermark. Every file is validated against its expected format before parsing, because a pipeline reporting success only proves bytes moved, and all data access is governed through Unity Catalog.
 
-> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,126,889 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is complete: continuous integration, the quality layer, watermark automation, orchestration and the failure cascade, and a schema the watermark is checked against before the pipeline reads it. A source that fails at ingestion skips exactly the tables built on it. Phase 5 covers consumption: Power BI over the Gold star through a Databricks SQL warehouse, then a Fabric mirrored catalog. The serving layer is settled, the pipeline health dashboard is live over the quality tables, and the semantic model over the Gold star is built, with its definition in version control as text. Synapse Serverless was removed from the plan once Unity Catalog turned out not to support path-based access to managed tables.
+> **Status:** Phase 1 complete: Bronze ingestion for all six sources. Phase 2 complete: the Databricks workspace, Unity Catalog, and medallion storage layer are provisioned, and all six Silver tables are live, unit-tested, and committed. The Bank of England base rate, the UK House Price Index, Land Registry Price Paid Data, the UK postcode lookup, ONS private rents, and Police.uk street-level crime. Phase 3 is complete: the Gold star schema is designed, its thirteen tables are created, all four dimensions and all nine facts are loaded and verified on the cluster, 36,126,889 fact rows in total, and a transaction-derived price series reconciles against the published index at a count correlation of 0.9998. Phase 4 is complete: continuous integration, the quality layer, watermark automation, orchestration and the failure cascade, and a schema the watermark is checked against before the pipeline reads it. A source that fails at ingestion skips exactly the tables built on it. Phase 5 covers consumption: Power BI over the Gold star through a Databricks SQL warehouse, then a Fabric mirrored catalog. The serving layer is settled, the pipeline health dashboard is live over the quality tables, and the semantic model over the Gold star is built, with its definition in version control as text. Three dbt views over the star serve direct SQL readers, each fixed to one grain, and continuous integration builds and tests them on the warehouse with no stored credential. The property market dashboard is next, and the pipeline work behind it ran first: the crime dimension derives which series survive a taxonomy change, and a fourth quality rule records whether the total holds across one. Synapse Serverless was removed from the plan once Unity Catalog turned out not to support path-based access to managed tables.
 
 **Highlights**
 
@@ -17,6 +17,7 @@ An Azure data platform built around HM Land Registry's 31.4M residential transac
 - Incremental by per-source watermark, with 2 reusable load patterns covering all 6 sources
 - Magic-byte validation and a quality layer recording every run, metric and rule result, because a success flag only means bytes moved
 - Unity Catalog governance over a medallion lake on ADLS Gen2, with no secrets in the data path
+- Three dbt marts over the star for SQL readers, each fixed to one grain, tested on every build and built in continuous integration with no stored credential
 
 ![Pipeline health dashboard, run detail page, 02-09-2026 failure drill: 27 stages, 5 succeeded, 4 failed, 18 skipped](docs/screenshots/pipeline_health_run_detail_drill.png)
 
@@ -60,10 +61,10 @@ ADLS Gen2 silver/ → gold/  (Delta Lake, managed tables, schema-level locations
    plus ADLS Gen2 quality/  (run history, metrics, rule results)
               ↓
 Azure Databricks SQL warehouse  (serverless 2X-Small, service principal)
-              ↓
-Power BI  (Import over the whole star, two projects held in this repo)
-              ↓
-Microsoft Fabric mirrored catalog → Direct Lake  (planned)
+              ├── Power BI  (Import over the whole star, two projects held in this repo)
+              │      ↓
+              │   Microsoft Fabric mirrored catalog → Direct Lake  (planned)
+              └── dbt marts  (three views over Gold, one grain each, for SQL readers)
 ```
 
 ### Design principles
@@ -74,7 +75,7 @@ Microsoft Fabric mirrored catalog → Direct Lake  (planned)
 - A pipeline reporting success only tells me bytes moved, not that the right bytes moved. Binary files are checked against their expected magic bytes before any Silver-layer parsing.
 - HTTP linked services are host-agnostic and take their base URL per request via `@{linkedService().p_base_url}`, instead of one linked service per host.
 - Silver filters on reliability; Gold filters on the question being asked. Data that is measured and clean stays in Silver even when nothing in the project joins it yet.
-- An aggregation the platform cannot support is refused, never captioned. Anti-social behaviour is kept out of the crime totals by check constraint, and the semantic layer returns blank for any additive measure whose filter context mixes area levels. A warning printed beside a rendered figure is not a control.
+- An aggregation the platform cannot support is refused, never captioned. Anti-social behaviour is kept out of the crime totals by check constraint, the semantic layer returns blank for any additive measure whose filter context mixes area levels, and each dbt mart holds a single grain, so the same sum cannot be written in SQL either. A warning printed beside a rendered figure is not a control.
 
 ---
 
@@ -142,8 +143,8 @@ Each linked service's base URL is parameterised via `@{linkedService().p_base_ur
 The watermark holds per-source state (last ingestion date, URL parameters, load pattern) in its own ADLS container, reached through a Unity Catalog volume at `/Volumes/uk_property_intel/configs/watermark/watermark.json`. It is state rather than source, so it lives beside the data and not in the repository. Three decisions shaped it:
 
 - Array, not object: ADF's Lookup plus ForEach iterates arrays cleanly.
-- ADLS, not Azure SQL: this drops an entire database dependency. When Databricks joins the stack, the watermark moves to a Delta table.
-- Manual updates for now: a Databricks notebook to update the watermark on successful runs is planned.
+- ADLS, not Azure SQL: this drops an entire database dependency.
+- Updated by the pipeline: a notebook run before the downloads writes each source's current URL and release date, and one run after them advances `last_refreshed` for the sources that landed.
 
 ### 4. Master orchestration pattern
 
@@ -170,8 +171,6 @@ PL_Master_Orchestrator
 Each layer maps one-to-one to a Blob container and a Unity Catalog schema. Silver, Gold, and Quality use schema-level managed locations; Bronze uses External Volumes pointing at the bronze container (see Decision 10). Keeping the physical and logical layouts aligned means cost attribution, lifecycle policy, and RBAC all scope per layer, and you can read the medallion structure straight off the storage account.
 
 The Volume namespace is flat, one Volume per source, while the storage layout underneath is not: four Volumes root at the container root (`boe/`, `doogal/`, `ons/`, `police/`) and the two Land Registry sources root under the publisher folder (`land_registry/hpi/`, `land_registry/ppd/`). A Volume roots at its source folder and never at a dataset folder beneath it, so notebooks append any dataset segment themselves.
-
-Bronze is complete. Silver is in active development; Gold and Quality follow.
 
 ### 6. Unity Catalog over hive_metastore
 
@@ -557,7 +556,10 @@ measures differ, not because the geographies do.
 
 Its share of crime records drifts from 42% in 2010 to 16% in 2026, with a rise to 28% in
 2020, so a series including it moves with reporting practice and not with crime.
-Forces also double count it.
+Forces also double count it. The clearest evidence arrived later, at the two taxonomy changes:
+anti-social behaviour fell 19.1% in September 2011 and rose 27.5% in May 2013, where the source as a
+whole moved 10.2% and 13.5%. A taxonomy change should not move a category it did not touch, and this
+one moves further than the total does.
 
 Both type tables refuse it by check constraint, so a row reaching Delta fails the write instead of loading as a number nobody questions. Both total tables carry it in a column
 of its own beside a total that excludes it, and both measures come from one aggregate:
@@ -573,7 +575,7 @@ The only check here that does not come from the pipeline being checked. It is sh
 year and coarse in aggregate, for reasons the reconciliation rules record. `fact_area_month_price` is built from 29.6M transactions; `fact_area_month_hpi` is the publisher's own mix-adjusted index over the same areas and months. Two products of one
 registry, built by different methods.
 
-The counts agree: the category A transaction count correlates with the publisher's sales volume at 0.9998 across 123,375 cells, with an aggregate ratio of 1.0036.
+The counts agree: the category A transaction count correlates with the publisher's sales volume at 0.9998 across 123,704 cells, with an aggregate ratio of 1.0037.
 
 The prices agree in a way worth knowing. The published average tracks the transaction median, and not the transaction mean: a median ratio of 1.011 against a mean ratio of 1.176. A raw mean carries the right
 tail and mix adjustment removes it, so a screen comparing against the published index
@@ -609,7 +611,8 @@ would accept the column silently, which is the quiet partial load Decision 22 ru
 A value-set change is a different thing and is already modelled. Police.uk's crime type
 list moved through three vocabularies, and `dim_crime_type` carries all 16 types with each
 one's first and last published month and what it was split out of. No Delta column moved
-either time.
+either time. Decision 58 takes that further: the dimension now derives which types can be read as
+one series across a change, so a value-set change leaves behind a record of what it cost.
 
 `mergeSchema` fits an append-only landing table taking whatever a publisher sends, and
 Decision 10 removed that table when Bronze stayed as Volumes over the raw files. The item
@@ -631,6 +634,8 @@ and does not depend on how the runner resolves its shell.
 A green check covers the transform layer on Apache Spark. It reaches no Delta, no Unity
 Catalog, no write path and no data at volume, so the rule that nothing counts as done
 until it has run on the cluster is untouched by it.
+
+Two more jobs joined it in October 2026 for the dbt marts: a parse with no warehouse behind it, and a build on the warehouse. Decision 60 covers both.
 
 ### 41. Transforms are portable across storage, and were not across SQL dialect
 
@@ -688,6 +693,14 @@ band computes to 0.9443 to 1.0635 and rejects 2023, an ordinary year.
 The mean ratio is stable at 1.1821 and is not registered. Nothing downstream reads it,
 and a rule nobody acts on gets widened instead of investigated. The first run recorded
 65 results and none breached.
+
+A fourth rule joined them in October 2026, and it measures the pipeline's inputs instead of its
+output. `crime_total_step_at_vocabulary_change` ceilings the absolute log ratio of the three-month
+mean crime count after a published taxonomy change to the three-month mean before it, excluding
+anti-social behaviour, one result per change. The ceiling is 0.10 against measured values of 0.0318
+and 0.0525, read off the same series in the same calendar month across fifteen years, where the worst
+moves are 0.0599 and 0.1591. It is the first rule in the registry to use the `distribution` kind,
+which had been declared since the framework was built and never used. Since October 2026 it runs inside the crime load, before any of the four crime tables is written, so a step stops that load with every table holding what it held before. Evaluated in the cross-source check, after the writes, it would have reported a stepped total already in front of the dashboard and the marts. The cross-source check writes 65 results again.
 
 ![Pipeline health dashboard, rules and freshness page, filtered to ppd_hpi_count_ratio_by_year: 128 results over 4 check runs, none breached](docs/screenshots/pipeline_health_rules_freshness.png)
 
@@ -906,7 +919,127 @@ The Gold star tested that. Twelve tables at roughly 51 MiB refresh warm in 18 se
 
 Both accounts hold inside their own range, and the crossover sits near 96 MiB, which this model passes through. Two measurements define a line exactly, so this is a fit and not a validation. A third at an intermediate size would test whether the relationship is linear at all. Full reasoning in DESIGN Decision 96.
 
+### 58. The dimension computes which crime series survive a taxonomy change
+
+Police.uk changed its crime type list twice inside the loaded history, in September 2011 and May
+2013. One category was renamed, one was split into two with no surviving name, and two kept their
+labels while changing what they counted. `dim_crime_type` already recorded the window each type was
+published in and what it was split out of. What it did not record was the consequence: which of the
+sixteen types can be read as one series across a break.
+
+It now carries two more columns, and both are computed from the lineage already in the table plus
+whether the type is still published. 9 types are stable, 5 report together in 2 groups, and 2 changed
+composition. The first design was an authored map from each old name to its new one, and it cannot
+express May 2013 at all: `Public disorder and weapons` became two categories, so there is no
+surviving published name to map it onto. Only the two group labels are written by hand, for exactly
+that reason, and `Public order and weapons` is a name I invented because the data supplies none.
+
+A status that says two categories report together is a claim about lineage and not about the numbers,
+and measuring the difference changed what goes on the screen. I compared each break against the same
+series' moves in the same calendar month over fifteen years, because both breaks fall on seasonal
+turning points. The public order trio steps 1.281 at May 2013, the 92.3rd same-month percentile.
+`Violent crime` steps 0.861 at September 2011, the 100th, its largest September move in the series,
+and September 2011 is not even its own break month. Both groups are correctly conformed and neither
+is comparable across its break, so the dimension states the relationship and a threshold rule
+records whether the total holds.
+
+The total does hold, and that is now measured instead of argued. Excluding anti-social behaviour, the
+England and Wales count steps 0.0318 in September 2011 and 0.0525 in May 2013, at the 57.1st and
+35.7th same-month percentiles, against worst same-month moves of 0.0599 and 0.1591. A split moves
+offences between labels and leaves the total alone, which the project had asserted from a row-count
+subtraction since Phase 3 and had never measured as a rate. A fourth reconciliation rule now records it; see Decision 43.
+
+One cost is worth stating because it is a trap. `reporting_crime_type` is a label, and three of the
+sixteen rows report under the invented name, which no row carries as its own type. Joining that
+column back to the key column therefore drops those three types silently. I wrote the expectation
+that the join would return zero, ran it, and got three.
+
+### 59. A dbt layer for SQL readers, beside the semantic model
+
+Power BI is protected from the six-level double count by a guard measure. A query written straight against Gold is not, and an unfiltered crime sum returns 3.95 times the district figure without a warning. So three dbt models sit above the star, each fixed to one grain, and the same mistake cannot be written in SQL against them.
+
+They sit beside the semantic model and not between it and Gold. The model was finished and verified, Import works best on a star, and marts made the only route to the data would bind every later consumer to questions shaped for three models. dbt also stays out of Silver, which is file-shaped work a SELECT cannot do, and out of Gold, whose figures are verified and whose transaction join runs once on a persisted frame that one model per table would run three times.
+
+The marts are views, so they always read what the star holds and need no storage of their own. The monthly job builds them and runs 24 tests after every Gold rebuild, and a recorder writes that build into `pipeline_run`, so it appears on the pipeline health dashboard beside every other stage. None of the tests compares against a stored figure. Each sets two routes to the same number against each other, and the one that depends on the price reconciliation reads its recorded verdict.
+
+`dbt/examples/` holds the evidence: four files, each asking one question of Gold and of a mart. Measured 28-10-2026:
+
+| Question | Against Gold | Against the mart |
+|---|---|---|
+| Crimes in England and Wales, 2024 | 19,225,323, every level summed | 4,869,305 |
+| Sales in unchanged small areas, 2024 | 8,037,250, annual price joined to monthly crime | 709,975 |
+| Small areas with sales and no crime, 2019 | 2,023, of which 2,019 are codes created in 2021 | 4 |
+| Change in crime over the latest year | 2026 down 51.1%, on six months of data | 2025 down 2.0% |
+
+The second file also found something the marts do not catch. 1,278 Greater Manchester small areas read as recording no crime in 2024, because the force has published a single month since June 2019 and the small-area mart judges a year complete across the whole release. Telling a quiet area from an unpublished one needs Gold to carry which force published which month, and that work is open. Full reasoning in DESIGN Decisions 102 to 106 and 109.
+
+### 60. Continuous integration builds the marts without a stored credential
+
+Two jobs joined the workflow for the dbt layer. One parses the project with no warehouse, so every reference, test and contract has to resolve, and keeps the generated docs site. The other builds and tests the marts on the warehouse, into a schema nothing reads.
+
+That second job holds no secret. GitHub signs a token naming this repository and its CI environment, Databricks exchanges it for a short-lived one belonging to a service principal, and the job spends it inside a single step. The principal can read the tables the project declares and create views in the CI schema. It holds nothing on the schema the monthly job builds, because a pull request is code nobody has merged. Its table grants are generated from the project's own source list, so a source added without re-running them fails CI with an error naming the table.
+
+Every action the workflow uses is pinned to a commit, because a tag can be moved to different code after it was reviewed. Dependabot proposes new pins weekly, for releases at least a week old. Its pull requests get no warehouse build, and neither do pull requests from forks: a fork's code is unreviewed and GitHub gives it no token, and Dependabot's changes are the pins themselves, so that build waits for the merge. Full reasoning in DESIGN Decisions 107 and 108.
+
 ## Bugs found and fixed
+
+### A guard that would have failed two loads on their next run
+
+The audit registry refuses a metric recorded at the wrong layer, a guard added in October 2026 to stop two different measurements sharing one series. The transaction and crime loads were recording their resolution counts under a name that belongs to Silver, so the guard was right to refuse them. It only looked when a notebook ran, though, and those two run once a month.
+
+It surfaced on the next hand run of the crime load, which stopped before writing anything. Left alone, the next monthly run would have failed both loads with their seven facts unwritten, a month stale beside freshly rebuilt dimensions.
+
+The counts now have Gold names of their own, and both loads record every outcome, the empty ones as zero. The gap that let it hide is closed too. A test reads every pipeline notebook as source and checks each metric name it records against its layer, so a change that strands a notebook fails on the commit that makes it. Full account in the DESIGN bug entry of the same name.
+
+### A check constraint that refused a string nothing carried
+
+Anti-social behaviour is kept out of both crime type facts by check constraint, which is how the
+exclusion is structural instead of remembered. The constraint names the category as a string literal
+in the table definition. The transform that filters those rows out before the write named it as a
+string literal too, in a different file.
+
+Two copies of one spelling is the whole defect. If the publisher renames the category, the transform
+is the file that gets updated, and the constraint then names a string no row carries. A constraint
+that rejects nothing passes on every row, stays listed on the table, and reports nothing. The
+exclusion would read as structural in the catalog while having quietly stopped being enforced, and
+the project's own documentation says a warning that still renders the figure is not a control.
+
+The crime transform now imports the literal from the crime type dimension, so the codebase holds one
+spelling. A test reads the table definition off disk and asserts that each of the two constraints
+names the string the module names, parametrised over both. That test fails if either copy moves,
+which is the only way a shared literal across a Python module and a SQL definition can be held
+together.
+
+### One variable name, four tables, nine assignments
+
+The Gold dimension load writes four tables from four cells of one notebook, and every cell assigned
+its row count to a variable called `written`. The audit row for each table read that variable back.
+
+Notebook cells run in whatever order someone runs them. Re-running the third cell alone leaves
+`written` holding the fourth table's count until the assignment lands, and a cell that raises between
+the assignment and the audit write leaves the previous table's count in place for the next one to
+record. Nothing about the code looks wrong in a top-to-bottom read, which is how it survived from
+Phase 3.2.
+
+Four names, one per table, at all nine sites. The notebook header now says why, because the next
+person to add a table will reach for the short name.
+
+### A metric recorded under the wrong layer
+
+A Gold run names the table it builds and a Silver run names its Bronze source, and the audit registry
+pairs every run name to the layer it belongs to, so a dimension recorded under Silver fails when the
+run object is constructed. That guard went in with the Gold dimension load.
+
+Metric names had no equivalent. `gold_rows` recorded under a Silver run, or `silver_rows` under a
+Gold run, wrote a row that passed every check and put two different measurements into one series. A
+chart reading that series shows a line with a step in it and no way to tell which rows came from
+where. The registry already knew enough to catch it: the metric groups are declared per layer, and
+nothing read that back.
+
+The pairing is now derived from the same grouping the registry is built from, so a metric cannot be
+registered without a layer, and the run object refuses a metric recorded at the wrong one. Measured
+after the change: 38 names registered, 38 paired, 68 metric and layer combinations accepted and 46
+refused.
 
 ### A median that counted the gaps
 
@@ -1104,11 +1237,12 @@ thing that was about to stop being true.
 | Identity | User-assigned managed identity via Databricks Access Connector |
 | Serving | Databricks SQL warehouse, serverless 2X-Small, reached as a Databricks-managed service principal over OAuth |
 | Visualisation | Power BI Desktop, Import over the whole Gold star, saved as Power BI Projects (`.pbip` with TMDL) |
+| Marts | dbt Core 1.12 with dbt-databricks, three views over the Gold star, built and tested on the SQL warehouse |
 | Mirroring (planned) | Microsoft Fabric mirrored Azure Databricks catalog, Direct Lake |
 | Infrastructure as code (planned) | Terraform over the serving layer |
 | Source control | GitHub (trunk-based, branch-protected main) |
-| Testing | pytest + chispa for PySpark transforms |
-| CI/CD | GitHub Actions (lint and the test suite on every push and pull request) |
+| Testing | pytest + chispa for the PySpark transforms; dbt tests over the marts |
+| CI/CD | GitHub Actions: lint, the test suites and a dbt parse on every push and pull request, and a dbt build on the warehouse through OIDC federation; actions pinned to commits and moved by Dependabot |
 
 ---
 
@@ -1118,6 +1252,7 @@ This repository runs on a **trunk-based workflow** with short-lived feature bran
 
 - One branch per logical unit of work (e.g. `phase2/setup-catalog-schemas`, `phase2/boe-silver`).
 - Everything merges to `main` through a pull request, and `main` is protected against direct pushes.
+- Pull requests are squash-merged, so a branch is finished at its merge and the next one starts from an updated `main`.
 - ADF Studio is Git-integrated. Pipeline JSON commits go to feature branches, then merge to `main` via PR. Publishing from ADF promotes the live factory.
 - Databricks notebooks are managed through Databricks Git folders linked to this repo, committed from the workspace UI on the same feature branches.
 
@@ -1129,32 +1264,40 @@ Both ADF and Databricks work against the same Git branches as local development,
 uk-property-intelligence-platform/
 ├── README.md
 ├── .github/
+│   ├── dependabot.yml                   # weekly pin updates for the workflow's actions
 │   └── workflows/
-│       └── tests.yml                    # lint + discovered suite matrix, on push and PR
+│       └── tests.yml                    # lint, the suite matrix, dbt parse and dbt build
 ├── ruff.toml                            # rules, and the Databricks runtime builtins
 ├── config/
 │   └── watermark.schema.json            # the watermark contract, one branch per load pattern
-├── adf/
-│   └── pipelines/                       # JSON definitions, synced via ADF Git integration
-│       ├── PL_Master_Orchestrator.json
-│       ├── PL_Single_File_Full_Load.json
-│       ├── PL_Yearly_Stepped_Full_Load.json
-│       ├── PL_Route_Yearly_Stepped.json
-│       ├── PL_Route_Incremental_Load.json
-│       ├── PL_Incremental_Load_StaticURL.json
-│       └── PL_Incremental_Load_TemplatedLatest.json
+├── adf/                                 # resource JSON, synced via ADF Git integration
+│   ├── pipeline/
+│   │   ├── PL_Master_Orchestrator.json
+│   │   ├── PL_Single_File_Full_Load.json
+│   │   ├── PL_Full_Load_Yearly_Stepped.json
+│   │   ├── PL_Route_Yearly_Stepped.json
+│   │   ├── PL_Route_Incremental_Load.json
+│   │   ├── PL_Incremental_Load_StaticURL.json
+│   │   └── PL_Incremental_Load_TemplatedLatest.json
+│   ├── dataset/
+│   ├── linkedService/
+│   ├── credential/
+│   ├── factory/
+│   └── publish_config.json
 ├── databricks_src/
 │   ├── setup/
 │   │   ├── README.md                    # bootstrap runbook
 │   │   ├── cluster_definition.json      # cluster + library spec
-│   │   ├── job_definition.json          # the twelve-task Silver and Gold job
+│   │   ├── job_definition.json          # the fourteen-task job, Silver through the dbt marts and their record
 │   │   ├── job_definition_pre_run.json  # one-task URL resolver, run before the downloads
 │   │   ├── apply_job_definition.py      # creates or resets a job from either file, idempotent
+│   │   ├── run_job_tasks.py             # runs named tasks of the deployed job, nothing upstream
 │   │   ├── 01_create_schemas.py         # Unity Catalog schema definitions (SQL via %sql cells)
 │   │   ├── 02_create_bronze_volumes.py  # External Volumes per Bronze source
-│   │   ├── 03_create_quality_tables.py  # pipeline_run, pipeline_metric and rule_result, DDL generated from the writers
+│   │   ├── 03_create_quality_tables.py  # the four quality tables, DDL generated from the writers
 │   │   ├── 04_create_configs_volumes.py # external location and External Volume over the configs container
-│   │   └── 05_grant_serving_access.py   # read grants on gold and quality for the bi_readers group
+│   │   ├── 05_grant_serving_access.py   # read grants on gold and quality for the bi_readers group
+│   │   └── 06_grant_ci_access.py        # what the dbt build in CI may read and create, for ci_builders
 │   ├── bronze/
 │   │   ├── notebooks/
 │   │   │   ├── 01_pre_run_resolve_urls.py    # resolves every source's URL and release date
@@ -1187,6 +1330,10 @@ uk-property-intelligence-platform/
 │   │   ├── notebooks/                   # table DDL, dimension load, fact loads
 │   │   ├── transforms/                  # one module per table, plus shared conformance checks
 │   │   └── exploration/                 # read-only measurement behind the model's figures
+│   ├── marts/
+│   │   ├── build_record.py              # what the dbt build did, from the job run and run_results.json
+│   │   └── notebooks/
+│   │       └── 01_record_marts_build.py # writes the build into pipeline_run and ends the way it did
 │   ├── quality/
 │   │   ├── audit/
 │   │   │   └── writer.py                # run and metric writer, metric name registry, freshness bounds
@@ -1194,7 +1341,8 @@ uk-property-intelligence-platform/
 │   │       └── evaluator.py             # threshold registry, evaluator, rule_result
 │   ├── orchestration/
 │   │   └── stage.py                     # the gate every Silver and Gold notebook opens with
-│   └── utils/                           # shared constants (paths), Spark helpers, logging
+│   └── utils/
+│       └── gold_write.py                # Delta write helpers the Gold loads share
 ├── requirements-dev.txt                 # local + CI test stack (pyspark, pytest, chispa)
 ├── tests/
 │   ├── conftest.py                      # SparkSession fixture; reuses the cluster session
@@ -1208,6 +1356,7 @@ uk-property-intelligence-platform/
 │   ├── run_tests_shared.py              # suites belonging to no single source
 │   ├── run_tests_watermark.py           # resolvers, registry, dependency chain
 │   ├── run_tests_orchestration.py       # the stage gate
+│   ├── run_tests_marts.py               # the marts build recorder
 │   ├── test_silver_transforms/
 │   │   ├── test_boe_base_rate.py        # BoE transform + DQ guard
 │   │   ├── test_hpi.py                  # HPI transform, coverage floor, typing
@@ -1220,8 +1369,19 @@ uk-property-intelligence-platform/
 │   │   ├── test_dim_date.py             # calendar expansion, rate interval chain
 │   │   ├── test_dim_area.py             # levels, ancestry, name precedence, derived codes
 │   │   ├── test_dim_lsoa.py             # district assignment, boundary vintage, conformance
-│   │   ├── test_dim_crime_type.py       # vocabulary map, publication window
-│   │   └── test_conformance.py          # shared key and grain checks
+│   │   ├── test_dim_crime_type.py       # vocabulary eras, publication window, derived conformance
+│   │   ├── test_conformance.py          # shared key and grain checks
+│   │   ├── test_transactions.py         # postcode resolution, outcome labelling, level explode
+│   │   ├── test_crime.py                # small-area lookup, ancestry, the anti-social exclusion
+│   │   ├── test_fact_area_month_hpi.py  # projection, key resolution, adjusted columns
+│   │   ├── test_fact_area_month_rent.py # projection, the uncoded areas, measureless rows
+│   │   ├── test_fact_area_month_price.py            # exact median, category A filter
+│   │   ├── test_fact_area_month_transaction_mix.py  # the four degenerate dimensions
+│   │   ├── test_fact_lsoa_year_price.py             # annual grain, weighted mean
+│   │   ├── test_fact_area_month_crime.py            # roll-up from the small-area aggregate
+│   │   ├── test_fact_area_month_crime_total.py      # both columns from one aggregate
+│   │   ├── test_fact_lsoa_month_crime.py            # type grain, constraint agreement
+│   │   └── test_fact_lsoa_month_crime_total.py      # zero as a count, not a missing join
 │   ├── test_bronze_watermark/
 │   │   ├── test_schema.py               # the schema, against entries wrong in one way each
 │   │   ├── test_registry.py             # watermark lookup, field merge
@@ -1233,9 +1393,23 @@ uk-property-intelligence-platform/
 │   ├── test_orchestration/
 │   │   └── test_stage.py                # plan read, both gate questions, the skip branch
 │   ├── test_quality_audit/
-│   │   └── test_writer.py               # metric registry, generated DDL, value routing, freshness verdict
+│   │   ├── test_writer.py               # metric registry, generated DDL, value routing, freshness verdict
+│   │   └── test_notebook_metrics.py     # every metric a notebook records, against its layer
+│   ├── test_marts/
+│   │   ├── test_build_record.py         # task outcome, run_results reading, the verdict
+│   │   └── fixtures/                    # run_results and job-run payloads
 │   └── test_quality_rules/
 │       └── test_evaluator.py           # registry, refused values, DDL, verdict constraint
+├── dbt/                                 # marts over the Gold star, views only, built by the job's marts_build task
+│   ├── dbt_project.yml
+│   ├── ci/
+│   │   └── profiles.yml                 # the CI profile: OIDC federation, no credential, builds into marts_ci
+│   ├── models/
+│   │   ├── _sources.yml                 # the Gold and quality tables the project reads
+│   │   └── marts/                       # three marts and their contracts
+│   ├── macros/                          # refuses to create a schema; 01_create_schemas.py owns them
+│   ├── tests/                           # six singular tests
+│   └── examples/                        # four query pairs, Gold against the mart, results measured
 ├── powerbi/
 │   ├── README.md                        # what is committed, how to open, how to refresh
 │   ├── .gitignore                       # excludes the local data cache and any .pbix
@@ -1276,7 +1450,7 @@ uk-property-intelligence-platform/
 - Azure Databricks Access Connector with a user-assigned managed identity
 - ADLS Gen2 containers: `bronze`, `silver`, `gold`, `quality`, `catalog-root`
 - UAMI granted `Storage Blob Data Contributor` on the storage account
-- Unity Catalog: catalog `uk_property_intel` with schemas `bronze`, `silver`, `gold`, `quality`; per-source External Volumes under `bronze`
+- Unity Catalog: catalog `uk_property_intel` with schemas `bronze`, `silver`, `gold`, `quality`, `configs`, `marts` and `marts_ci`; per-source External Volumes under `bronze`
 - Dedicated-access cluster (single-user) on the latest DBR LTS
 
 ### Initial load
@@ -1295,7 +1469,7 @@ Nothing in the watermark is edited by hand between runs. A pre-run job resolves 
 
 The download gate then compares that release date against the date the source last succeeded, so a run fetches only what has been republished since. Three sources used to need a hand-edited URL every month, and a missed edit was silent: the pipeline re-fetched the previous release and reported success. That is the failure the gate exists to remove.
 
-After the downloads, a twelve-task Databricks job runs the six Silver notebooks, the four Gold load notebooks and the cross-source check. A source that failed to download skips exactly the tables built on it, and each skipped stage records what it was waiting on.
+After the downloads, a fourteen-task Databricks job runs the six Silver notebooks, the four Gold load notebooks and the cross-source check, then builds and tests the dbt marts and records that build. A source that failed to download skips exactly the tables built on it, and each skipped stage records what it was waiting on.
 
 ![Pipeline health dashboard, run detail page, 01-09-2026 monthly run: 26 stages, all succeeded](docs/screenshots/pipeline_health_run_detail_monthly.png)
 
@@ -1349,7 +1523,7 @@ After the downloads, a twelve-task Databricks job runs the six Silver notebooks,
 - [x] Crime facts loaded at both grains, with anti-social behaviour held out of every total by constraint: 25,984,439 and 6,328,185 rows by small area, 736,822 and 61,681 by published area, summed up from the small-area aggregate and checked against a direct count
 - [x] Own-versus-rent monthly cost at the base rate of the day, and rent yield, computed downstream from the facts: 45,677 area-months across 331 areas, a yield for 316 districts at a 3.97% median, and the rate cycle moving the share of area-months where owning costs more from 41.7% to 99.5%
 - [x] Join-integrity and referential-coverage checks recorded through the audit writer: every foreign key on all nine facts checked against the loaded dimension after write, and coverage recorded against `dim_area`, `dim_lsoa` and `dim_crime_type`
-- [x] Cross-source reconciliation of a transaction-derived price series against the published index: counts correlating at 0.9998 across 123,375 cells, and the published mix-adjusted average tracking the transaction median to within 1.1%
+- [x] Cross-source reconciliation of a transaction-derived price series against the published index: counts correlating at 0.9998 across 123,704 cells, and the published mix-adjusted average tracking the transaction median to within 1.1%
 
 ### Phase 4 — Advanced features
 
@@ -1370,6 +1544,7 @@ After the downloads, a twelve-task Databricks job runs the six Silver notebooks,
 - [x] Serving layer measured and settled. Power BI reaches the Gold star through a serverless Databricks SQL warehouse as a least-privilege service principal, and imports it: the whole star is 148.9 MiB, so DirectQuery buys latency and cost for no live data a monthly pipeline could supply. See Decisions 50, 51 and 52
 - [x] Pipeline Health Dashboard — three pages over the quality tables: run history across all four statuses, the cause recorded against every stage that skipped, quality metrics, and rule results carrying the bounds that were in force when they ran. See Decision 53
 - [x] Semantic model over the Gold star — thirteen tables imported with twenty-one relationships, eighteen of them inherited from the Unity Catalog foreign keys, and roughly twenty measures that blank the aggregations the star cannot support. Held as a Power BI Project, so the model definition is in version control as text. See Decisions 54 to 57
+- [x] dbt marts over the Gold star — three views, each fixed to one grain, beside the semantic model and never between it and Gold. Built and tested by the monthly job and by continuous integration, which reaches the warehouse with no stored credential, and recorded in the quality tables like every other stage. Four example query pairs measure what each mart refuses. See Decisions 59 and 60
 - [ ] Property Market Dashboard, four screens: area profile against regional and national benchmarks; own-versus-rent monthly cost at the base rate of the day; yield map with a crime overlay; and what actually sells in an area by property type, build age, tenure and sale category
 - [ ] Boundary polygons for the map layers, sourced at dashboard time. The platform holds postcode points, not area shapes, so a choropleth needs geometry the pipeline does not carry
 - [ ] Fabric mirrored Azure Databricks catalog, with one screen rebuilt on Direct Lake and measured against the connector version
@@ -1387,4 +1562,4 @@ Both items below are built as mechanism and unset as configuration, so neither i
 Nothing is lost by the wait. Both series have been recorded since the layers that produce them were built, so either bound can be computed retrospectively over everything accumulated by the time it is set.
 ---
 
-*Status: Phases 1 to 4 complete and verified on the cluster. Phase 5 is in progress, three of six sub-phases closed: the serving layer is settled, the pipeline health dashboard is live over the quality tables, and the semantic model over the Gold star is built and held in version control as text. The property market dashboard is next. Last updated 02-10-2026.*
+*Status: Phases 1 to 4 complete and verified on the cluster. Phase 5 is in progress, three of six sub-phases closed: the serving layer is settled, the pipeline health dashboard is live over the quality tables, and the semantic model over the Gold star is built and held in version control as text. Three dbt views over the star now serve direct SQL readers, built and tested in the monthly job and in continuous integration without a stored credential. The property market dashboard is next, and its pipeline work ran first: the crime dimension computes which series survive a taxonomy change, a fourth quality rule records whether the total holds across one, and three defects that each hid behind something that looked correct were fixed alongside. Last updated 28-10-2026.*

@@ -2,13 +2,14 @@
 
 Configuration and provisioning artifacts for the project's Databricks workspace.
 Running the sequence below takes a workspace that already has its Unity Catalog
-foundation to a state where the pipeline notebooks can run, the two jobs exist, and
-Power BI can read the serving layer.
+foundation to a state where the pipeline notebooks can run, the two jobs exist, Power BI
+can read the serving layer, and continuous integration can build the dbt marts.
 
 The storage account, Access Connector, Unity Catalog metastore, external locations, and
 the `uk_property_intel` catalog are provisioned by hand in Phase 2 and are not yet
 codified. What is codified here is the cluster definition, the schema and volume DDL,
-the quality-table DDL, the job definitions, and the serving-layer grants. For
+the quality-table DDL, the job definitions, the serving-layer grants, and the grants the
+continuous integration build runs under. For
 architecture rationale, see the root `README.md` and `DESIGN.md`.
 
 ## Contents
@@ -16,14 +17,16 @@ architecture rationale, see the root `README.md` and `DESIGN.md`.
 | File | Purpose |
 |---|---|
 | `cluster_definition.json` | Desired-state spec for the Phase 2 all-purpose cluster and its libraries. Source of truth for the cluster configuration. |
-| `job_definition.json` | The twelve-task Silver and Gold job, triggered by ADF once the copies have landed. |
+| `job_definition.json` | The fourteen-task monthly job, triggered by ADF once the copies have landed: Silver, Gold, the cross-source check, the dbt marts build, and the notebook that records it. |
 | `job_definition_pre_run.json` | The one-task URL resolver, run before the downloads. |
 | `apply_job_definition.py` | Creates or resets one job from one definition file. Idempotent by name lookup. Runs as a notebook on the cluster. |
-| `01_create_schemas.py` | Unity Catalog schema DDL. Creates `bronze`, `silver`, `gold`, `quality`, and `configs` under the `uk_property_intel` catalog. Silver, Gold, and Quality each carry a managed location at their matching container; Bronze and Configs carry none, since both hold only External Volumes. Databricks notebook in `.py` source format. |
+| `run_job_tasks.py` | Runs named tasks of the deployed job and nothing upstream of them, then prints each task's outcome, its exit value and the tail of its log. Runs as a notebook. |
+| `01_create_schemas.py` | Unity Catalog schema DDL. Creates `bronze`, `silver`, `gold`, `quality`, `configs`, `marts` and `marts_ci` under the `uk_property_intel` catalog. Silver, Gold, and Quality each carry a managed location at their matching container. Bronze and Configs carry none, since both hold only External Volumes, and neither do the two mart schemas, which hold only views. Databricks notebook in `.py` source format. |
 | `02_create_bronze_volumes.py` | External Volumes, one per Bronze source. |
 | `03_create_quality_tables.py` | DDL for `pipeline_run`, `pipeline_metric`, and `rule_result`, generated from the writers. |
 | `04_create_configs_volumes.py` | External location `configs_managed` and External Volume `configs.watermark`, both over the configs container. |
 | `05_grant_serving_access.py` | Read grants on `gold` and `quality` for the `bi_readers` group. Phase 5. |
+| `06_grant_ci_access.py` | Grants for the dbt build in continuous integration, to the `ci_builders` group: `SELECT` on each table `dbt/models/_sources.yml` declares, view creation in `marts_ci`, and `CAN_USE` on the SQL warehouse. Phase 5. |
 
 ## Prerequisites
 
@@ -45,12 +48,35 @@ prerequisite; step 5 creates it.
 not inside Databricks. Every numbered notebook and the job apply script run in the
 workspace.
 
-**Serving identity.** Required by step 5 only. A Databricks-managed service principal
+**Serving identity.** Required by step 6 only. A Databricks-managed service principal
 holding the `Databricks SQL access` entitlement, an account-level group `bi_readers`
-with that principal as a member, and the group assigned to the workspace.
+with that principal as a member, and both assigned to the workspace, the principal
+directly as well as through the group, since a token is issued only to a principal
+assigned to the workspace directly.
 Databricks-managed and not Entra ID managed: the Power BI connector refreshes tokens
 automatically for the former, and the one-hour workflow limit that applies to
 Entra-managed principals does not apply.
+
+**CI identity.** Required by step 7 only. A Databricks-managed service principal,
+`dbt-ci`, and an account-level group `ci_builders` with that principal as its member,
+holding the `Databricks SQL access` entitlement and nothing else. Both are assigned to the
+workspace, the principal directly as well as through the group, for the same reason as
+the serving principal.
+
+The principal authenticates with no secret. An account admin creates a federation policy
+on it in the account console, accepting tokens from the issuer
+`https://token.actions.githubusercontent.com` with the subject
+`repo:joy7652/uk-property-intelligence-platform:environment:databricks-ci` and the
+Databricks account id as the audience. GitHub signs such a token for any workflow job
+running in that environment, and Databricks exchanges it for a short-lived one belonging
+to `dbt-ci`. The build step prints the subject of the token it received, so a policy that
+does not match can be read off the log.
+
+On the GitHub side the repository needs an environment named `databricks-ci` holding four
+variables and no secret: `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_CLIENT_ID`
+and `DATABRICKS_ACCOUNT_ID`. The client id is the principal's application id. A different
+identifier there fails the build with `invalid_client` and a message saying the principal
+is not a member of the workspace, which reads like an assignment problem and is not one.
 
 ## Bootstrap sequence
 
@@ -101,11 +127,15 @@ for the first and PyPI for the second. The CLI path above is the reproducible on
 ### 2. Unity Catalog schemas
 
 With the cluster running, run `01_create_schemas.py` as a notebook attached to it. This
-registers `bronze`, `silver`, `gold`, `quality`, and `configs` under `uk_property_intel`.
+registers `bronze`, `silver`, `gold`, `quality`, `configs`, `marts` and `marts_ci` under
+`uk_property_intel`. Run it before the first `dbt build` as well: dbt is configured never
+to create a schema, and it stops naming this notebook when one is missing.
 
 Bronze and Configs are declared without a managed location. Both hold External Volumes
 only, so there are no managed objects to place, and a managed location on either would
-contradict that. The notebook's `DESCRIBE SCHEMA EXTENDED` cells are the check: a Root
+contradict that. The two mart schemas carry none for a related reason: they hold views,
+which store nothing, and a dbt test fails the build if anything other than a view ever
+appears in `marts`. The notebook's `DESCRIBE SCHEMA EXTENDED` cells are the check: a Root
 Location reported against the bronze or configs container means the schema was created
 wrong and must be dropped, not edited.
 
@@ -164,7 +194,33 @@ connection time that reads like a grants problem and is not.
 cannot report or repair one granted elsewhere. Removing a privilege is an explicit
 `REVOKE` in a session, and a bare `REVOKE` does not belong in a bootstrap script.
 
-### 7. Job definitions
+### 7. Continuous integration grants
+
+Needed only for the dbt build in continuous integration. Complete the CI identity
+prerequisites first, then run `06_grant_ci_access.py`.
+
+The notebook reads `dbt/models/_sources.yml` the way dbt reads it and grants
+`ci_builders` `USE CATALOG` on the catalog, `USE SCHEMA` on every schema a source sits in,
+`SELECT` on each declared table, and `USE SCHEMA` plus `CREATE TABLE` on `marts_ci`.
+`CREATE TABLE` is the privilege Unity Catalog checks before creating a view as well as a
+table. Nothing is granted on `marts`: a pull request builds views from code nobody has
+merged, so it builds them where nothing reads. The notebook then grants `CAN_USE` on the
+SQL warehouse through the permissions API, by PATCH, so every other principal's
+permission on the warehouse survives.
+
+Table-level `SELECT` is deliberate, where step 6 grants per schema. A CI build reads the
+dbt sources and nothing else, so the grants are generated from the file that declares
+them, and a source added without re-running this notebook fails CI with a permission
+error naming the table. Re-run it whenever a source is added.
+
+Verification reads every grant back from `information_schema` and the permissions API,
+which report what is held. Expected: 1 of 1 catalog privilege, 4 of 4 schema privileges,
+11 of 11 table privileges, and `CAN_USE` on the warehouse. A missing grant raises; a grant
+made elsewhere is printed and left alone. It confirms the grants exist and says nothing
+about whether the principal can use them, since group membership and the federation
+policy sit outside the catalog. The CI run is the test for that.
+
+### 8. Job definitions
 
 `apply_job_definition.py` runs as a notebook on the cluster, not from the CLI. It reads
 the workspace URL from the Spark conf and authenticates with the notebook context's own
@@ -180,12 +236,21 @@ file is removed from the job.
 
 Both definition files carry underscore-prefixed keys holding the reasoning behind the
 configuration. The API rejects fields it does not declare, so the script strips them
-before the call and the keys stay in the file where they are useful.
+before the call and the keys stay in the file where they are useful. A definition still
+carrying a `REPLACE_WITH_` placeholder is refused, since a placeholder applies without
+complaint and fails only when the task reading it runs, which on the monthly job can be
+weeks later.
 
 After applying, the script grants the ADF managed identity `CAN_MANAGE_RUN` on the job
 by PATCH. PUT would replace the whole access control list and strip your own ownership
 off the job. It then prints the job id, its URL, the resulting permissions, and every
 task with its timeout cap.
+
+`run_job_tasks.py` runs named tasks of the deployed job and nothing upstream of them, so
+each reads whatever the previous run left. It is how one stage is rerun by hand without a
+full monthly run, the marts build and its record being the usual pair. Set `JOB_NAME` and
+`TASKS` at the top of the file. It prints the run's URL, its result, and for each task the
+outcome, the duration, any exit value and the last 150 lines of its log.
 
 ## Environment-specific fields
 
@@ -205,6 +270,12 @@ absolute workspace path of the definition being applied, and
 `MANAGED_IDENTITY_CLIENT_ID`, the application id of the ADF managed identity receiving
 `CAN_MANAGE_RUN`. The service principal field takes an application id, not a display
 name.
+
+The SQL warehouse id appears in two places that must agree: the `marts_build` task's
+`warehouse_id` in `job_definition.json`, which the dbt build runs its SQL on, and
+`WAREHOUSE_ID` at the top of `06_grant_ci_access.py`, which grants the CI group use of the
+same warehouse. The CI profile reads its HTTP path from the `databricks-ci` environment, so
+that should name the same warehouse too.
 
 ## Infrastructure as code
 
