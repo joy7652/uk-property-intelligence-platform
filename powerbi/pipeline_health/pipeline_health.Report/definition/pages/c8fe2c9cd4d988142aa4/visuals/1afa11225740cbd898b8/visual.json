@@ -126,7 +126,7 @@
             "Property": "layer"
           }
         },
-        "type": "Categorical",
+        "type": "Advanced",
         "filter": {
           "Version": 2,
           "From": [
@@ -139,35 +139,27 @@
           "Where": [
             {
               "Condition": {
-                "In": {
-                  "Expressions": [
-                    {
-                      "Column": {
-                        "Expression": {
-                          "SourceRef": {
-                            "Source": "p"
-                          }
-                        },
-                        "Property": "layer"
+                "Not": {
+                  "Expression": {
+                    "Comparison": {
+                      "ComparisonKind": 0,
+                      "Left": {
+                        "Column": {
+                          "Expression": {
+                            "SourceRef": {
+                              "Source": "p"
+                            }
+                          },
+                          "Property": "layer"
+                        }
+                      },
+                      "Right": {
+                        "Literal": {
+                          "Value": "'bronze'"
+                        }
                       }
                     }
-                  ],
-                  "Values": [
-                    [
-                      {
-                        "Literal": {
-                          "Value": "'gold'"
-                        }
-                      }
-                    ],
-                    [
-                      {
-                        "Literal": {
-                          "Value": "'silver'"
-                        }
-                      }
-                    ]
-                  ]
+                  }
                 }
               }
             }
