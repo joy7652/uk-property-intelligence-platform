@@ -702,9 +702,9 @@ and 0.0525, read off the same series in the same calendar month across fifteen y
 moves are 0.0599 and 0.1591. It is the first rule in the registry to use the `distribution` kind,
 which had been declared since the framework was built and never used. Since October 2026 it runs inside the crime load, before any of the four crime tables is written, so a step stops that load with every table holding what it held before. Evaluated in the cross-source check, after the writes, it would have reported a stepped total already in front of the dashboard and the marts. The cross-source check writes 65 results again.
 
-![Pipeline health dashboard, rules and freshness page, filtered to ppd_hpi_count_ratio_by_year: 128 results over 4 check runs, none breached](docs/screenshots/pipeline_health_rules_freshness.png)
+![Pipeline health dashboard, rules and freshness page, filtered to ppd_hpi_count_ratio_by_year: 192 results over 6 check runs, none breached](docs/screenshots/pipeline_health_rules_freshness.png)
 
-*`ppd_hpi_count_ratio_by_year` on the rules page: 32 transfer years over four check runs, and none of the 128 results outside 0.95 to 1.08. The freshness table beside it has no verdict column, because no source has a bound set yet.*
+*`ppd_hpi_count_ratio_by_year` on the rules page: 32 transfer years over six check runs, and none of the 192 results outside 0.95 to 1.08. The freshness table beside it has no verdict column, because no source has a bound set yet.*
 
 ### 44. The gate value is when a publisher released, not what the data is about
 
@@ -948,6 +948,10 @@ England and Wales count steps 0.0318 in September 2011 and 0.0525 in May 2013, a
 35.7th same-month percentiles, against worst same-month moves of 0.0599 and 0.1591. A split moves
 offences between labels and leaves the total alone, which the project had asserted from a row-count
 subtraction since Phase 3 and had never measured as a rate. A fourth reconciliation rule now records it; see Decision 43.
+
+![Pipeline health dashboard, rules and freshness page, filtered to crime_total_step_at_vocabulary_change: 4 results over 2 runs, 0.0318 and 0.0525 against a 0.10 ceiling, none breached](docs/screenshots/pipeline_health_rules_freshness_crime_step.png)
+
+*`crime_total_step_at_vocabulary_change` on the rules page: one result per category change, 0.0318 at 2011-09 and 0.0525 at 2013-05 against a ceiling of 0.10. Two runs wrote it, the cross-source check on 09-10-2026 and the crime load after the rule moved there, and the drift column reads zero because the second reproduced the first.*
 
 One cost is worth stating because it is a trap. `reporting_crime_type` is a label, and three of the
 sixteen rows report under the invented name, which no row carries as its own type. Joining that
@@ -1401,6 +1405,7 @@ uk-property-intelligence-platform/
 │   └── test_quality_rules/
 │       └── test_evaluator.py           # registry, refused values, DDL, verdict constraint
 ├── dbt/                                 # marts over the Gold star, views only, built by the job's marts_build task
+│   ├── README.md                        # what the marts are, who reads them, what each test asserts
 │   ├── dbt_project.yml
 │   ├── ci/
 │   │   └── profiles.yml                 # the CI profile: OIDC federation, no credential, builds into marts_ci
@@ -1428,6 +1433,7 @@ uk-property-intelligence-platform/
         ├── master_orchestrator.png
         ├── pipeline_health_metric_coverage.png
         ├── pipeline_health_rules_freshness.png
+        ├── pipeline_health_rules_freshness_crime_step.png
         ├── pipeline_health_run_detail_drill.png
         └── pipeline_health_run_detail_monthly.png
 ```
@@ -1562,4 +1568,4 @@ Both items below are built as mechanism and unset as configuration, so neither i
 Nothing is lost by the wait. Both series have been recorded since the layers that produce them were built, so either bound can be computed retrospectively over everything accumulated by the time it is set.
 ---
 
-*Status: Phases 1 to 4 complete and verified on the cluster. Phase 5 is in progress, three of six sub-phases closed: the serving layer is settled, the pipeline health dashboard is live over the quality tables, and the semantic model over the Gold star is built and held in version control as text. Three dbt views over the star now serve direct SQL readers, built and tested in the monthly job and in continuous integration without a stored credential. The property market dashboard is next, and its pipeline work ran first: the crime dimension computes which series survive a taxonomy change, a fourth quality rule records whether the total holds across one, and three defects that each hid behind something that looked correct were fixed alongside. Last updated 28-10-2026.*
+*Status: Phases 1 to 4 complete and verified on the cluster. Phase 5 is in progress, three of six sub-phases closed: the serving layer is settled, the pipeline health dashboard is live over the quality tables, and the semantic model over the Gold star is built and held in version control as text. Three dbt views over the star now serve direct SQL readers, built and tested in the monthly job and in continuous integration without a stored credential. The property market dashboard is next, and its pipeline work ran first: the crime dimension computes which series survive a taxonomy change, a fourth quality rule records whether the total holds across one, and three defects that each hid behind something that looked correct were fixed alongside. Last updated 30-10-2026.*
